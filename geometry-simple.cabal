@@ -1,0 +1,77 @@
+cabal-version: 3.4
+name: geometry-simple
+version: 0.1.0.0
+license: MPL-2.0
+license-file: LICENSE
+author: Matthias Pall Gissurarson
+maintainer: mpg@mpg.is
+category: Data, Geometry
+build-type: Simple
+tested-with:
+  ghc ==9.14.1
+  ghc ==9.6.7
+
+homepage: https://github.com/Tritlo/duckdb-haskell
+bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
+synopsis: Pure geometry types with unboxed coordinates and ISO WKB codecs
+description:
+  Point, line, polygon, and collection types with XY, XYZ, XYM, and XYZM
+  coordinates. Coordinate sequences use unboxed vectors. The checked ISO WKB
+  codec supports both byte orders and explicit empty points. Includes WKT
+  output. No native library or database is required.
+
+extra-doc-files:
+  CHANGELOG.md
+  README.md
+
+source-repository head
+  type: git
+  location: https://github.com/Tritlo/duckdb-haskell.git
+  subdir: geometry-simple
+
+library
+  exposed-modules:
+    Data.Geometry
+    Data.Geometry.WKB
+
+  other-modules: Data.Geometry.Internal
+  hs-source-dirs: src
+  default-language: Haskell2010
+  build-depends:
+    base >=4.18 && <5,
+    binary >=0.8 && <0.9,
+    bytestring >=0.11.2 && <0.13,
+    text >=2.0 && <2.2,
+    vector >=0.13 && <0.14,
+
+test-suite geometry-simple-test
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: test
+  default-language: Haskell2010
+  build-depends:
+    base >=4.18 && <5,
+    bytestring >=0.11.2 && <0.13,
+    geometry-simple,
+    QuickCheck >=2.14 && <2.18,
+    tasty >=1.4 && <1.6,
+    tasty-hunit >=0.10 && <0.12,
+    tasty-quickcheck >=0.10 && <0.12,
+    text >=2.0 && <2.2,
+    vector >=0.13 && <0.14,
+
+benchmark geometry-simple-bench
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: bench
+  default-language: Haskell2010
+  ghc-options:
+    -O2
+    -rtsopts
+
+  build-depends:
+    base >=4.18 && <5,
+    bytestring >=0.11.2 && <0.13,
+    geometry-simple,
+    text >=2.0 && <2.2,
+    vector >=0.13 && <0.14,
