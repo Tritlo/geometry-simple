@@ -24,6 +24,21 @@ decoded = encoded >>= (decodeWKB :: ByteString -> Either String (Geometry XY))
 parsed = decodeWKT "POINT Z (1 2 3)" :: Either String (Geometry XYZ)
 ```
 
+## Use in a Cabal project
+
+Add `geometry-simple` to your component's `build-depends`:
+
+```cabal
+build-depends: geometry-simple >=0.1 && <0.2
+```
+
+To use a local checkout beside your application, include it in the application's
+`cabal.project`:
+
+```cabal
+packages: . ../geometry-simple
+```
+
 ## Representation
 
 The seven geometry families are points, linestrings, polygons, their three
@@ -88,3 +103,38 @@ empty point in Haskell.
 The codecs accept at most 128 geometry levels, including the root. Polygon
 rings do not add a level. Checks cover encoding structure and finite coordinates;
 they do not check ring closure, self-intersection, or other topology rules.
+
+## Development
+
+The project uses GHC 9.14.1 by default. To build and test:
+
+```sh
+cabal build all
+cabal test all --test-show-details=direct
+cabal haddock all
+```
+
+Use `--with-compiler=ghc-VERSION` to select another compiler. CI covers
+GHC 9.6.7, 9.8.4, 9.10.3, 9.12.4, and 9.14.1 on Linux, and GHC 9.14.1 on macOS.
+The pinned Nix build uses GHC 9.14.1. Run `nix-build --no-out-link` to build,
+test, and generate documentation with Nix.
+
+See [CONTRIBUTIONS.md](CONTRIBUTIONS.md) for test coverage, formatting, and
+pull request guidelines.
+
+The benchmark measures codec conversion and vector operations. It takes the
+number of XY coordinates as its first argument:
+
+```sh
+cabal run geometry-simple-bench -- 1000000 +RTS -T -RTS
+```
+
+## Release
+
+Update the version in `geometry-simple.cabal` and the changelog before a release.
+Run `scripts/release.sh` to upload a Hackage candidate and its documentation.
+Review the candidate before running `scripts/release.sh --publish`.
+
+## License
+
+[MPL-2.0](LICENSE).

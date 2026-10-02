@@ -11,8 +11,8 @@ tested-with:
   ghc ==9.14.1
   ghc ==9.6.7
 
-homepage: https://github.com/Tritlo/duckdb-haskell
-bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
+homepage: https://github.com/Tritlo/geometry-simple
+bug-reports: https://github.com/Tritlo/geometry-simple/issues
 synopsis: Pure geometry types with unboxed coordinates and WKB/WKT codecs
 description:
   Point, line, polygon, and collection types with XY, XYZ, XYM, and XYZM
@@ -22,12 +22,12 @@ description:
 
 extra-doc-files:
   CHANGELOG.md
+  CONTRIBUTIONS.md
   README.md
 
 source-repository head
   type: git
-  location: https://github.com/Tritlo/duckdb-haskell.git
-  subdir: geometry-simple
+  location: https://github.com/Tritlo/geometry-simple.git
 
 library
   exposed-modules:

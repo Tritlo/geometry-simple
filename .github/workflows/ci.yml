@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cabal:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        ghc: ['9.6.7', '9.8.4', '9.10.3', '9.12.4', '9.14.1']
+        include:
+          - os: macos-latest
+            ghc: '9.14.1'
+    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: '3.18.1.0'
+      - run: cabal update
+      - run: cabal build all --with-compiler=ghc --disable-documentation
+      - run: cabal test all --with-compiler=ghc --disable-documentation --test-show-details=direct
+      - run: cabal check
+      - run: cabal sdist
+      - name: Build release documentation
+        if: matrix.ghc == '9.14.1'
+        run: cabal haddock all --with-compiler=ghc --haddock-for-hackage
+
+  nix:
+    name: Nix / GHC 9.14.1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - run: >-
+          nix-build --no-out-link
+          --option sandbox true --option sandbox-fallback false
+          --max-jobs 2 --cores 2

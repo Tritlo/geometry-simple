@@ -1,0 +1,26 @@
+packages: .
+with-compiler: ghc-9.14.1
+
+tests: True
+benchmarks: True
+
+program-options
+  ghc-options: -Wall -Werror
+
+-- These private names have no public documentation link.
+package geometry-simple
+  haddock-options:
+    "--ignore-link-symbol=Data.Geometry.Internal.coordinateComponents"
+    "--ignore-link-symbol=Data.Geometry.Internal.coordinateDimensions"
+    "--ignore-link-symbol=Data.Geometry.Internal.coordinateFromComponents"
+    "--ignore-link-symbol=Data.Geometry.Internal.Dimensions"
+    "--ignore-link-symbol=Data.Geometry.Internal.MVPoint"
+    "--ignore-link-symbol=Data.Geometry.Internal.MVXY"
+    "--ignore-link-symbol=Data.Geometry.Internal.MVXYM"
+    "--ignore-link-symbol=Data.Geometry.Internal.MVXYZ"
+    "--ignore-link-symbol=Data.Geometry.Internal.MVXYZM"
+    "--ignore-link-symbol=Data.Geometry.Internal.VPoint"
+    "--ignore-link-symbol=Data.Geometry.Internal.VXY"
+    "--ignore-link-symbol=Data.Geometry.Internal.VXYM"
+    "--ignore-link-symbol=Data.Geometry.Internal.VXYZ"
+    "--ignore-link-symbol=Data.Geometry.Internal.VXYZM"
