@@ -8,23 +8,32 @@ maintainer: mpg@mpg.is
 category: Data, Geometry
 build-type: Simple
 tested-with:
+  ghc ==9.10.3
+  ghc ==9.12.4
   ghc ==9.14.1
   ghc ==9.6.7
+  ghc ==9.8.4
 
 homepage: https://github.com/Tritlo/geometry-simple
 bug-reports: https://github.com/Tritlo/geometry-simple/issues
-synopsis: Pure geometry types with unboxed coordinates and WKB/WKT codecs
+synopsis: Simple Features geometries with WKB/WKT codecs and planar measurements
 description:
-  Point, line, polygon, and collection types with XY, XYZ, XYM, and XYZM
-  coordinates. Coordinate sequences use unboxed vectors. Checked WKB and WKT
-  codecs preserve coordinate layouts and explicit empty points. ISO WKB
-  decoding supports both byte orders. No native library or database is required.
-  Pure Simple Features operations include geometry accessors, envelopes, areas,
-  lengths, perimeters, centroids, and convex hulls in Cartesian XY coordinates.
+  Geometry values for the seven OGC Simple Features families: points,
+  linestrings, polygons, their multi-geometry forms, and geometry collections.
+  Coordinates are XY, XYZ, XYM, or XYZM, and coordinate sequences are stored
+  in unboxed vectors.
+
+  "Data.Geometry.WKB" and "Data.Geometry.WKT" read and write ISO WKB and WKT.
+  The decoders reject malformed input, mixed dimensions, and non-finite
+  coordinates. "Data.Geometry.SimpleFeatures" has the standard accessors and
+  computes envelopes, areas, lengths, centroids, and convex hulls in the XY
+  plane.
+
+  The package needs no native library or database.
 
 extra-doc-files:
   CHANGELOG.md
-  CONTRIBUTIONS.md
+  CONTRIBUTING.md
   README.md
 
 source-repository head

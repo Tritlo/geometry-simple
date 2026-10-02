@@ -1,8 +1,23 @@
-{- | Pure geometry values with explicit coordinate dimensions.
+{- | Simple Features geometry values. The coordinate type sets the dimensions.
 
-A geometry does not contain coordinate reference system metadata. Keep that
-metadata beside the value when a transport or database provides it.
-Use "Data.Geometry.WKB" for ISO WKB and "Data.Geometry.WKT" for WKT.
+A @'Geometry' t'XY'@ has two-dimensional coordinates. A @'Geometry' t'XYZM'@ has
+coordinates with elevation and a measure. Use 'AnyGeometry' when the
+dimensions are known only at runtime.
+
+@
+import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U
+
+square :: Geometry XY
+square = Polygon (V.singleton (U.fromList [XY 0 0, XY 1 0, XY 1 1, XY 0 1, XY 0 0]))
+@
+
+A geometry does not store a coordinate reference system. Keep the CRS or SRID
+next to the value.
+
+"Data.Geometry.WKB" and "Data.Geometry.WKT" convert geometries to and from
+ISO WKB and WKT. "Data.Geometry.SimpleFeatures" has accessors and planar
+measurements.
 -}
 module Data.Geometry (
     XY (..),

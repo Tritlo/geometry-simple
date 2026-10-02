@@ -4,7 +4,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
--- | Types and coordinate operations used by the public geometry modules.
+-- | Geometry types and the coordinate class. The public modules re-export them.
 module Data.Geometry.Internal where
 
 import qualified Data.Vector as V
@@ -12,24 +12,24 @@ import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as M
 import qualified Data.Vector.Unboxed as U
 
--- | Two spatial coordinates.
+-- | A coordinate with X and Y.
 data XY = XY !Double !Double deriving (Eq, Show, Read)
 
--- | Three spatial coordinates.
+-- | A coordinate with X, Y, and elevation Z.
 data XYZ = XYZ !Double !Double !Double deriving (Eq, Show, Read)
 
--- | Two spatial coordinates and a measure.
+-- | A coordinate with X, Y, and a measure M.
 data XYM = XYM !Double !Double !Double deriving (Eq, Show, Read)
 
--- | Three spatial coordinates and a measure.
+-- | A coordinate with X, Y, elevation Z, and a measure M.
 data XYZM = XYZM !Double !Double !Double !Double deriving (Eq, Show, Read)
 
 -- | The coordinate dimensions stored by a geometry.
 data Dimensions = DimXY | DimXYZ | DimXYM | DimXYZM
     deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
-{- | A supported coordinate type. Instances are supplied for @XY@, @XYZ@,
-@XYM@, and @XYZM@. The public module keeps the methods private.
+{- | The coordinate types t'XY', t'XYZ', t'XYM', and t'XYZM'. The methods are
+internal, so other instances are not supported.
 -}
 class (Eq c, Show c, Read c, U.Unbox c) => Coordinate c where
     coordinateDimensions :: proxy c -> Dimensions
@@ -56,29 +56,35 @@ instance Coordinate XYZM where
     coordinateComponents (XYZM x y z m) = (x, y, z, m)
     coordinateFromComponents (x, y, z, m) = XYZM x y z m
 
-{- | A coordinate or an empty point. An empty point is a geometry value,
-not a database NULL.
--}
+-- | A point at a coordinate, or the empty point (WKT @POINT EMPTY@).
 data Point c = EmptyPoint | Point !c deriving (Eq, Show, Read)
 
-{- | The seven simple geometry families. Each child uses the same coordinate
-type as its parent. Empty vectors represent empty shapes. Rings and lines
-do not have minimum lengths or closure requirements at this level.
+{- | A geometry in one of the seven Simple Features families. All parts use
+the coordinate type @c@. An empty vector is an empty geometry, such as
+@LINESTRING EMPTY@. The constructors do not check ring closure, minimum
+lengths, or other topology rules.
 -}
 data Geometry c
-    = PointGeometry !(Point c)
-    | LineString !(U.Vector c)
-    | Polygon !(V.Vector (U.Vector c))
-    | MultiPoint !(U.Vector (Point c))
-    | MultiLineString !(V.Vector (U.Vector c))
-    | MultiPolygon !(V.Vector (V.Vector (U.Vector c)))
-    | GeometryCollection !(V.Vector (Geometry c))
+    = -- | A point, which can be empty.
+      PointGeometry !(Point c)
+    | -- | A sequence of coordinates.
+      LineString !(U.Vector c)
+    | -- | Rings: the exterior ring first, then the holes.
+      Polygon !(V.Vector (U.Vector c))
+    | -- | Points. A member can be 'EmptyPoint'.
+      MultiPoint !(U.Vector (Point c))
+    | -- | Lines, each a sequence of coordinates.
+      MultiLineString !(V.Vector (U.Vector c))
+    | -- | Polygons, each a vector of rings.
+      MultiPolygon !(V.Vector (V.Vector (U.Vector c)))
+    | -- | Geometries of any family, including other collections.
+      GeometryCollection !(V.Vector (Geometry c))
 
 deriving instance (Coordinate c) => Eq (Geometry c)
 deriving instance (Coordinate c) => Show (Geometry c)
 deriving instance (Coordinate c) => Read (Geometry c)
 
--- | A geometry whose coordinate dimensions are known at runtime.
+-- | A geometry whose coordinate type is known only at runtime.
 data AnyGeometry
     = GeometryXY !(Geometry XY)
     | GeometryXYZ !(Geometry XYZ)

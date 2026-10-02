@@ -1,16 +1,21 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Pure properties, accessors, and planar measurements for Simple Features.
+{- | Simple Features accessors and planar measurements.
 
-Operations use Cartesian XY coordinates. Z and M remain available through
-accessors. Computed geometries use @XY@. Component indices start at one.
+Most names follow OGC Simple Feature Access. Indices start at one, as in the
+standard. The module exports short names such as 'x' and 'area', so import it
+qualified:
 
-Planar operations require finite X and Y ordinates. Polygon measurements
-require valid topology. Rings are closed implicitly for area and perimeter.
-These functions do not validate topology. Use the @geos@ package for spatial
-predicates, validity checks, distance, boundaries, buffers, and polygon set
-operations.
+> import qualified Data.Geometry.SimpleFeatures as SF
+
+Measurements use only X and Y. Z and M stay available through the accessors.
+Computed geometries use t'XY' coordinates.
+
+The planar operations require finite X and Y values. Polygon measurements
+assume valid topology, and these functions do not check it. Area and perimeter
+close open rings. For spatial predicates, validity checks, distance, buffers,
+and overlay operations, use the @geos@ package.
 -}
 module Data.Geometry.SimpleFeatures (
     geometryType,
@@ -48,7 +53,7 @@ import Data.Proxy (Proxy (..))
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
--- | Return the uppercase WKT family name without a coordinate suffix.
+-- | The uppercase WKT family name, such as @POLYGON@, without a dimension tag.
 geometryType :: Geometry c -> String
 geometryType geometry = case geometry of
     PointGeometry _ -> "POINT"
@@ -59,8 +64,9 @@ geometryType geometry = case geometry of
     MultiPolygon _ -> "MULTIPOLYGON"
     GeometryCollection _ -> "GEOMETRYCOLLECTION"
 
-{- | Return the family's topological dimension, including for empty values.
-Collections use the maximum child dimension. An empty collection returns -1.
+{- | The topological dimension: 0 for points, 1 for lines, and 2 for polygons.
+Empty values keep their family's dimension. A collection has the largest
+dimension of its members, or -1 when it has no members.
 -}
 dimension :: Geometry c -> Int
 dimension geometry = case geometry of
@@ -72,26 +78,26 @@ dimension geometry = case geometry of
     MultiPolygon _ -> 2
     GeometryCollection children -> V.foldl' (\n child -> max n (dimension child)) (-1) children
 
--- | Return the number of ordinates, including Z and M when present.
+-- | The number of ordinates in each coordinate: 2, 3, or 4.
 coordinateDimension :: forall c. (Coordinate c) => Geometry c -> Int
 coordinateDimension _ = case coordinateDimensions (Proxy :: Proxy c) of
     DimXY -> 2
     DimXYZM -> 4
     _ -> 3
 
--- | Return two for XY and XYM, or three for XYZ and XYZM.
+-- | 2 for t'XY' and t'XYM', or 3 for t'XYZ' and t'XYZM'.
 spatialDimension :: (Coordinate c) => Geometry c -> Int
 spatialDimension geometry = if is3D geometry then 3 else 2
 
--- | Test whether the coordinate layout includes Z, including for empty values.
+-- | Whether the coordinate type has Z. The value depends only on the type.
 is3D :: forall c. (Coordinate c) => Geometry c -> Bool
 is3D _ = coordinateDimensions (Proxy :: Proxy c) `elem` [DimXYZ, DimXYZM]
 
--- | Test whether the coordinate layout includes M, including for empty values.
+-- | Whether the coordinate type has M. The value depends only on the type.
 isMeasured :: forall c. (Coordinate c) => Geometry c -> Bool
 isMeasured _ = coordinateDimensions (Proxy :: Proxy c) `elem` [DimXYM, DimXYZM]
 
--- | Test whether the geometry has no coordinates. Inspect collection children.
+-- | Whether the geometry has no coordinates. A collection of empty members is empty.
 isEmpty :: (Coordinate c) => Geometry c -> Bool
 isEmpty geometry = case geometry of
     PointGeometry point -> point == EmptyPoint
@@ -102,15 +108,15 @@ isEmpty geometry = case geometry of
     MultiPolygon polygons -> V.all (V.all U.null) polygons
     GeometryCollection children -> V.all isEmpty children
 
--- | Return the X ordinate.
+-- | The X ordinate.
 x :: (Coordinate c) => c -> Double
 x coordinate = let (value, _, _, _) = coordinateComponents coordinate in value
 
--- | Return the Y ordinate.
+-- | The Y ordinate.
 y :: (Coordinate c) => c -> Double
 y coordinate = let (_, value, _, _) = coordinateComponents coordinate in value
 
--- | Return the Z ordinate when the coordinate layout includes it.
+-- | The Z ordinate, or 'Nothing' when the coordinate type has no Z.
 z :: forall c. (Coordinate c) => c -> Maybe Double
 z coordinate = case coordinateDimensions (Proxy :: Proxy c) of
     DimXYZ -> Just value
@@ -119,7 +125,7 @@ z coordinate = case coordinateDimensions (Proxy :: Proxy c) of
   where
     (_, _, value, _) = coordinateComponents coordinate
 
--- | Return the M ordinate when the coordinate layout includes it.
+-- | The M ordinate, or 'Nothing' when the coordinate type has no M.
 m :: forall c. (Coordinate c) => c -> Maybe Double
 m coordinate = case coordinateDimensions (Proxy :: Proxy c) of
     DimXYM -> Just value
@@ -128,8 +134,8 @@ m coordinate = case coordinateDimensions (Proxy :: Proxy c) of
   where
     (_, _, _, value) = coordinateComponents coordinate
 
-{- | Count immediate collection members, including empty members.
-An atomic geometry counts as one, including an empty atomic geometry.
+{- | The number of direct members of a multi-geometry or collection, including
+empty members. Other geometries count as one member, also when empty.
 -}
 numGeometries :: (Coordinate c) => Geometry c -> Int
 numGeometries geometry = case geometry of
@@ -139,8 +145,8 @@ numGeometries geometry = case geometry of
     GeometryCollection children -> V.length children
     _ -> 1
 
-{- | Select an immediate member by its one-based index.
-An atomic geometry has one member: itself. Invalid indices return 'Nothing'.
+{- | The direct member at a one-based index, or 'Nothing' when the index is out
+of range. A geometry that is not a collection is its own first member.
 -}
 geometryN :: (Coordinate c) => Int -> Geometry c -> Maybe (Geometry c)
 geometryN index geometry
@@ -152,29 +158,29 @@ geometryN index geometry
         GeometryCollection children -> children V.!? (index - 1)
         _ -> if index == 1 then Just geometry else Nothing
 
--- | Count coordinates in a LineString. Other families return 'Nothing'.
+-- | The number of coordinates in a 'LineString'. Other families give 'Nothing'.
 numPoints :: (Coordinate c) => Geometry c -> Maybe Int
 numPoints (LineString points) = Just (U.length points)
 numPoints _ = Nothing
 
--- | Select a LineString coordinate by its one-based index.
+-- | The 'LineString' coordinate at a one-based index.
 pointN :: (Coordinate c) => Int -> Geometry c -> Maybe c
 pointN index (LineString points)
     | index >= 1 = points U.!? (index - 1)
 pointN _ _ = Nothing
 
--- | Return the first LineString coordinate, or 'Nothing' for other or empty values.
+-- | The first coordinate of a nonempty 'LineString'.
 startPoint :: (Coordinate c) => Geometry c -> Maybe c
 startPoint = pointN 1
 
--- | Return the last LineString coordinate, or 'Nothing' for other or empty values.
+-- | The last coordinate of a nonempty 'LineString'.
 endPoint :: (Coordinate c) => Geometry c -> Maybe c
 endPoint (LineString points) = points U.!? (U.length points - 1)
 endPoint _ = Nothing
 
-{- | Test XY closure of a nonempty LineString or MultiLineString.
-Every line in a MultiLineString must be nonempty and closed. Other families
-return 'False'. Closure does not test whether a line is simple.
+{- | Whether a nonempty 'LineString' starts and ends at the same XY position.
+A 'MultiLineString' is closed when it has lines and all of them are closed.
+Other families give 'False'. The test does not check whether a line is simple.
 -}
 isClosed :: (Coordinate c) => Geometry c -> Bool
 isClosed geometry = case geometry of
@@ -184,25 +190,25 @@ isClosed geometry = case geometry of
   where
     closed points = not (U.null points) && xy (U.head points) == xy (U.last points)
 
--- | Return a Polygon's exterior ring, or 'Nothing' when no ring is present.
+-- | The exterior ring of a nonempty 'Polygon'.
 exteriorRing :: Geometry c -> Maybe (U.Vector c)
 exteriorRing (Polygon rings) = rings V.!? 0
 exteriorRing _ = Nothing
 
--- | Count a Polygon's holes. Other families return 'Nothing'.
+-- | The number of holes in a 'Polygon'. Other families give 'Nothing'.
 numInteriorRings :: Geometry c -> Maybe Int
 numInteriorRings (Polygon rings) = Just (max 0 (V.length rings - 1))
 numInteriorRings _ = Nothing
 
--- | Select a Polygon hole by its one-based index. The exterior ring is excluded.
+-- | The 'Polygon' hole at a one-based index. Index 1 is the first hole.
 interiorRingN :: Int -> Geometry c -> Maybe (U.Vector c)
 interiorRingN index (Polygon rings)
     | index >= 1 = rings V.!? index
 interiorRingN _ _ = Nothing
 
-{- | Return the minimum XY bounding rectangle.
-Empty input returns an empty collection. Degenerate bounds return a point
-or a two-point line.
+{- | The smallest XY bounding rectangle, as a counterclockwise 'Polygon'.
+Empty input gives an empty collection. Degenerate bounds give a point or a
+two-point line.
 -}
 envelope :: (Coordinate c) => Geometry c -> Geometry XY
 envelope geometry = case foldCoordinates extend Nothing geometry of
@@ -216,15 +222,16 @@ envelope geometry = case foldCoordinates extend Nothing geometry of
     extend (Just (!minX, !minY, !maxX, !maxY)) coordinate =
         Just (min minX (x coordinate), min minY (y coordinate), max maxX (x coordinate), max maxY (y coordinate))
 
-{- | Sum polygon areas in square coordinate units. Subtract holes by position.
-Ring orientation does not affect the result. Other families contribute zero.
+{- | The total polygon area in square coordinate units. The first ring of each
+polygon is the exterior, and the other rings are holes. Ring orientation does
+not matter. Other families add zero.
 Use exact cross products before conversion to Double to avoid cancellation.
 -}
 area :: (Coordinate c) => Geometry c -> Double
 area geometry = let (weight, _, _) = surfaceMoments geometry in fromRational (weight / 2)
 
-{- | Sum LineString lengths in coordinate units, including collection children.
-Polygon boundaries and points contribute zero. Z and M do not affect length.
+{- | The total length of all lines, including lines in collections, in coordinate
+units. Polygon boundaries and points add zero.
 -}
 curveLength :: (Coordinate c) => Geometry c -> Double
 curveLength geometry = case geometry of
@@ -233,7 +240,7 @@ curveLength geometry = case geometry of
     GeometryCollection children -> V.foldl' (\total child -> total + curveLength child) 0 children
     _ -> 0
 
--- | Sum polygon ring lengths, including holes. Lines and points contribute zero.
+-- | The total length of all polygon rings, including holes. Lines and points add zero.
 perimeter :: (Coordinate c) => Geometry c -> Double
 perimeter geometry = case geometry of
     Polygon rings -> V.foldl' (\total points -> total + pathLength True points) 0 rings
@@ -241,11 +248,11 @@ perimeter geometry = case geometry of
     GeometryCollection children -> V.foldl' (\total child -> total + perimeter child) 0 children
     _ -> 0
 
-{- | Return the centroid in XY. Empty input returns 'EmptyPoint'.
-Use polygon area weights when nonzero. Otherwise use segment length weights,
-then coordinate counts if all segments have zero length. Lower-dimensional
-components do not affect a higher-dimensional centroid. A centroid can lie
-outside the geometry, including inside a polygon hole.
+{- | The XY centroid, or 'EmptyPoint' for empty input. Polygons are weighted by
+area. If the total area is zero, segments are weighted by length. If all
+segments have zero length, the result is the mean of the coordinates.
+Lower-dimensional parts do not affect a higher-dimensional centroid. The
+centroid can be outside the geometry, for example in a hole.
 -}
 centroid :: (Coordinate c) => Geometry c -> Point XY
 centroid geometry = case surfaceMoments geometry of
@@ -259,10 +266,10 @@ centroid geometry = case surfaceMoments geometry of
     mean weight mx my = Point (XY (fromRational (mx / weight)) (fromRational (my / weight)))
     addPoint (!weight, !mx, !my) coordinate = (weight + 1, mx + toRational (x coordinate), my + toRational (y coordinate))
 
-{- | Compute the XY convex hull with the monotone chain algorithm.
-Return an empty collection, point, line, or counterclockwise polygon according
-to the hull dimension. Ignore duplicate XY coordinates and interior collinear
-vertices. Exact orientation tests avoid floating-point cancellation.
+{- | The XY convex hull, from Andrew's monotone chain algorithm. The result is
+an empty collection, a point, a line, or a counterclockwise polygon, depending
+on the hull dimension. The hull has no duplicate or collinear vertices.
+Exact orientation tests avoid floating-point cancellation.
 -}
 convexHull :: (Coordinate c) => Geometry c -> Geometry XY
 convexHull geometry = case points of

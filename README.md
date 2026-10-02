@@ -1,8 +1,8 @@
 # geometry-simple
 
-Pure geometry values with unboxed coordinate vectors, checked WKB and WKT
-codecs, and planar Simple Features operations. The package needs no database
-or native library.
+OGC Simple Features geometry types for Haskell, with checked ISO WKB and WKT
+codecs and planar measurements. Coordinates are stored in unboxed vectors. The
+package needs no database or native library.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -29,7 +29,7 @@ lineLength = SF.curveLength line
 lineBounds = SF.envelope line
 ```
 
-## Use in a Cabal project
+## Installation
 
 Add `geometry-simple` to your component's `build-depends`:
 
@@ -37,43 +37,35 @@ Add `geometry-simple` to your component's `build-depends`:
 build-depends: geometry-simple >=0.1 && <0.2
 ```
 
-To use a local checkout beside your application, include it in the application's
-`cabal.project`:
-
-```cabal
-packages: . ../geometry-simple
-```
-
 ## Representation
 
-The seven geometry families are points, linestrings, polygons, their three
-multi-geometry forms, and geometry collections. `PointGeometry` contains either
-`Point coordinate` or `EmptyPoint`. `MultiPoint` also supports empty members.
-SQL NULL is a database concern and is not an empty geometry.
+`Geometry` has a constructor for each of the seven families: points,
+linestrings, polygons, their three multi-geometry forms, and geometry
+collections. A point is `Point coordinate` or `EmptyPoint`, and a multipoint
+can contain empty members.
 
-Use `XY`, `XYZ`, `XYM`, or `XYZM` for the coordinate type. Every member of a
-`Geometry coord` uses the same coordinate type, including nested collections.
-Empty geometries retain their dimensions through this type. `AnyGeometry`
-contains one of the four layouts when the dimensions are known only at runtime.
+The coordinate type is `XY`, `XYZ`, `XYM`, or `XYZM`. All parts of a
+`Geometry c`, including nested collections, use the same type `c`, so an empty
+geometry still has known dimensions. Use `AnyGeometry` when the dimensions are
+known only at runtime.
 
-A polygon contains an outer ring followed by its holes. An empty vector of rings
-represents an empty polygon. Coordinates and multipoints use unboxed vectors.
-Rings, polygons, and collection members use boxed outer vectors. Unboxed
-coordinates use separate numeric buffers for each ordinate. Empty multipoint
-members use a separate presence buffer.
+A polygon is a vector of rings: the exterior ring first, then the holes. An
+empty vector is an empty polygon. Coordinate sequences and multipoints are
+unboxed vectors, with one numeric buffer per ordinate and a separate presence
+buffer for empty multipoint members. Rings, polygons, and collection members
+are boxed vectors.
 
-Use the standard vector operations for slicing, mapping, folds, and mutable
-construction. A slice shares its source allocation. Use `U.force` to copy a
-small slice when retaining its larger source buffer is undesirable.
+Work with these values through the `vector` API. A slice shares memory with
+its source; `U.force` copies a small slice so the larger buffer can be freed.
 
-CRS metadata is separate from these geometry values. Changing a CRS label does
-not transform coordinates. Derived `Eq` compares the stored structure and
-coordinates, not spatial equivalence. Floating-point equality treats positive
-and negative zero as equal.
+Geometries do not store a CRS or SRID. Keep that metadata next to the value.
+The derived `Eq` instance compares the stored structure and coordinates. Two
+polygons that cover the same area but start at different vertices are not
+equal. As for `Double`, `0` and `-0` compare equal.
 
 ## Simple Features operations
 
-Import `Data.Geometry.SimpleFeatures` for a pure subset of the
+`Data.Geometry.SimpleFeatures` implements a subset of the
 [OGC Simple Feature Access](https://www.ogc.org/standards/sfa/) operations.
 
 | Operations | Functions |
@@ -85,109 +77,91 @@ Import `Data.Geometry.SimpleFeatures` for a pure subset of the
 | Polygon rings | `exteriorRing`, `numInteriorRings`, `interiorRingN` |
 | Planar operations | `envelope`, `area`, `curveLength`, `perimeter`, `centroid`, `convexHull` |
 
-Component indices start at one. Accessors return `Nothing` for an invalid index
-or an inapplicable geometry family. Collection counts include stored empty
-members. Atomic geometries count as one member. `isEmpty` inspects all children.
-An empty atomic geometry retains its family's topological dimension. An empty
-geometry collection has dimension -1.
+Indices start at one. Accessors return `Nothing` for an index out of range or
+for a geometry family they do not apply to. Member counts include empty
+members, and a geometry that is not a collection counts as one member.
+`isEmpty` checks every child. An empty point, line, or polygon keeps its
+family's dimension, and an empty geometry collection has dimension -1.
 
-Measurements and closure tests use Cartesian XY coordinates. Lengths use the
-coordinate units. Areas use their square. Z and M do not affect these operations.
-Results from `envelope`, `centroid`, and `convexHull` use XY coordinates. These
-operations do not calculate geodesic distances or transform reference systems.
+Measurements and closure tests use only X and Y. Lengths are in coordinate
+units and areas in square units. `envelope`, `centroid`, and `convexHull`
+return `XY` geometries. The operations are planar, so for longitude and
+latitude input, lengths are in degrees.
 
-`area` subtracts holes by their position in the polygon, regardless of ring
-orientation. `curveLength` measures lines. `perimeter` measures polygon rings,
-including holes. Planar operations assume finite X and Y ordinates. Polygon
-measurements assume valid topology. Area and perimeter close rings implicitly.
-Exact cross products avoid cancellation in polygon areas and hull orientation
-tests. Segment lengths use
-scaled floating-point square roots.
+`area` treats the first ring of each polygon as the exterior and the other
+rings as holes. Ring orientation does not matter. `curveLength` measures lines,
+and `perimeter` measures polygon rings, including holes. The planar operations
+assume finite X and Y values and valid polygon topology. Area and perimeter
+close open rings. Exact cross products avoid cancellation in polygon areas and
+hull orientation tests. Segment lengths use scaled floating-point square roots.
 
-`centroid` uses area weights, then segment length weights for zero-area input,
-then coordinate counts for zero-length input. Lower-dimensional components do
-not affect a higher-dimensional centroid. Empty input returns `EmptyPoint`.
-Empty envelopes and hulls return an empty collection. Degenerate envelopes and
-hulls return a point or line. Polygon hulls have counterclockwise rings.
+`centroid` weights polygons by area. If the total area is zero, it weights
+segments by length. If all segments have zero length, it averages the
+coordinates. Lower-dimensional parts do not affect a higher-dimensional
+centroid. Empty input gives `EmptyPoint`. `envelope` and `convexHull` give an
+empty collection for empty input, and a point or line for degenerate input.
+Hull polygons are counterclockwise.
 
-For topology validation, spatial predicates such as `intersects` and `contains`,
-distance, boundaries, buffers, and polygon set operations, use
-[`geos`](https://hackage.haskell.org/package/geos). It provides Haskell bindings
-to the native GEOS library. This package does not implement those operations
-or claim full Simple Features conformance.
+The package does not claim full Simple Features conformance. For validity
+checks, spatial predicates such as `intersects` and `contains`, distance,
+buffers, and overlay operations, use
+[`geos`](https://hackage.haskell.org/package/geos), which binds the native
+GEOS library.
 
 ## Codecs
 
-- `decodeWKB` checks the requested coordinate layout, including empty values.
-- `decodeAnyWKB` retains the layout found in the WKB header.
+- `decodeWKB` decodes WKB into the requested coordinate type, including empty
+  values.
+- `decodeAnyWKB` keeps the coordinate type from the WKB header.
 - `encodeWKB` writes little-endian ISO WKB.
-- `encodeWKT` writes WKT with explicit Z, M, or ZM suffixes where needed.
+- `encodeWKT` writes WKT with a Z, M, or ZM suffix where needed.
   Coordinates use scientific notation, such as `1.0e0`. This reduces temporary
   allocation during conversion to text.
-- `decodeWKT` reads WKT with the requested coordinate layout.
-- `decodeAnyWKT` retains the layout declared in the WKT header.
+- `decodeWKT` decodes WKT into the requested coordinate type.
+- `decodeAnyWKT` keeps the coordinate type from the WKT header.
 
 Import the WKT functions from `Data.Geometry.WKT`. The WKB module also exports
-`encodeWKT`. WKT decoding accepts lowercase keywords, attached dimension tags
-such as `POINTZ`, and both `MULTIPOINT (1 2, 3 4)` and
-`MULTIPOINT ((1 2), (3 4))`. Signed decimal numbers and exponents are supported.
-Ordinates require whitespace between them. Trailing input is rejected.
+`encodeWKT`. The WKT decoder accepts lowercase keywords, attached dimension
+tags such as `POINTZ`, and both `MULTIPOINT (1 2, 3 4)` and
+`MULTIPOINT ((1 2), (3 4))`. Numbers can have a sign, a fraction, and an
+exponent. Ordinates must be separated by whitespace, and trailing input is an
+error.
 
-Untagged WKT means XY. Use Z, M, or ZM for other layouts, even for empty shapes.
-Each geometry in a collection must declare the same layout. The parser does
-not infer dimensions from extra ordinates or from the requested Haskell type.
-EWKT `SRID=...;` prefixes are not supported.
+WKT without a dimension tag is XY. Other coordinate types need a Z, M, or ZM
+tag, also on empty geometries and on every member of a collection. The decoder
+does not infer dimensions from the number of ordinates or from the requested
+Haskell type. EWKT `SRID=...;` prefixes are not supported.
 
-All codecs return `Either String`. WKB decoding accepts either byte order,
-including different byte orders in nested geometries. It rejects trailing data,
-invalid tags, inconsistent dimensions, and counts that exceed the input before
-allocating coordinate vectors. EWKB flags and embedded SRIDs are not supported.
+All codecs return `Either String`. The WKB decoder accepts both byte orders,
+also mixed within nested geometries. It rejects trailing bytes, unknown type
+codes, and inconsistent dimensions. It checks every count against the remaining
+input before it allocates a vector. EWKB flags and embedded SRIDs are not
+supported.
 
-Finite `Double` coordinates retain their exact bits through WKB and generated
-WKT, including negative zero and subnormal values. WKT numbers round to the
-nearest representable `Double`; underflow can produce signed zero and overflow
-is rejected. WKB uses all-NaN ordinates for empty points.
-Other NaN values and infinities are rejected. Use `EmptyPoint` to construct an
-empty point in Haskell.
+Finite `Double` values keep their exact bits through WKB and through WKT from
+`encodeWKT`, including negative zero and subnormals. The WKT decoder rounds
+other numbers to the nearest `Double`. Underflow gives a signed zero and
+overflow is an error. In WKB, an empty point has NaN in every ordinate. The
+codecs reject all other NaN and infinite values. Use `EmptyPoint` for an empty
+point in Haskell.
 
-The codecs impose no fixed nesting limit. WKB output counts must fit its
-unsigned 32-bit fields. WKT has no count limit. Checks cover encoding structure
-and finite coordinates. They do not check ring closure, self-intersection,
-or other topology rules.
+The codecs have no nesting limit. WKB counts must fit in 32 bits; WKT has no
+count limit. The codecs check structure and finite coordinates, but not ring
+closure, self-intersection, or other topology rules.
 
 ## Development
-
-The repository checkout uses GHC 9.14.1 by default. To build and test:
 
 ```sh
 cabal build all
 cabal test all --test-show-details=direct
-cabal haddock all
 ```
 
-Use `--with-compiler=ghc-VERSION` to select another compiler. CI covers
-GHC 9.6.7, 9.8.4, 9.10.3, 9.12.4, and 9.14.1 on Linux, and GHC 9.14.1 on macOS.
-The pinned Nix build uses GHC 9.14.1. Run `nix-build --no-out-link` to build,
-test, and generate documentation with Nix.
-
-See [CONTRIBUTIONS.md](CONTRIBUTIONS.md) for test coverage, formatting, and
-pull request guidelines.
-
-The benchmark measures codec conversion and vector operations. It takes the
-number of XY coordinates as its first argument:
-
-```sh
-cabal run -O1 geometry-simple-bench -- 1000000 +RTS -T -RTS
-```
-
-## Release
-
-Update the version in `geometry-simple.cabal` and the changelog before a release.
-Run `scripts/release.sh` to upload a Hackage candidate and its documentation.
-Review the candidate before running `scripts/release.sh --publish`.
-Run these commands from a repository checkout. Cabal uses its configured
-credentials or prompts for them when required.
+The repository uses GHC 9.14.1 by default. CI covers GHC 9.6.7, 9.8.4, 9.10.3,
+9.12.4, and 9.14.1 on Linux, and GHC 9.14.1 on macOS. See
+[CONTRIBUTING.md](https://github.com/Tritlo/geometry-simple/blob/main/CONTRIBUTING.md)
+for formatting, Nix, benchmarks, and releases.
 
 ## License
 
-[MIT](LICENSE).
+MIT. See
+[LICENSE](https://github.com/Tritlo/geometry-simple/blob/main/LICENSE).
