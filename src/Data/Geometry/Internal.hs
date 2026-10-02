@@ -1,6 +1,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -8,6 +9,8 @@
 -- | Geometry types and the coordinate class. The public modules re-export them.
 module Data.Geometry.Internal where
 
+import Control.Monad (unless)
+import Data.Proxy (Proxy (..))
 import qualified Data.Vector as V
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as M
@@ -92,6 +95,51 @@ data AnyGeometry
     | GeometryXYM !(Geometry XYM)
     | GeometryXYZM !(Geometry XYZM)
     deriving (Eq, Show, Read)
+
+-- | Check each ordinate present in the coordinate type.
+coordinateAll :: forall c. (Coordinate c) => (Double -> Bool) -> c -> Bool
+{-# INLINE coordinateAll #-}
+coordinateAll predicate coordinate =
+    let (x, y, z, m) = coordinateComponents coordinate
+        extra = case coordinateDimensions (Proxy :: Proxy c) of
+            DimXY -> True
+            DimXYZ -> predicate z
+            DimXYM -> predicate m
+            DimXYZM -> predicate z && predicate m
+     in predicate x && predicate y && extra
+
+-- | Reject NaN and infinity outside the empty-point representation.
+finite :: Double -> Bool
+{-# INLINE finite #-}
+finite value = not (isNaN value || isInfinite value)
+
+-- | Check finite coordinates and the output format's vector length bounds.
+validateGeometry :: (Coordinate c) => (Int -> Either String ()) -> Geometry c -> Either String ()
+validateGeometry checkLength geometry = case geometry of
+    PointGeometry EmptyPoint -> pure ()
+    PointGeometry (Point coordinate) -> validateCoordinate coordinate
+    LineString points -> validateLine points
+    Polygon rings -> checkLength (V.length rings) >> V.mapM_ validateLine rings
+    MultiPoint points -> do
+        checkLength (U.length points)
+        U.mapM_ (validateGeometry checkLength . PointGeometry) points
+    MultiLineString lineStrings -> do
+        checkLength (V.length lineStrings)
+        V.mapM_ (validateGeometry checkLength . LineString) lineStrings
+    MultiPolygon polygons -> do
+        checkLength (V.length polygons)
+        V.mapM_ (validateGeometry checkLength . Polygon) polygons
+    GeometryCollection children -> do
+        checkLength (V.length children)
+        V.mapM_ (validateGeometry checkLength) children
+  where
+    -- Check a line or ring without topology restrictions.
+    validateLine points = checkLength (U.length points) >> U.mapM_ validateCoordinate points
+
+-- | Check that one coordinate contains only finite ordinates.
+validateCoordinate :: (Coordinate c) => c -> Either String ()
+{-# INLINE validateCoordinate #-}
+validateCoordinate coordinate = unless (coordinateAll finite coordinate) (Left "Geometry has a non-finite coordinate")
 
 -- Unboxed vectors store coordinates as tuples, so each ordinate has its own buffer.
 

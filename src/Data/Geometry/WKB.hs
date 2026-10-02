@@ -1,9 +1,6 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Checked ISO WKB decoding and ISO WKB and WKT encoding.
-
-Use "Data.Geometry.WKT" to decode WKT text.
+{- | Checked ISO WKB decoding and encoding.
 
 The codecs support the seven simple geometry families and all four coordinate
 dimensions. Every child must have the same dimensions as its parent. WKB
@@ -17,7 +14,6 @@ module Data.Geometry.WKB (
     decodeWKB,
     decodeAnyWKB,
     encodeWKB,
-    encodeWKT,
 ) where
 
 import Control.Monad (unless, when)
@@ -30,13 +26,10 @@ import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
 import Data.ByteString.Builder.Prim ((>$<), (>*<))
 import qualified Data.ByteString.Builder.Prim as Prim
-import qualified Data.ByteString.Builder.RealFloat as RealFloat
 import qualified Data.ByteString.Lazy as BL
 import Data.Geometry.Internal
 import Data.Int (Int64)
 import Data.Proxy (Proxy (..))
-import Data.Text (Text)
-import qualified Data.Text.Encoding as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
@@ -70,15 +63,6 @@ encodeWKB :: (Coordinate c) => Geometry c -> Either String ByteString
 encodeWKB geometry = do
     validateGeometry checkedLength geometry
     pure (BL.toStrict (Builder.toLazyByteString (putGeometry geometry)))
-
-{- | Encode WKT with a dimension suffix for XYZ, XYM, and XYZM geometries.
-Empty geometries retain their dimensions. Double values use their round-trip
-scientific representation, including negative zero and subnormal values.
--}
-encodeWKT :: (Coordinate c) => Geometry c -> Either String Text
-encodeWKT geometry = do
-    validateGeometry (const (Right ())) geometry
-    pure (Text.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (geometryWKT geometry))))
 
 -- | Run a decoder and require complete input consumption.
 runDecoder :: Get a -> ByteString -> Either String a
@@ -271,48 +255,6 @@ word64At little bytes offset =
                     .|. shiftL (byte 6) 8
                     .|. byte 7
 
--- | Check each ordinate present in the coordinate type.
-coordinateAll :: forall c. (Coordinate c) => (Double -> Bool) -> c -> Bool
-coordinateAll predicate coordinate =
-    let (x, y, z, m) = coordinateComponents coordinate
-        extra = case coordinateDimensions (Proxy :: Proxy c) of
-            DimXY -> True
-            DimXYZ -> predicate z
-            DimXYM -> predicate m
-            DimXYZM -> predicate z && predicate m
-     in predicate x && predicate y && extra
-
--- | Reject NaN and infinity outside the empty-point representation.
-finite :: Double -> Bool
-finite value = not (isNaN value || isInfinite value)
-
--- | Check finite coordinates and the output format's vector length bounds.
-validateGeometry :: (Coordinate c) => (Int -> Either String ()) -> Geometry c -> Either String ()
-validateGeometry checkLength geometry = case geometry of
-    PointGeometry EmptyPoint -> pure ()
-    PointGeometry (Point coordinate) -> validateCoordinate coordinate
-    LineString points -> validateLine points
-    Polygon rings -> checkLength (V.length rings) >> V.mapM_ validateLine rings
-    MultiPoint points -> do
-        checkLength (U.length points)
-        U.mapM_ (validateGeometry checkLength . PointGeometry) points
-    MultiLineString lineStrings -> do
-        checkLength (V.length lineStrings)
-        V.mapM_ (validateGeometry checkLength . LineString) lineStrings
-    MultiPolygon polygons -> do
-        checkLength (V.length polygons)
-        V.mapM_ (validateGeometry checkLength . Polygon) polygons
-    GeometryCollection children -> do
-        checkLength (V.length children)
-        V.mapM_ (validateGeometry checkLength) children
-  where
-    -- Check a line or ring without topology restrictions.
-    validateLine points = checkLength (U.length points) >> U.mapM_ validateCoordinate points
-
--- | Check that one coordinate contains only finite ordinates.
-validateCoordinate :: (Coordinate c) => c -> Either String ()
-validateCoordinate coordinate = unless (coordinateAll finite coordinate) (Left "Geometry has a non-finite coordinate")
-
 -- | Check that a vector length fits the WKB unsigned 32-bit count.
 checkedLength :: Int -> Either String ()
 checkedLength count = when (toInteger count > toInteger (maxBound :: Word32)) (Left "Geometry count exceeds Word32")
@@ -383,55 +325,3 @@ coordinatePrim = case coordinateDimensions (Proxy :: Proxy c) of
     DimXYZ -> (\c -> let (x, y, z, _) = coordinateComponents c in (x, (y, z))) >$< (Prim.doubleLE >*< Prim.doubleLE >*< Prim.doubleLE)
     DimXYM -> (\c -> let (x, y, _, m) = coordinateComponents c in (x, (y, m))) >$< (Prim.doubleLE >*< Prim.doubleLE >*< Prim.doubleLE)
     DimXYZM -> (\c -> let (x, y, z, m) = coordinateComponents c in ((x, y), (z, m))) >$< ((Prim.doubleLE >*< Prim.doubleLE) >*< (Prim.doubleLE >*< Prim.doubleLE))
-
--- | Render a validated geometry with its family and dimension suffix.
-geometryWKT :: forall c. (Coordinate c) => Geometry c -> Builder
-geometryWKT geometry = name <> suffix <> " " <> body
-  where
-    suffix = case coordinateDimensions (Proxy :: Proxy c) of
-        DimXY -> ""
-        DimXYZ -> " Z"
-        DimXYM -> " M"
-        DimXYZM -> " ZM"
-    (name, body) = case geometry of
-        PointGeometry point -> ("POINT", pointWKT point)
-        LineString points -> ("LINESTRING", unboxedWKT coordinateWKT points)
-        Polygon rings -> ("POLYGON", boxedWKT (unboxedWKT coordinateWKT) rings)
-        MultiPoint points -> ("MULTIPOINT", unboxedWKT pointWKT points)
-        MultiLineString lineStrings -> ("MULTILINESTRING", boxedWKT (unboxedWKT coordinateWKT) lineStrings)
-        MultiPolygon polygons -> ("MULTIPOLYGON", boxedWKT (boxedWKT (unboxedWKT coordinateWKT)) polygons)
-        GeometryCollection children -> ("GEOMETRYCOLLECTION", boxedWKT geometryWKT children)
-
--- | Render an empty point or a parenthesized coordinate.
-pointWKT :: (Coordinate c) => Point c -> Builder
-pointWKT EmptyPoint = "EMPTY"
-pointWKT (Point coordinate) = "(" <> coordinateWKT coordinate <> ")"
-
--- | Render the ordinates in their declared order without intermediate lists.
-coordinateWKT :: forall c. (Coordinate c) => c -> Builder
-coordinateWKT coordinate =
-    let (x, y, z, m) = coordinateComponents coordinate
-        number = RealFloat.formatDouble RealFloat.scientific
-        extra = case coordinateDimensions (Proxy :: Proxy c) of
-            DimXY -> mempty
-            DimXYZ -> " " <> number z
-            DimXYM -> " " <> number m
-            DimXYZM -> " " <> number z <> " " <> number m
-     in number x <> " " <> number y <> extra
-
--- | Render a boxed vector as EMPTY or a parenthesized sequence.
-boxedWKT :: (a -> Builder) -> V.Vector a -> Builder
-boxedWKT render values
-    | V.null values = "EMPTY"
-    | otherwise = "(" <> V.ifoldr (\i value rest -> separator i <> render value <> rest) mempty values <> ")"
-
--- | Render an unboxed vector without converting its elements to a list.
-unboxedWKT :: (U.Unbox a) => (a -> Builder) -> U.Vector a -> Builder
-unboxedWKT render values
-    | U.null values = "EMPTY"
-    | otherwise = "(" <> U.ifoldr (\i value rest -> separator i <> render value <> rest) mempty values <> ")"
-
--- | Separate elements after the first element.
-separator :: Int -> Builder
-separator 0 = mempty
-separator _ = ", "

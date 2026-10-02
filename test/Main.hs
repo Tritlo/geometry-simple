@@ -11,6 +11,7 @@ import Data.Char (digitToInt)
 import Data.Either (isLeft)
 import Data.Geometry
 import Data.Geometry.WKB
+import Data.Geometry.WKT (encodeWKT)
 import qualified Data.Geometry.WKT as WKT
 import Data.Text (Text)
 import qualified Data.Text as Text

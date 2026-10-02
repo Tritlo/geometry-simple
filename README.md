@@ -120,8 +120,8 @@ GEOS library.
 - `decodeWKT` decodes WKT into the requested coordinate type.
 - `decodeAnyWKT` keeps the coordinate type from the WKT header.
 
-Import the WKT functions from `Data.Geometry.WKT`. The WKB module also exports
-`encodeWKT`. The WKT decoder accepts lowercase keywords, attached dimension
+`Data.Geometry.WKB` has the WKB functions and `Data.Geometry.WKT` has the WKT
+functions. The WKT decoder accepts lowercase keywords, attached dimension
 tags such as `POINTZ`, and both `MULTIPOINT (1 2, 3 4)` and
 `MULTIPOINT ((1 2), (3 4))`. Numbers can have a sign, a fraction, and an
 exponent. Ordinates must be separated by whitespace, and trailing input is an

@@ -5,8 +5,8 @@ import Control.Exception (evaluate)
 import Control.Monad (forM_, unless)
 import qualified Data.ByteString as BS
 import Data.Geometry (Geometry (..), XY (..))
-import Data.Geometry.WKB (decodeWKB, encodeWKB, encodeWKT)
-import Data.Geometry.WKT (decodeWKT)
+import Data.Geometry.WKB (decodeWKB, encodeWKB)
+import Data.Geometry.WKT (decodeWKT, encodeWKT)
 import Data.IORef (newIORef, readIORef)
 import qualified Data.Text as Text
 import qualified Data.Vector as V

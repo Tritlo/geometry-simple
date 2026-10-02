@@ -22,13 +22,17 @@ import Control.Monad (unless, when)
 import Control.Monad.ST (runST)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT (..), get, gets, modify', put)
+import Data.ByteString.Builder (Builder)
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Builder.RealFloat as RealFloat
+import qualified Data.ByteString.Lazy as BL
 import Data.Char (isAsciiLower, isAsciiUpper, isSpace)
 import Data.Geometry.Internal
-import Data.Geometry.WKB (encodeWKT)
 import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Read as TextRead
 import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Generic.Mutable as M
@@ -55,6 +59,15 @@ decodeAnyWKT input = do
         DimXYZ -> GeometryXYZ <$> decodeWKT input
         DimXYM -> GeometryXYM <$> decodeWKT input
         DimXYZM -> GeometryXYZM <$> decodeWKT input
+
+{- | Encode WKT with a dimension suffix for XYZ, XYM, and XYZM geometries.
+Empty geometries retain their dimensions. Double values use their round-trip
+scientific representation, including negative zero and subnormal values.
+-}
+encodeWKT :: (Coordinate c) => Geometry c -> Either String Text
+encodeWKT geometry = do
+    validateGeometry (const (Right ())) geometry
+    pure (TextEncoding.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (geometryWKT geometry))))
 
 -- | Stop parsing with a geometry-specific error.
 failure :: String -> Parser a
@@ -246,3 +259,49 @@ number = do
                         then failure "has a non-finite coordinate"
                         else put rest >> pure value
                 _ -> failure "has a non-finite or invalid coordinate"
+
+-- | Render a validated geometry with its family and dimension suffix.
+geometryWKT :: forall c. (Coordinate c) => Geometry c -> Builder
+geometryWKT geometry = name <> suffix <> " " <> body
+  where
+    suffix = case coordinateDimensions (Proxy :: Proxy c) of
+        DimXY -> ""
+        DimXYZ -> " Z"
+        DimXYM -> " M"
+        DimXYZM -> " ZM"
+    (name, body) = case geometry of
+        PointGeometry value -> ("POINT", pointWKT value)
+        LineString points -> ("LINESTRING", sequenceWKT coordinateWKT points)
+        Polygon rings -> ("POLYGON", sequenceWKT (sequenceWKT coordinateWKT) rings)
+        MultiPoint points -> ("MULTIPOINT", sequenceWKT pointWKT points)
+        MultiLineString lineStrings -> ("MULTILINESTRING", sequenceWKT (sequenceWKT coordinateWKT) lineStrings)
+        MultiPolygon polygons -> ("MULTIPOLYGON", sequenceWKT (sequenceWKT (sequenceWKT coordinateWKT)) polygons)
+        GeometryCollection children -> ("GEOMETRYCOLLECTION", sequenceWKT geometryWKT children)
+
+-- | Render an empty point or a parenthesized coordinate.
+pointWKT :: (Coordinate c) => Point c -> Builder
+pointWKT EmptyPoint = "EMPTY"
+pointWKT (Point position) = "(" <> coordinateWKT position <> ")"
+
+-- | Render the ordinates in their declared order without intermediate lists.
+coordinateWKT :: forall c. (Coordinate c) => c -> Builder
+coordinateWKT position =
+    let (x, y, z, m) = coordinateComponents position
+        ordinate = RealFloat.formatDouble RealFloat.scientific
+        extra = case coordinateDimensions (Proxy :: Proxy c) of
+            DimXY -> mempty
+            DimXYZ -> " " <> ordinate z
+            DimXYM -> " " <> ordinate m
+            DimXYZM -> " " <> ordinate z <> " " <> ordinate m
+     in ordinate x <> " " <> ordinate y <> extra
+
+-- | Render a vector as EMPTY or a parenthesized sequence, without a list.
+sequenceWKT :: (V.Vector v a) => (a -> Builder) -> v a -> Builder
+sequenceWKT render values
+    | V.null values = "EMPTY"
+    | otherwise = "(" <> V.ifoldr (\i value rest -> separator i <> render value <> rest) mempty values <> ")"
+
+-- | Separate elements after the first element.
+separator :: Int -> Builder
+separator 0 = mempty
+separator _ = ", "
