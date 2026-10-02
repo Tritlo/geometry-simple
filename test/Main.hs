@@ -19,7 +19,6 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Data.Word (Word32, Word64)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
-import Numeric (showEFloat)
 import qualified SimpleFeaturesTests
 import Test.Tasty (TestTree, defaultMain, localOption, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
@@ -51,7 +50,7 @@ tests =
             let bytes = children False 7 [point True 0 [1, 2], children True 7 [wkb False 2 (count False 0)]]
                 expected = GeometryXY $ GeometryCollection $ V.fromList [PointGeometry (Point (XY 1 2)), GeometryCollection (V.singleton (LineString U.empty))]
             decodeAnyWKB bytes @?= Right expected
-            encodeAnyWKT expected @?= Right "GEOMETRYCOLLECTION (POINT (1.0e0 2.0e0), GEOMETRYCOLLECTION (LINESTRING EMPTY))"
+            encodeAnyWKT expected @?= Right "GEOMETRYCOLLECTION (POINT (1.0 2.0), GEOMETRYCOLLECTION (LINESTRING EMPTY))"
         , testCase "all typed empty geometries reject other dimensions" $
             forM_ [0, 1000, 2000, 3000] $ \offset ->
                 forM_ [1 .. 7] $ \family -> do
@@ -116,7 +115,7 @@ tests =
             let openRing = U.fromList [XY 0 0, XY 1 1]
                 polygon = Polygon (V.fromList [U.empty, openRing])
             (encodeWKB polygon >>= decodeWKB) @?= Right polygon
-            encodeWKT polygon @?= Right "POLYGON (EMPTY, (0.0e0 0.0e0, 1.0e0 1.0e0))"
+            encodeWKT polygon @?= Right "POLYGON (EMPTY, (0.0 0.0, 1.0 1.0))"
             let singletonLine = LineString (U.singleton (XY 1 2))
             (encodeWKB singletonLine >>= decodeWKB) @?= Right singletonLine
         , testCase "every proper fixture prefix is truncated" $
@@ -193,7 +192,7 @@ samplesFor offset values coord wrap = do
     little <- [False, True]
     empty <- [False, True]
     let suffix = case offset of 0 -> ""; 1000 -> " Z"; 2000 -> " M"; _ -> " ZM"
-        coordinateText = Text.intercalate " " (map (\x -> Text.pack (showEFloat Nothing x "")) values)
+        coordinateText = Text.intercalate " " (map (\x -> Text.pack (show x)) values)
         lineBody = "(" <> coordinateText <> ", " <> coordinateText <> ")"
         polygonBody = "((" <> Text.intercalate ", " (replicate 4 coordinateText) <> "))"
         fullPoint = PointGeometry (Point coord)
@@ -417,5 +416,5 @@ nestedGeometry depth = GeometryCollection (V.singleton (nestedGeometry (depth - 
 
 -- | Render the expected text independently of the WKT encoder.
 nestedWKT :: Int -> Text
-nestedWKT 0 = "POINT (1.0e0 2.0e0)"
+nestedWKT 0 = "POINT (1.0 2.0)"
 nestedWKT depth = "GEOMETRYCOLLECTION (" <> nestedWKT (depth - 1) <> ")"

@@ -10,7 +10,7 @@ package needs no database or native library.
 import Data.ByteString (ByteString)
 import Data.Geometry
 import Data.Geometry.WKB
-import Data.Geometry.WKT (decodeWKT, decodeAnyWKT)
+import Data.Geometry.WKT (decodeAnyWKT, decodeWKT, encodeWKT)
 import qualified Data.Geometry.SimpleFeatures as SF
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -24,6 +24,8 @@ encoded = encodeWKB line
 -- Decode with known dimensions, or use decodeAnyWKB for runtime dimensions.
 decoded = encoded >>= (decodeWKB :: ByteString -> Either String (Geometry XY))
 parsed = decodeWKT "POINT Z (1 2 3)" :: Either String (Geometry XYZ)
+-- Right "POLYGON ((0.0 0.0, 1.0 0.0, 1.0 1.0, 0.0 0.0))"
+text = encodeWKT polygon
 polygonArea = SF.area polygon
 lineLength = SF.curveLength line
 lineBounds = SF.envelope line
@@ -114,9 +116,9 @@ GEOS library.
   values.
 - `decodeAnyWKB` keeps the coordinate type from the WKB header.
 - `encodeWKB` writes little-endian ISO WKB.
-- `encodeWKT` writes WKT with a Z, M, or ZM suffix where needed.
-  Coordinates use scientific notation, such as `1.0e0`. This reduces temporary
-  allocation during conversion to text.
+- `encodeWKT` writes WKT with a Z, M, or ZM suffix where needed. Each
+  ordinate uses the shortest text that decodes to the same `Double`, as `show`
+  does, such as `1.0` or `1.0e-2`.
 - `decodeWKT` decodes WKT into the requested coordinate type.
 - `decodeAnyWKT` keeps the coordinate type from the WKT header.
 
