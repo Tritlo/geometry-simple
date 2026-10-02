@@ -94,8 +94,13 @@ latitude input, lengths are in degrees.
 rings as holes. Ring orientation does not matter. `curveLength` measures lines,
 and `perimeter` measures polygon rings, including holes. The planar operations
 assume finite X and Y values and valid polygon topology. Area and perimeter
-close open rings. Exact cross products avoid cancellation in polygon areas and
-hull orientation tests. Segment lengths use scaled floating-point square roots.
+close open rings.
+
+The measurements use `Double` arithmetic. Area and centroid calculations use
+coordinates relative to a nearby vertex, which keeps them accurate far from the
+origin, for example in projected coordinates. Results can overflow or underflow near the
+limits of `Double`. The orientation tests in `convexHull` are exact: they use
+`Double` when its error bound decides the sign, and `Rational` otherwise.
 
 `centroid` weights polygons by area. If the total area is zero, it weights
 segments by length. If all segments have zero length, it averages the

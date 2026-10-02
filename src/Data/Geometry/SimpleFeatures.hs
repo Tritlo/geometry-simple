@@ -12,10 +12,11 @@ qualified:
 Measurements use only X and Y. Z and M stay available through the accessors.
 Computed geometries use t'XY' coordinates.
 
-The planar operations require finite X and Y values. Polygon measurements
-assume valid topology, and these functions do not check it. Area and perimeter
-close open rings. For spatial predicates, validity checks, distance, buffers,
-and overlay operations, use the @geos@ package.
+The planar operations require finite X and Y values. They use Double
+arithmetic, so results can overflow or underflow near the limits of Double.
+Polygon measurements assume valid topology, and these functions do not check
+it. Area and perimeter close open rings. For spatial predicates, validity
+checks, distance, buffers, and overlay operations, use the @geos@ package.
 -}
 module Data.Geometry.SimpleFeatures (
     geometryType,
@@ -224,11 +225,11 @@ envelope geometry = case foldCoordinates extend Nothing geometry of
 
 {- | The total polygon area in square coordinate units. The first ring of each
 polygon is the exterior, and the other rings are holes. Ring orientation does
-not matter. Other families add zero.
-Use exact cross products before conversion to Double to avoid cancellation.
+not matter. Other families add zero. The cross products of each ring use its
+first vertex as the origin, which limits cancellation far from zero.
 -}
 area :: (Coordinate c) => Geometry c -> Double
-area geometry = let (weight, _, _) = surfaceMoments geometry in fromRational (weight / 2)
+area geometry = let (weight, _, _) = surfaceMoments (0, 0) geometry in weight / 2
 
 {- | The total length of all lines, including lines in collections, in coordinate
 units. Polygon boundaries and points add zero.
@@ -255,21 +256,27 @@ Lower-dimensional parts do not affect a higher-dimensional centroid. The
 centroid can be outside the geometry, for example in a hole.
 -}
 centroid :: (Coordinate c) => Geometry c -> Point XY
-centroid geometry = case surfaceMoments geometry of
-    (weight, mx, my) | weight /= 0 -> mean weight mx my
-    _ -> case linearMoments geometry of
-        (weight, mx, my) | weight /= 0 -> mean weight mx my
-        _ -> case foldCoordinates addPoint (0, 0, 0) geometry of
-            (0, _, _) -> EmptyPoint
-            (weight, mx, my) -> mean weight mx my
+centroid geometry = case foldCoordinates firstCoordinate Nothing geometry of
+    Nothing -> EmptyPoint
+    Just first ->
+        let origin@(originX, originY) = xy first
+            mean (weight, mx, my) = Point (XY (originX + mx / weight) (originY + my / weight))
+            addPoint (!weight, !mx, !my) coordinate = (weight + 1, mx + (x coordinate - originX), my + (y coordinate - originY))
+         in case surfaceMoments origin geometry of
+                moments@(weight, _, _) | weight /= 0 -> mean moments
+                _ -> case linearMoments origin geometry of
+                    moments@(weight, _, _) | weight /= 0 -> mean moments
+                    _ -> mean (foldCoordinates addPoint (0, 0, 0) geometry)
   where
-    mean weight mx my = Point (XY (fromRational (mx / weight)) (fromRational (my / weight)))
-    addPoint (!weight, !mx, !my) coordinate = (weight + 1, mx + toRational (x coordinate), my + toRational (y coordinate))
+    -- The first coordinate is the origin of the moments.
+    firstCoordinate found coordinate = case found of
+        Nothing -> Just coordinate
+        Just _ -> found
 
 {- | The XY convex hull, from Andrew's monotone chain algorithm. The result is
 an empty collection, a point, a line, or a counterclockwise polygon, depending
 on the hull dimension. The hull has no duplicate or collinear vertices.
-Exact orientation tests avoid floating-point cancellation.
+The orientation tests are exact.
 -}
 convexHull :: (Coordinate c) => Geometry c -> Geometry XY
 convexHull geometry = case points of
@@ -283,7 +290,7 @@ convexHull geometry = case points of
     hull = init (chain points) ++ init (chain (reverse points))
     chain = reverse . List.foldl' push []
     push (b : a : rest) point
-        | orientation a b point <= 0 = push (a : rest) point
+        | orientation a b point /= GT = push (a : rest) point
     push rest point = point : rest
 
 -- | Extract the planar coordinate pair.
@@ -307,27 +314,28 @@ foldSegments :: (U.Unbox c) => Bool -> (a -> c -> c -> a) -> a -> U.Vector c -> 
 foldSegments close step initial points
     | U.null points = initial
     | otherwise =
-        let result = U.ifoldl' (\total i point -> if i == 0 then total else step total (points U.! (i - 1)) point) initial points
+        let result = U.foldl' (\total (a, b) -> step total a b) initial (U.zip points (U.tail points))
          in if close then step result (U.last points) (U.head points) else result
 
--- | Scale each segment before its square root to avoid intermediate overflow.
-segmentWeight :: (Coordinate c) => c -> c -> Rational
-segmentWeight a b
-    | scale == 0 = 0
-    | otherwise = scale * toRational (sqrt (dx * dx + dy * dy))
+{- | The XY distance. Scale before the square root so that the squares cannot
+overflow or underflow.
+-}
+segmentLength :: (Coordinate c) => c -> c -> Double
+segmentLength a b
+    | large == 0 = 0
+    | otherwise = large * sqrt (1 + ratio * ratio)
   where
-    deltaX = toRational (x b) - toRational (x a)
-    deltaY = toRational (y b) - toRational (y a)
-    scale = max (abs deltaX) (abs deltaY)
-    dx = fromRational (deltaX / scale) :: Double
-    dy = fromRational (deltaY / scale) :: Double
+    deltaX = abs (x b - x a)
+    deltaY = abs (y b - y a)
+    large = max deltaX deltaY
+    ratio = min deltaX deltaY / large
 
 -- | Sum XY segment lengths. Optionally include the final closing segment.
 pathLength :: (Coordinate c) => Bool -> U.Vector c -> Double
-pathLength close = fromRational . foldSegments close (\total a b -> total + segmentWeight a b) 0
+pathLength close = foldSegments close (\total a b -> total + segmentLength a b) 0
 
--- | A weight and its two weighted coordinate sums.
-type Moments = (Rational, Rational, Rational)
+-- | A weight and the weighted X and Y offsets from an origin.
+type Moments = (Double, Double, Double)
 
 -- | Add contributions to one centroid.
 addMoments :: Moments -> Moments -> Moments
@@ -337,52 +345,73 @@ addMoments (weight, mx, my) (otherWeight, otherX, otherY) =
         !totalY = my + otherY
      in (total, totalX, totalY)
 
--- | Calculate twice-area and centroid moments independently of ring winding.
-ringMoments :: (Coordinate c) => U.Vector c -> Moments
-ringMoments points =
-    let (weight, mx, my) = foldSegments True step (0, 0, 0) points
-        direction = signum weight
-     in (abs weight, direction * mx / 3, direction * my / 3)
+{- | Calculate twice the ring area and its moments about an origin, whatever
+the ring winding. The cross products use the first ring vertex as a local
+origin, which limits cancellation far from zero.
+-}
+ringMoments :: (Coordinate c) => (Double, Double) -> U.Vector c -> Moments
+ringMoments (originX, originY) ring
+    | U.null ring = (0, 0, 0)
+    | otherwise =
+        let (weight, mx, my) = foldSegments True step (0, 0, 0) ring
+            size = abs weight
+            direction = signum weight
+         in (size, size * (baseX - originX) + direction * mx / 3, size * (baseY - originY) + direction * my / 3)
   where
+    (baseX, baseY) = xy (U.head ring)
     step (!weight, !mx, !my) a b =
-        let ax = toRational (x a)
-            ay = toRational (y a)
-            bx = toRational (x b)
-            by = toRational (y b)
+        let ax = x a - baseX
+            ay = y a - baseY
+            bx = x b - baseX
+            by = y b - baseY
             cross = ax * by - bx * ay
          in (weight + cross, mx + (ax + bx) * cross, my + (ay + by) * cross)
 
 -- | Add exterior ring moments and subtract hole moments, regardless of winding.
-surfaceMoments :: (Coordinate c) => Geometry c -> Moments
-surfaceMoments geometry = case geometry of
+surfaceMoments :: (Coordinate c) => (Double, Double) -> Geometry c -> Moments
+surfaceMoments origin geometry = case geometry of
     Polygon rings -> V.ifoldl' addRing (0, 0, 0) rings
-    MultiPolygon polygons -> V.foldl' (\total rings -> addMoments total (surfaceMoments (Polygon rings))) (0, 0, 0) polygons
-    GeometryCollection children -> V.foldl' (\total child -> addMoments total (surfaceMoments child)) (0, 0, 0) children
+    MultiPolygon polygons -> V.foldl' (\total rings -> addMoments total (surfaceMoments origin (Polygon rings))) (0, 0, 0) polygons
+    GeometryCollection children -> V.foldl' (\total child -> addMoments total (surfaceMoments origin child)) (0, 0, 0) children
     _ -> (0, 0, 0)
   where
     addRing total index ring =
-        let (weight, mx, my) = ringMoments ring
+        let (weight, mx, my) = ringMoments origin ring
          in addMoments total (if index == 0 then (weight, mx, my) else (-weight, -mx, -my))
 
 -- | Use segment lengths as weights. Include polygon rings for zero-area fallback.
-linearMoments :: (Coordinate c) => Geometry c -> Moments
-linearMoments geometry = case geometry of
+linearMoments :: (Coordinate c) => (Double, Double) -> Geometry c -> Moments
+linearMoments origin@(originX, originY) geometry = case geometry of
     LineString points -> path False points
     Polygon rings -> V.foldl' (\total points -> addMoments total (path True points)) (0, 0, 0) rings
     MultiLineString lineStrings -> V.foldl' (\total points -> addMoments total (path False points)) (0, 0, 0) lineStrings
-    MultiPolygon polygons -> V.foldl' (\total rings -> addMoments total (linearMoments (Polygon rings))) (0, 0, 0) polygons
-    GeometryCollection children -> V.foldl' (\total child -> addMoments total (linearMoments child)) (0, 0, 0) children
+    MultiPolygon polygons -> V.foldl' (\total rings -> addMoments total (linearMoments origin (Polygon rings))) (0, 0, 0) polygons
+    GeometryCollection children -> V.foldl' (\total child -> addMoments total (linearMoments origin child)) (0, 0, 0) children
     _ -> (0, 0, 0)
   where
     path close = foldSegments close step (0, 0, 0)
     step total a b =
-        let weight = segmentWeight a b
-            midX = (toRational (x a) + toRational (x b)) / 2
-            midY = (toRational (y a) + toRational (y b)) / 2
+        let weight = segmentLength a b
+            midX = ((x a - originX) + (x b - originX)) / 2
+            midY = ((y a - originY) + (y b - originY)) / 2
          in addMoments total (weight, weight * midX, weight * midY)
 
--- | Return the exact turn determinant for three finite XY points.
-orientation :: (Double, Double) -> (Double, Double) -> (Double, Double) -> Rational
-orientation (ax, ay) (bx, by) (cx, cy) =
-    (toRational bx - toRational ax) * (toRational cy - toRational ay)
-        - (toRational by - toRational ay) * (toRational cx - toRational ax)
+{- | The turn of three XY points: 'GT' for counterclockwise, 'LT' for clockwise,
+and 'EQ' for collinear. Use the Double determinant when its error bound
+decides the sign (Shewchuk 1997). Otherwise use exact Rational arithmetic.
+-}
+orientation :: (Double, Double) -> (Double, Double) -> (Double, Double) -> Ordering
+orientation (ax, ay) (bx, by) (cx, cy)
+    | magnitude >= 9.332636185032189e-302 && abs determinant > 4.440892098500626e-16 * magnitude = compare determinant 0
+    | otherwise = compare exact 0
+  where
+    left = (bx - ax) * (cy - ay)
+    right = (by - ay) * (cx - ax)
+    determinant = left - right
+    -- The bound 2^-51 * magnitude exceeds the rounding error of the
+    -- determinant. The limit 2^-1000 also covers products that underflow.
+    -- Overflow gives NaN or infinity, which fail both tests.
+    magnitude = abs left + abs right
+    exact =
+        (toRational bx - toRational ax) * (toRational cy - toRational ay)
+            - (toRational by - toRational ay) * (toRational cx - toRational ax)
