@@ -33,9 +33,9 @@ commands inside `nix-shell`.
 
 ## Code style
 
-Write straightforward Haskell and keep dependencies few. Document exported
-types and functions with Haddock comments in short sentences with consistent
-terms. Format Haskell files with `fourmolu` and the Cabal file with
+Write straightforward Haskell and keep the dependency list short. Document
+exported types and functions with Haddock comments in short sentences with
+consistent terms. Format Haskell files with `fourmolu` and the Cabal file with
 `cabal-gild`:
 
 ```sh

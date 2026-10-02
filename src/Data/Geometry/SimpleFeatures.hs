@@ -190,7 +190,7 @@ isClosed geometry = case geometry of
   where
     closed points = not (U.null points) && xy (U.head points) == xy (U.last points)
 
--- | The exterior ring of a nonempty 'Polygon'.
+-- | The exterior ring of a 'Polygon', or 'Nothing' when it has no rings.
 exteriorRing :: Geometry c -> Maybe (U.Vector c)
 exteriorRing (Polygon rings) = rings V.!? 0
 exteriorRing _ = Nothing
