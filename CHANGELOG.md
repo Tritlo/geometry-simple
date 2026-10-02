@@ -4,7 +4,8 @@ Initial release.
 
 - Types for the seven Simple Features geometry families with XY, XYZ, XYM, and
   XYZM coordinates. Empty points are explicit values. Coordinate sequences and
-  multipoints use unboxed vectors.
+  multipoints use unboxed vectors. The types have `Eq`, `Show`, `Read`, and
+  `NFData` instances.
 - Checked ISO WKB decoding and encoding. Decoding accepts both byte orders,
   also mixed within one geometry.
 - WKT encoding and decoding for all families and coordinate types, including

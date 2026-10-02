@@ -9,6 +9,7 @@
 -- | Geometry types and the coordinate class. The public modules re-export them.
 module Data.Geometry.Internal where
 
+import Control.DeepSeq (NFData (..), rwhnf)
 import Control.Monad (unless)
 import Data.Proxy (Proxy (..))
 import qualified Data.Vector as V
@@ -35,7 +36,7 @@ data Dimensions = DimXY | DimXYZ | DimXYM | DimXYZM
 {- | The coordinate types t'XY', t'XYZ', t'XYM', and t'XYZM'. The methods are
 internal, so other instances are not supported.
 -}
-class (Eq c, Show c, Read c, U.Unbox c) => Coordinate c where
+class (Eq c, Show c, Read c, NFData c, U.Unbox c) => Coordinate c where
     coordinateDimensions :: proxy c -> Dimensions
     coordinateComponents :: c -> (Double, Double, Double, Double)
     coordinateFromComponents :: (Double, Double, Double, Double) -> c
@@ -95,6 +96,34 @@ data AnyGeometry
     | GeometryXYM !(Geometry XYM)
     | GeometryXYZM !(Geometry XYZM)
     deriving (Eq, Show, Read)
+
+-- Coordinates have strict fields, so weak head normal form is normal form.
+instance NFData XY where rnf = rwhnf
+instance NFData XYZ where rnf = rwhnf
+instance NFData XYM where rnf = rwhnf
+instance NFData XYZM where rnf = rwhnf
+
+instance (NFData c) => NFData (Point c) where
+    rnf EmptyPoint = ()
+    rnf (Point coordinate) = rnf coordinate
+
+-- Boxed vectors of rings and members can contain unevaluated elements.
+instance (Coordinate c) => NFData (Geometry c) where
+    rnf geometry = case geometry of
+        PointGeometry point -> rnf point
+        LineString points -> rnf points
+        Polygon rings -> rnf rings
+        MultiPoint points -> rnf points
+        MultiLineString lineStrings -> rnf lineStrings
+        MultiPolygon polygons -> rnf polygons
+        GeometryCollection children -> rnf children
+
+instance NFData AnyGeometry where
+    rnf geometry = case geometry of
+        GeometryXY value -> rnf value
+        GeometryXYZ value -> rnf value
+        GeometryXYM value -> rnf value
+        GeometryXYZM value -> rnf value
 
 -- | Check each ordinate present in the coordinate type.
 coordinateAll :: forall c. (Coordinate c) => (Double -> Bool) -> c -> Bool
