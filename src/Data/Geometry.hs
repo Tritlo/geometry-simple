@@ -2,7 +2,7 @@
 
 A geometry does not contain coordinate reference system metadata. Keep that
 metadata beside the value when a transport or database provides it.
-Use "Data.Geometry.WKB" to read ISO WKB or to write ISO WKB and WKT.
+Use "Data.Geometry.WKB" for ISO WKB and "Data.Geometry.WKT" for WKT.
 -}
 module Data.Geometry (
     XY (..),

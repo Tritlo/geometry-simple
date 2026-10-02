@@ -11,6 +11,7 @@ import Data.Char (digitToInt)
 import Data.Either (isLeft)
 import Data.Geometry
 import Data.Geometry.WKB
+import qualified Data.Geometry.WKT as WKT
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -21,6 +22,7 @@ import Numeric (showEFloat)
 import Test.Tasty (TestTree, defaultMain, localOption, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 import Test.Tasty.QuickCheck (Gen, Property, QuickCheckTests (..), arbitrary, chooseInt, conjoin, counterexample, elements, forAll, frequency, testProperty, vectorOf, (===))
+import qualified WKTTests
 
 -- | Run the pure codec tests without a native geometry library.
 main :: IO ()
@@ -31,13 +33,15 @@ tests :: TestTree
 tests =
     testGroup
         "geometry-simple"
-        [ testGroup "fixed WKB bytes" fixedTests
+        [ WKTTests.tests
+        , testGroup "fixed WKB bytes" fixedTests
         , testGroup "families, dimensions, and byte orders" $
             [ testCase label $ do
                 decodeAnyWKB bytes @?= Right expected
                 assertTypedDecode bytes expected
                 encodeAnyWKB expected @?= Right canonical
                 encodeAnyWKT expected @?= Right wkt
+                WKT.decodeAnyWKT wkt @?= Right expected
             | (label, bytes, canonical, expected, wkt) <- samples
             ]
         , testCase "nested collections accept mixed byte orders" $ do
@@ -346,10 +350,12 @@ roundTripProperty coordinate =
             Left message -> counterexample message False
             Right bytes ->
                 let decoded = decodeWKB bytes
+                    decodedText = (encodeWKT shape >>= WKT.decodeWKT) `asTypeOf` Right shape
                  in conjoin
                         [ decoded === Right shape
                         , (decoded >>= encodeWKB) === Right bytes
-                        , counterexample "WKT rejected finite geometry" (not (isLeft (encodeWKT shape)))
+                        , decodedText === Right shape
+                        , (decodedText >>= encodeWKB) === Right bytes
                         ]
 
 -- | Finite IEEE 754 values with subnormal, boundary, and precision cases.

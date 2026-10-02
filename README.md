@@ -1,12 +1,15 @@
 # geometry-simple
 
-Pure geometry values with unboxed coordinate vectors and checked ISO WKB
+Pure geometry values with unboxed coordinate vectors and checked WKB and WKT
 codecs. The package needs no database or native library.
 
 ```haskell
+{-# LANGUAGE OverloadedStrings #-}
+
 import Data.ByteString (ByteString)
 import Data.Geometry
 import Data.Geometry.WKB
+import Data.Geometry.WKT (decodeWKT, decodeAnyWKT)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
@@ -18,6 +21,7 @@ points = MultiPoint (U.fromList [Point (XY 1 2), EmptyPoint])
 encoded = encodeWKB line
 -- Decode with known dimensions, or use decodeAnyWKB for runtime dimensions.
 decoded = encoded >>= (decodeWKB :: ByteString -> Either String (Geometry XY))
+parsed = decodeWKT "POINT Z (1 2 3)" :: Either String (Geometry XYZ)
 ```
 
 ## Representation
@@ -55,14 +59,29 @@ and negative zero as equal.
 - `encodeWKT` writes WKT with explicit Z, M, or ZM suffixes where needed.
   Coordinates use scientific notation, such as `1.0e0`. This reduces temporary
   allocation during conversion to text.
+- `decodeWKT` reads WKT with the requested coordinate layout.
+- `decodeAnyWKT` retains the layout declared in the WKT header.
+
+Import the WKT functions from `Data.Geometry.WKT`. The WKB module also exports
+`encodeWKT`. WKT decoding accepts lowercase keywords, attached dimension tags
+such as `POINTZ`, and both `MULTIPOINT (1 2, 3 4)` and
+`MULTIPOINT ((1 2), (3 4))`. Signed decimal numbers and exponents are supported.
+Ordinates require whitespace between them. Trailing input is rejected.
+
+Untagged WKT means XY. Use Z, M, or ZM for other layouts, even for empty shapes.
+Each geometry in a collection must declare the same layout. The parser does
+not infer dimensions from extra ordinates or from the requested Haskell type.
+EWKT `SRID=...;` prefixes are not supported.
 
 All codecs return `Either String`. WKB decoding accepts either byte order,
 including different byte orders in nested geometries. It rejects trailing data,
 invalid tags, inconsistent dimensions, and counts that exceed the input before
 allocating coordinate vectors. EWKB flags and embedded SRIDs are not supported.
 
-Finite `Double` coordinates retain their exact bits through WKB, including
-negative zero and subnormal values. WKB uses all-NaN ordinates for empty points.
+Finite `Double` coordinates retain their exact bits through WKB and generated
+WKT, including negative zero and subnormal values. WKT numbers round to the
+nearest representable `Double`; underflow can produce signed zero and overflow
+is rejected. WKB uses all-NaN ordinates for empty points.
 Other NaN values and infinities are rejected. Use `EmptyPoint` to construct an
 empty point in Haskell.
 

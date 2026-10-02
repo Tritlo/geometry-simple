@@ -13,12 +13,12 @@ tested-with:
 
 homepage: https://github.com/Tritlo/duckdb-haskell
 bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
-synopsis: Pure geometry types with unboxed coordinates and ISO WKB codecs
+synopsis: Pure geometry types with unboxed coordinates and WKB/WKT codecs
 description:
   Point, line, polygon, and collection types with XY, XYZ, XYM, and XYZM
-  coordinates. Coordinate sequences use unboxed vectors. The checked ISO WKB
-  codec supports both byte orders and explicit empty points. Includes WKT
-  output. No native library or database is required.
+  coordinates. Coordinate sequences use unboxed vectors. Checked WKB and WKT
+  codecs preserve coordinate layouts and explicit empty points. ISO WKB
+  decoding supports both byte orders. No native library or database is required.
 
 extra-doc-files:
   CHANGELOG.md
@@ -33,6 +33,7 @@ library
   exposed-modules:
     Data.Geometry
     Data.Geometry.WKB
+    Data.Geometry.WKT
 
   other-modules: Data.Geometry.Internal
   hs-source-dirs: src
@@ -42,11 +43,13 @@ library
     binary >=0.8 && <0.9,
     bytestring >=0.11.2 && <0.13,
     text >=2.0 && <2.2,
+    transformers >=0.6 && <0.7,
     vector >=0.13 && <0.14,
 
 test-suite geometry-simple-test
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  other-modules: WKTTests
   hs-source-dirs: test
   default-language: Haskell2010
   build-depends:

@@ -6,6 +6,7 @@ import Control.Monad (forM_, unless)
 import qualified Data.ByteString as BS
 import Data.Geometry (Geometry (..), XY (..))
 import Data.Geometry.WKB (decodeWKB, encodeWKB, encodeWKT)
+import Data.Geometry.WKT (decodeWKT)
 import Data.IORef (newIORef, readIORef)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -39,7 +40,10 @@ main = do
     _ <- evaluate textLength
     bytes <- checked (encodeWKB (LineString unboxed))
     _ <- evaluate (BS.length bytes)
+    wkt <- checked (encodeWKT (LineString unboxed))
+    _ <- evaluate (Text.length wkt)
     bytesRef <- newIORef bytes
+    wktRef <- newIORef wkt
     geometryRef <- newIORef (LineString unboxed)
     unboxedRef <- newIORef unboxed
     boxedRef <- newIORef boxed
@@ -54,6 +58,12 @@ main = do
         input <- readIORef geometryRef
         output <- checked (encodeWKB input)
         evaluate (fromIntegral (BS.length output))
+    benchmark "decode-wkt" count expected $ do
+        input <- readIORef wktRef
+        geometry <- checked (decodeWKT input)
+        case geometry of
+            LineString coordinates -> evaluate (U.foldl' checksum 0 coordinates)
+            _ -> fail "Expected a decoded line"
     benchmark "render-wkt" count (fromIntegral textLength) $ do
         input <- readIORef geometryRef
         output <- checked (encodeWKT input)

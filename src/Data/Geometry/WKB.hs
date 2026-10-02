@@ -3,6 +3,8 @@
 
 {- | Checked ISO WKB decoding and ISO WKB and WKT encoding.
 
+Use "Data.Geometry.WKT" to decode WKT text.
+
 The codecs support the seven simple geometry families and all four coordinate
 dimensions. Every child must have the same dimensions as its parent. WKB
 children can use different byte orders. EWKB flags and embedded SRIDs are not
