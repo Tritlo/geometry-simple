@@ -9,7 +9,7 @@ Every geometry in a collection must declare the same layout, including empty
 members. Keywords are case-insensitive. Both MULTIPOINT spellings are accepted.
 
 Decoding requires complete input, finite coordinates, and whitespace between
-ordinates. It accepts at most 128 geometry levels. It does not check topology.
+ordinates. It does not check topology.
 EWKT SRID prefixes are not supported. Keep CRS metadata beside the geometry.
 -}
 module Data.Geometry.WKT (
@@ -41,7 +41,7 @@ Empty geometries also require matching dimensions. Untagged input is XY.
 -}
 decodeWKT :: (Coordinate c) => Text -> Either String (Geometry c)
 decodeWKT input = do
-    (geometry, remaining) <- runStateT (geometryParser 1 <* spaces) input
+    (geometry, remaining) <- runStateT (geometryParser <* spaces) input
     if Text.null remaining
         then Right geometry
         else Left "Geometry WKT has trailing input"
@@ -113,25 +113,21 @@ header = do
             _ -> failure "has an unsupported geometry type"
 
 -- | Parse one geometry and check dimensions before allocating its children.
-geometryParser :: forall c. (Coordinate c) => Int -> Parser (Geometry c)
-geometryParser depth = do
-    when (depth > 128) (failure "exceeds 128 geometry levels")
+geometryParser :: forall c. (Coordinate c) => Parser (Geometry c)
+geometryParser = do
     (family, dimensions) <- header
     unless (dimensions == coordinateDimensions (Proxy :: Proxy c)) $
         failure "has the wrong coordinate dimensions"
-    let child parser = do
-            when (depth >= 128) (failure "exceeds 128 geometry levels")
-            parser
-        line = vector coordinate
+    let line = vector coordinate
         polygon = vector line
     case family of
         1 -> PointGeometry <$> point True
         2 -> LineString <$> line
         3 -> Polygon <$> polygon
-        4 -> MultiPoint <$> vector (child (point False))
-        5 -> MultiLineString <$> vector (child line)
-        6 -> MultiPolygon <$> vector (child polygon)
-        _ -> GeometryCollection <$> vector (geometryParser (depth + 1))
+        4 -> MultiPoint <$> vector (point False)
+        5 -> MultiLineString <$> vector line
+        6 -> MultiPolygon <$> vector polygon
+        _ -> GeometryCollection <$> vector geometryParser
 
 -- | Parse an empty point or coordinates, with optional MULTIPOINT parentheses.
 point :: (Coordinate c) => Bool -> Parser (Point c)
@@ -203,6 +199,9 @@ nextNumber = do
 
 {- | Parse the decimal coefficient exactly, then round once to Double.
 Bound extreme exponents so integer powers stay proportional to input length.
+Use 'fromRational' for rounding. 'TextRead.double' and 'TextRead.rational'
+can underflow intermediate powers, including the power in @5e-324@.
+WKT also permits @.5@ and @1.@, which those readers do not consume fully.
 -}
 number :: Parser Double
 number = do
@@ -236,14 +235,14 @@ number = do
         else do
             when (power > exponentLimit) (failure "has a non-finite coordinate")
             case TextRead.decimal (whole <> fraction) :: Either String (Integer, Text) of
-                Right (coefficient, remaining) | Text.null remaining -> do
+                Right (coefficient, _) -> do
                     let adjustedPower = power - toInteger (Text.length fraction)
                         magnitude =
                             if adjustedPower >= 0
                                 then fromInteger (coefficient * 10 ^ adjustedPower)
                                 else fromRational (coefficient % (10 ^ negate adjustedPower))
                         value = if negative then negate magnitude else magnitude
-                    if isNaN value || isInfinite value
-                        then failure "has a non-finite or invalid coordinate"
+                    if isInfinite value
+                        then failure "has a non-finite coordinate"
                         else put rest >> pure value
                 _ -> failure "has a non-finite or invalid coordinate"

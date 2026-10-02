@@ -19,6 +19,7 @@ import qualified Data.Vector.Unboxed as U
 import Data.Word (Word32, Word64)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 import Numeric (showEFloat)
+import qualified SimpleFeaturesTests
 import Test.Tasty (TestTree, defaultMain, localOption, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 import Test.Tasty.QuickCheck (Gen, Property, QuickCheckTests (..), arbitrary, chooseInt, conjoin, counterexample, elements, forAll, frequency, testProperty, vectorOf, (===))
@@ -33,7 +34,8 @@ tests :: TestTree
 tests =
     testGroup
         "geometry-simple"
-        [ WKTTests.tests
+        [ SimpleFeaturesTests.tests
+        , WKTTests.tests
         , testGroup "fixed WKB bytes" fixedTests
         , testGroup "families, dimensions, and byte orders" $
             [ testCase label $ do
@@ -125,38 +127,22 @@ tests =
                 assertRejected label (bytes <> BS.singleton 0)
         , testGroup "malformed WKB" [testCase label (assertRejected label bytes) | (label, bytes) <- malformed]
         , testGroup "invalid constructed coordinates" invalidConstructedTests
-        , testCase "128 geometry levels are accepted" $ do
-            let shape = nestedGeometry 127
-            decodeWKB (nestedWKB 127) @?= Right shape
-            encodeWKB shape @?= Right (nestedWKB 127)
-            encodeWKT shape @?= Right (nestedWKT 127)
-        , testCase "129 geometry levels are rejected" $ do
-            assertRejected "depth limit" (nestedWKB 128)
-            assertLeft (encodeWKB (nestedGeometry 128))
-            assertLeft (encodeWKT (nestedGeometry 128))
-        , testGroup
-            "multipoint depth"
-            [ testCase label $ do
+        , testCase "nested collections round-trip beyond 128 levels" $
+            forM_ [127, 128, 1024] $ \levels -> do
+                let shape = nestedGeometry levels
+                decodeWKB (nestedWKB levels) @?= Right shape
+                encodeWKB shape @?= Right (nestedWKB levels)
+                encodeWKT shape @?= Right (nestedWKT levels)
+        , testCase "nested multipoints round-trip beyond 128 levels" $
+            forM_ [127, 128, 1024] $ \levels -> forM_ [False, True] $ \nonempty -> do
                 let leaf = MultiPoint (if nonempty then U.singleton (Point (XY 1 2)) else U.empty)
                     shape = foldr (\_ child -> GeometryCollection (V.singleton child)) leaf [1 .. levels :: Int]
                     leafBytes = children True 4 [point True 0 [1, 2] | nonempty]
                     bytes = foldr (\_ child -> children True 7 [child]) leafBytes [1 .. levels :: Int]
-                if accepted
-                    then do
-                        decodeWKB bytes @?= Right shape
-                        encodeWKB shape @?= Right bytes
-                        assertBool "WKT rejected an allowed depth" (not (isLeft (encodeWKT shape)))
-                    else do
-                        assertRejected label bytes
-                        assertLeft (encodeWKB shape)
-                        assertLeft (encodeWKT shape)
-            | (label, levels, nonempty, accepted) <-
-                [ ("point child at level 128 is accepted", 126, True, True)
-                , ("point child at level 129 is rejected", 127, True, False)
-                , ("empty multipoint at level 128 is accepted", 127, False, True)
-                ]
-            ]
-        , testCase "wide collections do not consume the depth budget" $ do
+                decodeWKB bytes @?= Right shape
+                encodeWKB shape @?= Right bytes
+                (encodeWKT shape >>= WKT.decodeWKT) @?= Right shape
+        , testCase "wide collections round-trip" $ do
             let shape = GeometryCollection (V.replicate 4096 (GeometryCollection V.empty)) :: Geometry XY
                 bytes = children True 7 (replicate 4096 (wkb True 7 (count True 0)))
             decodeWKB bytes @?= Right shape

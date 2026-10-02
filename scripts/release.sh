@@ -21,14 +21,11 @@ esac
 
 cd -- "$(dirname -- "$0")/.."
 
-read -r -p "Username: " username
-read -r -s -p "Password: " password
-echo ""
-
+cabal check
 rm -f dist-newstyle/geometry-simple-[0-9]*-docs.tar.gz
 rm -f dist-newstyle/sdist/geometry-simple-[0-9]*.tar.gz
 cabal haddock --haddock-for-hackage geometry-simple
 cabal sdist geometry-simple
 
-cabal upload "${publish_flag[@]}" -u "$username" -p "$password" dist-newstyle/sdist/geometry-simple-[0-9]*.tar.gz
-cabal upload "${publish_flag[@]}" -d -u "$username" -p "$password" dist-newstyle/geometry-simple-[0-9]*-docs.tar.gz
+cabal upload "${publish_flag[@]}" dist-newstyle/sdist/geometry-simple-[0-9]*.tar.gz
+cabal upload "${publish_flag[@]}" -d dist-newstyle/geometry-simple-[0-9]*-docs.tar.gz

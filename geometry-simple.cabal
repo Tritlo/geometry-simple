@@ -1,7 +1,7 @@
 cabal-version: 3.4
 name: geometry-simple
 version: 0.1.0.0
-license: MPL-2.0
+license: MIT
 license-file: LICENSE
 author: Matthias Pall Gissurarson
 maintainer: mpg@mpg.is
@@ -19,6 +19,8 @@ description:
   coordinates. Coordinate sequences use unboxed vectors. Checked WKB and WKT
   codecs preserve coordinate layouts and explicit empty points. ISO WKB
   decoding supports both byte orders. No native library or database is required.
+  Pure Simple Features operations include geometry accessors, envelopes, areas,
+  lengths, perimeters, centroids, and convex hulls in Cartesian XY coordinates.
 
 extra-doc-files:
   CHANGELOG.md
@@ -32,6 +34,7 @@ source-repository head
 library
   exposed-modules:
     Data.Geometry
+    Data.Geometry.SimpleFeatures
     Data.Geometry.WKB
     Data.Geometry.WKT
 
@@ -49,7 +52,10 @@ library
 test-suite geometry-simple-test
   type: exitcode-stdio-1.0
   main-is: Main.hs
-  other-modules: WKTTests
+  other-modules:
+    SimpleFeaturesTests
+    WKTTests
+
   hs-source-dirs: test
   default-language: Haskell2010
   build-depends:
@@ -68,10 +74,7 @@ benchmark geometry-simple-bench
   main-is: Main.hs
   hs-source-dirs: bench
   default-language: Haskell2010
-  ghc-options:
-    -O2
-    -rtsopts
-
+  ghc-options: -rtsopts
   build-depends:
     base >=4.18 && <5,
     bytestring >=0.11.2 && <0.13,

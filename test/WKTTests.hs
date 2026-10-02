@@ -91,25 +91,23 @@ tests =
             forM_ fixtures $ \(input, _) ->
                 forM_ ["x", " POINT EMPTY", ",", ";", "\0"] $ \suffix ->
                     assertRejected (input <> suffix)
-        , testCase "128 geometry levels are accepted" $ do
-            let shape = nestGeometry 127 (PointGeometry (Point (XY 1 2)))
-            decodeWKT (nestText 127 "POINT (1 2)") @?= Right shape
-        , testCase "129 geometry levels are rejected" $
-            assertRejected (nestText 128 "POINT (1 2)")
-        , testGroup "multi-geometry children count toward depth" $
-            [ testCase (Text.unpack family) $ do
-                decodeWKT (nestText 126 input) @?= Right (nestGeometry 126 shape)
-                assertRejected (nestText 127 input)
-                decodeWKT (nestText 127 (family <> " EMPTY")) @?= Right (nestGeometry 127 emptyShape)
+        , testCase "nested collections parse beyond 128 levels" $
+            forM_ [127, 128, 1024] $ \levels -> do
+                let shape = nestGeometry levels (PointGeometry (Point (XY 1 2)))
+                decodeWKT (nestText levels "POINT (1 2)") @?= Right shape
+        , testGroup "nested multi-geometries parse beyond 128 levels" $
+            [ testCase (Text.unpack family) $ forM_ [127, 128, 1024] $ \levels -> do
+                decodeWKT (nestText levels input) @?= Right (nestGeometry levels shape)
+                decodeWKT (nestText levels (family <> " EMPTY")) @?= Right (nestGeometry levels emptyShape)
             | (family, input, shape, emptyShape) <-
                 [ ("MULTIPOINT", "MULTIPOINT ((1 2))", MultiPoint (U.singleton (Point (XY 1 2))), MultiPoint U.empty)
                 , ("MULTILINESTRING", "MULTILINESTRING ((1 2))", MultiLineString (V.singleton (U.singleton (XY 1 2))), MultiLineString V.empty)
                 , ("MULTIPOLYGON", "MULTIPOLYGON (((1 2)))", MultiPolygon (V.singleton (V.singleton (U.singleton (XY 1 2)))), MultiPolygon V.empty)
                 ]
             ]
-        , testCase "empty point children still count toward depth" $
-            assertRejected (nestText 127 "MULTIPOINT (EMPTY)")
-        , testCase "wide collections use siblings, not nested depth" $ do
+        , testCase "nested empty point children parse beyond 128 levels" $
+            decodeWKT (nestText 1024 "MULTIPOINT (EMPTY)") @?= Right (nestGeometry 1024 (MultiPoint (U.singleton EmptyPoint)))
+        , testCase "wide collections parse" $ do
             let input = "GEOMETRYCOLLECTION (" <> Text.intercalate "," (replicate 1024 "POINT EMPTY") <> ")"
             decodeWKT input @?= Right (GeometryCollection (V.replicate 1024 (PointGeometry EmptyPoint)) :: Geometry XY)
         ]

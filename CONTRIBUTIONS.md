@@ -47,7 +47,7 @@ changes. Keep input construction outside the measured operation. Report the
 workload size and distinguish cumulative allocation from retained memory.
 
 ```sh
-cabal run geometry-simple-bench -- 1000000 +RTS -T -RTS
+cabal run -O1 geometry-simple-bench -- 1000000 +RTS -T -RTS
 ```
 
 ## Pull requests

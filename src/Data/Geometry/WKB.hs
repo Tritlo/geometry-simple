@@ -10,8 +10,8 @@ dimensions. Every child must have the same dimensions as its parent. WKB
 children can use different byte orders. EWKB flags and embedded SRIDs are not
 supported. Keep coordinate reference system metadata outside the geometry.
 
-The codecs accept at most 128 geometry levels, including the root. They check
-finite coordinates, lengths, and dimensions. They do not validate topology.
+The codecs check finite coordinates, lengths, and dimensions.
+They do not validate topology.
 -}
 module Data.Geometry.WKB (
     decodeWKB,
@@ -48,7 +48,7 @@ Reject trailing bytes, invalid counts, mixed dimensions, and non-finite
 coordinates. All-NaN point ordinates decode to 'EmptyPoint'.
 -}
 decodeWKB :: (Coordinate c) => ByteString -> Either String (Geometry c)
-decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) 1 Nothing) bytes
+decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) Nothing) bytes
 
 -- | Decode one ISO WKB geometry and retain its coordinate dimensions.
 decodeAnyWKB :: ByteString -> Either String AnyGeometry
@@ -58,17 +58,17 @@ decodeAnyWKB bytes = runDecoder parser bytes
         (_, dimensions, _) <- lookAhead getHeader
         let total = fromIntegral (BS.length bytes)
         case dimensions of
-            DimXY -> GeometryXY <$> getGeometry total 1 Nothing
-            DimXYZ -> GeometryXYZ <$> getGeometry total 1 Nothing
-            DimXYM -> GeometryXYM <$> getGeometry total 1 Nothing
-            DimXYZM -> GeometryXYZM <$> getGeometry total 1 Nothing
+            DimXY -> GeometryXY <$> getGeometry total Nothing
+            DimXYZ -> GeometryXYZ <$> getGeometry total Nothing
+            DimXYM -> GeometryXYM <$> getGeometry total Nothing
+            DimXYZM -> GeometryXYZM <$> getGeometry total Nothing
 
 {- | Encode little-endian ISO WKB. Empty points use quiet NaN ordinates.
 Finite coordinates retain their exact bits, including negative zero.
 -}
 encodeWKB :: (Coordinate c) => Geometry c -> Either String ByteString
 encodeWKB geometry = do
-    validateGeometry 1 geometry
+    validateGeometry checkedLength geometry
     pure (BL.toStrict (Builder.toLazyByteString (putGeometry geometry)))
 
 {- | Encode WKT with a dimension suffix for XYZ, XYM, and XYZM geometries.
@@ -77,7 +77,7 @@ scientific representation, including negative zero and subnormal values.
 -}
 encodeWKT :: (Coordinate c) => Geometry c -> Either String Text
 encodeWKT geometry = do
-    validateGeometry 1 geometry
+    validateGeometry (const (Right ())) geometry
     pure (Text.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (geometryWKT geometry))))
 
 -- | Run a decoder and require complete input consumption.
@@ -116,9 +116,8 @@ getCount total little minimumBytes = do
     pure (fromIntegral count)
 
 -- | Read a geometry with optional family checking for multi-geometries.
-getGeometry :: forall c. (Coordinate c) => Int64 -> Int -> Maybe Word32 -> Get (Geometry c)
-getGeometry total depth expectedFamily = do
-    when (depth > 128) (fail "Geometry WKB exceeds 128 geometry levels")
+getGeometry :: forall c. (Coordinate c) => Int64 -> Maybe Word32 -> Get (Geometry c)
+getGeometry total expectedFamily = do
     (little, dimensions, family) <- getHeader
     unless (dimensions == coordinateDimensions (Proxy :: Proxy c)) $
         fail "Geometry WKB has the wrong coordinate dimensions"
@@ -132,14 +131,14 @@ getGeometry total depth expectedFamily = do
         3 -> do
             count <- getCount total little 4
             Polygon <$> V.replicateM count line
-        4 -> MultiPoint <$> getMultiPoints total depth little
+        4 -> MultiPoint <$> getMultiPoints total little
         5 -> do
             count <- getCount total little 9
             MultiLineString
                 <$> V.replicateM
                     count
                     ( do
-                        child <- getGeometry total (depth + 1) (Just 2)
+                        child <- getGeometry total (Just 2)
                         case child of
                             LineString points -> pure points
                             _ -> fail "Geometry WKB multi child has the wrong family"
@@ -150,14 +149,14 @@ getGeometry total depth expectedFamily = do
                 <$> V.replicateM
                     count
                     ( do
-                        child <- getGeometry total (depth + 1) (Just 3)
+                        child <- getGeometry total (Just 3)
                         case child of
                             Polygon rings -> pure rings
                             _ -> fail "Geometry WKB multi child has the wrong family"
                     )
         _ -> do
             count <- getCount total little 9
-            GeometryCollection <$> V.replicateM count (getGeometry total (depth + 1) Nothing)
+            GeometryCollection <$> V.replicateM count (getGeometry total Nothing)
 
 -- | The number of ordinates in one coordinate.
 dimensionCount :: (Num a) => Dimensions -> a
@@ -196,13 +195,12 @@ getLineCoordinates total little = do
         pure coordinate
 
 -- | Read fixed-size point children directly into an unboxed vector.
-getMultiPoints :: forall c. (Coordinate c) => Int64 -> Int -> Bool -> Get (U.Vector (Point c))
-getMultiPoints total depth little = do
+getMultiPoints :: forall c. (Coordinate c) => Int64 -> Bool -> Get (U.Vector (Point c))
+getMultiPoints total little = do
     let dimensions = coordinateDimensions (Proxy :: Proxy c)
         stride = 5 + 8 * dimensionCount dimensions
         expectedTag = 1 + 1000 * fromIntegral (fromEnum dimensions)
     count <- getCount total little (fromIntegral stride)
-    when (count > 0 && depth >= 128) (fail "Geometry WKB exceeds 128 geometry levels")
     bytes <- getByteString (count * stride)
     either fail pure $ generateChecked count $ \i -> do
         let offset = i * stride
@@ -288,31 +286,28 @@ coordinateAll predicate coordinate =
 finite :: Double -> Bool
 finite value = not (isNaN value || isInfinite value)
 
--- | Check geometry depth, vector lengths, and finite coordinates before output.
-validateGeometry :: (Coordinate c) => Int -> Geometry c -> Either String ()
-validateGeometry depth geometry = do
-    when (depth > 128) (Left "Geometry exceeds 128 geometry levels")
-    case geometry of
-        PointGeometry EmptyPoint -> pure ()
-        PointGeometry (Point coordinate) -> validateCoordinate coordinate
-        LineString points -> validateLine points
-        Polygon rings -> checkedLength (V.length rings) >> V.mapM_ validateLine rings
-        MultiPoint points -> do
-            checkedLength (U.length points)
-            U.mapM_ (validateGeometry (depth + 1) . PointGeometry) points
-        MultiLineString lineStrings -> do
-            checkedLength (V.length lineStrings)
-            V.mapM_ (validateGeometry (depth + 1) . LineString) lineStrings
-        MultiPolygon polygons -> do
-            checkedLength (V.length polygons)
-            V.mapM_ (validateGeometry (depth + 1) . Polygon) polygons
-        GeometryCollection children -> do
-            checkedLength (V.length children)
-            V.mapM_ (validateGeometry (depth + 1)) children
-
--- | Check a line or ring without topology restrictions.
-validateLine :: (Coordinate c) => U.Vector c -> Either String ()
-validateLine points = checkedLength (U.length points) >> U.mapM_ validateCoordinate points
+-- | Check finite coordinates and the output format's vector length bounds.
+validateGeometry :: (Coordinate c) => (Int -> Either String ()) -> Geometry c -> Either String ()
+validateGeometry checkLength geometry = case geometry of
+    PointGeometry EmptyPoint -> pure ()
+    PointGeometry (Point coordinate) -> validateCoordinate coordinate
+    LineString points -> validateLine points
+    Polygon rings -> checkLength (V.length rings) >> V.mapM_ validateLine rings
+    MultiPoint points -> do
+        checkLength (U.length points)
+        U.mapM_ (validateGeometry checkLength . PointGeometry) points
+    MultiLineString lineStrings -> do
+        checkLength (V.length lineStrings)
+        V.mapM_ (validateGeometry checkLength . LineString) lineStrings
+    MultiPolygon polygons -> do
+        checkLength (V.length polygons)
+        V.mapM_ (validateGeometry checkLength . Polygon) polygons
+    GeometryCollection children -> do
+        checkLength (V.length children)
+        V.mapM_ (validateGeometry checkLength) children
+  where
+    -- Check a line or ring without topology restrictions.
+    validateLine points = checkLength (U.length points) >> U.mapM_ validateCoordinate points
 
 -- | Check that one coordinate contains only finite ordinates.
 validateCoordinate :: (Coordinate c) => c -> Either String ()
