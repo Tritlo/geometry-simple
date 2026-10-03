@@ -212,16 +212,17 @@ Empty input gives an empty collection. Degenerate bounds give a point or a
 two-point line.
 -}
 envelope :: (Coordinate c) => Geometry c -> Geometry XY
-envelope geometry = case foldCoordinates extend Nothing geometry of
-    Nothing -> GeometryCollection V.empty
-    Just (minX, minY, maxX, maxY)
-        | minX == maxX && minY == maxY -> PointGeometry (Point (XY minX minY))
-        | minX == maxX || minY == maxY -> LineString (U.fromList [XY minX minY, XY maxX maxY])
-        | otherwise -> Polygon (V.singleton (U.fromList [XY minX minY, XY maxX minY, XY maxX maxY, XY minX maxY, XY minX minY]))
+envelope geometry
+    | minX > maxX = GeometryCollection V.empty
+    | minX == maxX && minY == maxY = PointGeometry (Point (XY minX minY))
+    | minX == maxX || minY == maxY = LineString (U.fromList [XY minX minY, XY maxX maxY])
+    | otherwise = Polygon (V.singleton (U.fromList [XY minX minY, XY maxX minY, XY maxX maxY, XY minX maxY, XY minX minY]))
   where
-    extend Nothing coordinate = Just (x coordinate, y coordinate, x coordinate, y coordinate)
-    extend (Just (!minX, !minY, !maxX, !maxY)) coordinate =
-        Just (min minX (x coordinate), min minY (y coordinate), max maxX (x coordinate), max maxY (y coordinate))
+    -- An inverted infinite box remains inverted when there are no coordinates.
+    (minX, minY, maxX, maxY) = foldCoordinates extend (infinity, infinity, -infinity, -infinity) geometry
+    infinity = 1 / 0
+    extend (!left, !bottom, !right, !top) coordinate =
+        (min left (x coordinate), min bottom (y coordinate), max right (x coordinate), max top (y coordinate))
 
 {- | The total polygon area in square coordinate units. The first ring of each
 polygon is the exterior, and the other rings are holes. Ring orientation does
