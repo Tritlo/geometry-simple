@@ -135,8 +135,8 @@ GEOS library.
 functions. The WKT decoder accepts lowercase keywords, attached dimension
 tags such as `POINTZ`, and both `MULTIPOINT (1 2, 3 4)` and
 `MULTIPOINT ((1 2), (3 4))`. Numbers can have a sign, a fraction, and an
-exponent. Ordinates must be separated by whitespace, and trailing input is an
-error.
+exponent. Ordinates must be separated by whitespace, which is space, tab, CR,
+or LF. Trailing input is an error.
 
 WKT without a dimension tag is XY. Other coordinate types need a Z, M, or ZM
 tag, also on empty geometries and on every member of a collection. The decoder

@@ -26,7 +26,7 @@ import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Builder.RealFloat as RealFloat
 import qualified Data.ByteString.Lazy as BL
-import Data.Char (isAsciiLower, isAsciiUpper, isDigit, isSpace)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Geometry.Internal
 import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
@@ -83,7 +83,11 @@ failure message = lift (Left ("Geometry WKT " ++ message))
 
 -- | Consume whitespace before a structural token.
 spaces :: Parser ()
-spaces = modify' (Text.dropWhile isSpace)
+spaces = modify' (Text.dropWhile whitespace)
+
+-- | Accept the ASCII whitespace that WKT readers use: space, tab, LF, and CR.
+whitespace :: Char -> Bool
+whitespace c = c == ' ' || c == '\t' || c == '\n' || c == '\r'
 
 -- | Require a punctuation character, with optional leading whitespace.
 symbol :: Char -> Parser ()
@@ -213,7 +217,7 @@ coordinate = do
 nextNumber :: Parser Double
 nextNumber = do
     input <- get
-    unless (maybe False (isSpace . fst) (Text.uncons input)) $
+    unless (maybe False (whitespace . fst) (Text.uncons input)) $
         failure "requires whitespace between coordinates"
     spaces
     number

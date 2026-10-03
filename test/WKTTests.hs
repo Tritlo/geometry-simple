@@ -206,6 +206,8 @@ invalidInputs =
     , "POINT"
     , "POINT EMPTYx"
     , "POINTEMPTY"
+    , "POINT (1\x00A0\&2)"
+    , "\x3000POINT (1 2)"
     , "POINT ZMEMPTY"
     , "POINT Z M (1 2 3 4)"
     , "POINT ()"
