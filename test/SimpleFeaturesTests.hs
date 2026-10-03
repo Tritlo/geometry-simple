@@ -184,7 +184,7 @@ tests =
                 assertPointNear (XY 4.95 0.05) (S.centroid line)
                 assertPointNear (XY 4.95 0.05) (S.centroid (GeometryCollection (V.fromList [line, PointGeometry (Point (XY 999 999))])))
                 let tinyLine = LineString (U.fromList [XY 0 0, XY 1e-100 0])
-                assertPointNear (XY 5e-101 0) (S.centroid (GeometryCollection (V.fromList [tinyLine, PointGeometry (Point (XY 1e308 1e308))])))
+                assertPointNear (XY 5e-101 0) (S.centroid (GeometryCollection (V.fromList [PointGeometry (Point (XY 1e308 1e308)), tinyLine])))
             , testCase "multipolygon centroids weight components by area" $ do
                 let largeSquare = U.fromList [XY 10 0, XY 13 0, XY 13 3, XY 10 3, XY 10 0]
                 assertPointNear (XY 10.4 1.4) (S.centroid (MultiPolygon (V.fromList [V.singleton unitSquare, V.singleton largeSquare])))

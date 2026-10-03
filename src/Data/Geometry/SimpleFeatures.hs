@@ -50,6 +50,7 @@ module Data.Geometry.SimpleFeatures (
 
 import Data.Geometry.Internal
 import qualified Data.List as List
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -271,28 +272,28 @@ area. If the total area is zero, segments are weighted by length. If all
 segments have zero length, the result is the mean of the points, and each
 line or ring counts as one point at its first coordinate, as in GEOS.
 Lower-dimensional parts do not affect a higher-dimensional centroid. The
-centroid can be outside the geometry, for example in a hole.
+centroid can be outside the geometry, for example in a hole. The moments can
+overflow when a polygon spans more than about 1e100 units or a line more than
+about 1e150 units, and underflow at the reciprocal sizes.
 -}
 centroid :: (Coordinate c) => Geometry c -> Point XY
 {-# SPECIALIZE centroid :: Geometry XY -> Point XY #-}
 {-# SPECIALIZE centroid :: Geometry XYZ -> Point XY #-}
 {-# SPECIALIZE centroid :: Geometry XYM -> Point XY #-}
 {-# SPECIALIZE centroid :: Geometry XYZM -> Point XY #-}
-centroid geometry = case foldCoordinates firstCoordinate Nothing geometry of
-    Nothing -> EmptyPoint
-    Just first ->
-        let origin@(originX, originY) = xy first
-            mean (weight, mx, my) = Point (XY (originX + mx / weight) (originY + my / weight))
-         in case surfaceMoments origin geometry of
-                moments@(weight, _, _) | weight /= 0 -> mean moments
-                _ -> case linearMoments origin geometry of
-                    moments@(weight, _, _) | weight /= 0 -> mean moments
-                    _ -> mean (pointMoments origin geometry)
+centroid geometry = case weightedMean 2 surfaceMoments of
+    Just point -> point
+    Nothing -> case weightedMean 1 linearMoments of
+        Just point -> point
+        Nothing -> fromMaybe EmptyPoint (weightedMean 0 pointMoments)
   where
-    -- The first coordinate is the origin of the moments.
-    firstCoordinate found coordinate = case found of
-        Nothing -> Just coordinate
-        Just _ -> found
+    -- Take moments about a coordinate of the parts that the pass measures,
+    -- so that a distant part of lower dimension cannot cause cancellation.
+    weightedMean minimumDimension moments = do
+        origin@(originX, originY) <- xy <$> firstCoordinate minimumDimension geometry
+        case moments origin geometry of
+            (weight, mx, my) | weight /= 0 -> Just (Point (XY (originX + mx / weight) (originY + my / weight)))
+            _ -> Nothing
 
 {- | The XY convex hull, from Andrew's monotone chain algorithm. The result is
 an empty collection, a point, a line, or a counterclockwise polygon, depending
@@ -321,6 +322,20 @@ convexHull geometry = case points of
 -- | Extract the planar coordinate pair.
 xy :: (Coordinate c) => c -> (Double, Double)
 xy coordinate = (x coordinate, y coordinate)
+
+-- | The first stored coordinate of the parts with at least the given dimension.
+firstCoordinate :: (Coordinate c) => Int -> Geometry c -> Maybe c
+firstCoordinate minimumDimension geometry = case geometry of
+    PointGeometry (Point coordinate) | minimumDimension <= 0 -> Just coordinate
+    MultiPoint points | minimumDimension <= 0 -> U.foldr (\point rest -> case point of Point coordinate -> Just coordinate; EmptyPoint -> rest) Nothing points
+    LineString points | minimumDimension <= 1 -> points U.!? 0
+    MultiLineString lineStrings | minimumDimension <= 1 -> firstOf (U.!? 0) lineStrings
+    Polygon rings -> firstOf (U.!? 0) rings
+    MultiPolygon polygons -> firstOf (firstOf (U.!? 0)) polygons
+    GeometryCollection children -> firstOf (firstCoordinate minimumDimension) children
+    _ -> Nothing
+  where
+    firstOf select = V.foldr (\value rest -> maybe rest Just (select value)) Nothing
 
 -- | Fold coordinates in stored order. Skip explicit empty points.
 foldCoordinates :: (Coordinate c) => (a -> c -> a) -> a -> Geometry c -> a

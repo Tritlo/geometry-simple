@@ -98,8 +98,10 @@ close open rings.
 
 The measurements use `Double` arithmetic. Area and centroid calculations use
 coordinates relative to a nearby vertex, which keeps them accurate far from the
-origin, for example in projected coordinates. Results can overflow or underflow near the
-limits of `Double`. The orientation tests in `convexHull` are exact: they use
+origin, for example in projected coordinates. `centroid` multiplies coordinate
+differences, so it can overflow when a polygon spans more than about 1e100 units
+or a line more than about 1e150 units. It can underflow when a polygon spans
+less than about 1e-100 units or a line less than about 1e-150 units. The orientation tests in `convexHull` are exact: they use
 `Double` when its error bound decides the sign, and `Rational` otherwise.
 
 `centroid` weights polygons by area. If the total area is zero, it weights
