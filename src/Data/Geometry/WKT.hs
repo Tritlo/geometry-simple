@@ -26,7 +26,7 @@ import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Builder.RealFloat as RealFloat
 import qualified Data.ByteString.Lazy as BL
-import Data.Char (isAsciiLower, isAsciiUpper, isSpace)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit, isSpace)
 import Data.Geometry.Internal
 import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
@@ -224,10 +224,9 @@ number = do
             Just ('-', rest) -> (True, rest)
             Just ('+', rest) -> (False, rest)
             _ -> (False, input)
-        digit c = c >= '0' && c <= '9'
-        (whole, afterWhole) = Text.span digit unsigned
+        (whole, afterWhole) = Text.span isDigit unsigned
         (fraction, afterFraction) = case Text.uncons afterWhole of
-            Just ('.', rest) -> Text.span digit rest
+            Just ('.', rest) -> Text.span isDigit rest
             _ -> (Text.empty, afterWhole)
         -- Allow all mantissa digits to compensate for the exponent.
         -- The extra 400 exceeds Double's decimal range (-324 to 308).
@@ -239,7 +238,7 @@ number = do
                     Just ('-', tailText) -> (True, tailText)
                     Just ('+', tailText) -> (False, tailText)
                     _ -> (False, afterMarker)
-                (digits, afterDigits) = Text.span digit afterSign
+                (digits, afterDigits) = Text.span isDigit afterSign
             when (Text.null digits) (failure "expected exponent digits")
             let magnitude = Text.foldl' (\n c -> min (exponentLimit + 1) (10 * n + toInteger (fromEnum c - fromEnum '0'))) 0 digits
             pure (if negativeExponent then negate magnitude else magnitude, afterDigits)
