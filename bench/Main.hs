@@ -13,6 +13,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Stats (RTSStats (allocated_bytes), getRTSStats, getRTSStatsEnabled)
+import Numeric (showEFloat)
 import System.Environment (getArgs)
 import System.Mem (performMajorGC)
 import Text.Printf (printf)
@@ -33,7 +34,7 @@ main = do
         boxed = V.generate count coordinate
         n = fromIntegral count
         expected = 3 * n * (n - 1) / 2
-        textLength = 13 + U.foldl' (\total (XY x y) -> total + length (show x) + 1 + length (show y)) 0 unboxed + 2 * (count - 1)
+        textLength = 13 + U.foldl' (\total (XY x y) -> total + length (showEFloat Nothing x "") + 1 + length (showEFloat Nothing y "")) 0 unboxed + 2 * (count - 1)
     evaluate (U.foldl' checksum 0 unboxed) >>= check expected
     evaluate (V.foldl' checksum 0 boxed) >>= check expected
     _ <- evaluate textLength

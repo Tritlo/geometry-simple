@@ -61,8 +61,9 @@ decodeAnyWKT input = do
         DimXYZM -> GeometryXYZM <$> decodeWKT input
 
 {- | Encode WKT with a dimension suffix for XYZ, XYM, and XYZM geometries.
-Empty geometries retain their dimensions. Each ordinate uses the shortest text
-that decodes to the same Double, as 'show' does, such as @1.0@ or @1.0e-2@.
+Empty geometries retain their dimensions. Each ordinate uses scientific
+notation with the shortest digits that decode to the same Double, such as
+@1.0e0@.
 -}
 encodeWKT :: (Coordinate c) => Geometry c -> Either String Text
 encodeWKT geometry = do
@@ -287,7 +288,7 @@ pointWKT (Point position) = "(" <> coordinateWKT position <> ")"
 coordinateWKT :: forall c. (Coordinate c) => c -> Builder
 coordinateWKT position =
     let (x, y, z, m) = coordinateComponents position
-        ordinate = RealFloat.formatDouble RealFloat.generic
+        ordinate = RealFloat.formatDouble RealFloat.scientific
         extra = case coordinateDimensions (Proxy :: Proxy c) of
             DimXY -> mempty
             DimXYZ -> " " <> ordinate z

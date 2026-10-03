@@ -24,7 +24,7 @@ encoded = encodeWKB line
 -- Decode with known dimensions, or use decodeAnyWKB for runtime dimensions.
 decoded = encoded >>= (decodeWKB :: ByteString -> Either String (Geometry XY))
 parsed = decodeWKT "POINT Z (1 2 3)" :: Either String (Geometry XYZ)
--- Right "POLYGON ((0.0 0.0, 1.0 0.0, 1.0 1.0, 0.0 0.0))"
+-- Right "POLYGON ((0.0e0 0.0e0, 1.0e0 0.0e0, 1.0e0 1.0e0, 0.0e0 0.0e0))"
 text = encodeWKT polygon
 polygonArea = SF.area polygon
 lineLength = SF.curveLength line
@@ -122,8 +122,9 @@ GEOS library.
 - `decodeAnyWKB` keeps the coordinate type from the WKB header.
 - `encodeWKB` writes little-endian ISO WKB.
 - `encodeWKT` writes WKT with a Z, M, or ZM suffix where needed. Each
-  ordinate uses the shortest text that decodes to the same `Double`, as `show`
-  does, such as `1.0` or `1.0e-2`.
+  ordinate uses scientific notation with the shortest digits that decode to the
+  same `Double`, such as `1.0e0` or `1.2345e-2`. This is about three times
+  faster to render than fixed notation such as `1.0`.
 - `decodeWKT` decodes WKT into the requested coordinate type.
 - `decodeAnyWKT` keeps the coordinate type from the WKT header.
 
