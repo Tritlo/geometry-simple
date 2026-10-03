@@ -252,7 +252,8 @@ perimeter geometry = case geometry of
 
 {- | The XY centroid, or 'EmptyPoint' for empty input. Polygons are weighted by
 area. If the total area is zero, segments are weighted by length. If all
-segments have zero length, the result is the mean of the coordinates.
+segments have zero length, the result is the mean of the points, and each
+line or ring counts as one point at its first coordinate, as in GEOS.
 Lower-dimensional parts do not affect a higher-dimensional centroid. The
 centroid can be outside the geometry, for example in a hole.
 -}
@@ -262,12 +263,11 @@ centroid geometry = case foldCoordinates firstCoordinate Nothing geometry of
     Just first ->
         let origin@(originX, originY) = xy first
             mean (weight, mx, my) = Point (XY (originX + mx / weight) (originY + my / weight))
-            addPoint (!weight, !mx, !my) coordinate = (weight + 1, mx + (x coordinate - originX), my + (y coordinate - originY))
          in case surfaceMoments origin geometry of
                 moments@(weight, _, _) | weight /= 0 -> mean moments
                 _ -> case linearMoments origin geometry of
                     moments@(weight, _, _) | weight /= 0 -> mean moments
-                    _ -> mean (foldCoordinates addPoint (0, 0, 0) geometry)
+                    _ -> mean (pointMoments origin geometry)
   where
     -- The first coordinate is the origin of the moments.
     firstCoordinate found coordinate = case found of
@@ -396,6 +396,23 @@ linearMoments origin@(originX, originY) geometry = case geometry of
             midX = ((x a - originX) + (x b - originX)) / 2
             midY = ((y a - originY) + (y b - originY)) / 2
          in addMoments total (weight, weight * midX, weight * midY)
+
+{- | Count each point once, and each line or ring once at its first coordinate.
+GEOS uses the same weights when all lines and rings have zero length.
+-}
+pointMoments :: (Coordinate c) => (Double, Double) -> Geometry c -> Moments
+pointMoments origin@(originX, originY) geometry = case geometry of
+    PointGeometry EmptyPoint -> (0, 0, 0)
+    PointGeometry (Point coordinate) -> single coordinate
+    LineString points -> first points
+    Polygon rings -> V.foldl' (\total ring -> addMoments total (first ring)) (0, 0, 0) rings
+    MultiPoint points -> U.foldl' (\total point -> addMoments total (pointMoments origin (PointGeometry point))) (0, 0, 0) points
+    MultiLineString lineStrings -> V.foldl' (\total points -> addMoments total (first points)) (0, 0, 0) lineStrings
+    MultiPolygon polygons -> V.foldl' (\total rings -> addMoments total (pointMoments origin (Polygon rings))) (0, 0, 0) polygons
+    GeometryCollection children -> V.foldl' (\total child -> addMoments total (pointMoments origin child)) (0, 0, 0) children
+  where
+    single coordinate = (1, x coordinate - originX, y coordinate - originY)
+    first points = maybe (0, 0, 0) single (points U.!? 0)
 
 {- | The turn of three XY points: 'GT' for counterclockwise, 'LT' for clockwise,
 and 'EQ' for collinear. Use the Double determinant when its error bound

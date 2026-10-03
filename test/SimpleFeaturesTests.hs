@@ -190,8 +190,9 @@ tests =
                 assertPointNear (XY 10.4 1.4) (S.centroid (MultiPolygon (V.fromList [V.singleton unitSquare, V.singleton largeSquare])))
             , testCase "zero-area polygons fall back to their boundary segments" $
                 S.centroid (Polygon (V.singleton (U.fromList [XY 0 0, XY 2 0, XY 0 0]))) @?= Point (XY 1 0)
-            , testCase "zero-length lines fall back to their coordinates" $
+            , testCase "zero-length lines fall back to their first coordinates" $ do
                 S.centroid (LineString (U.replicate 3 (XY 7 8))) @?= Point (XY 7 8)
+                S.centroid (GeometryCollection (V.fromList [LineString (U.replicate 3 (XY 1 1)), PointGeometry (Point (XY 3 3))])) @?= Point (XY 2 2)
             ]
         , testGroup
             "envelopes and convex hulls"

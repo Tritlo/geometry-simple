@@ -103,11 +103,12 @@ limits of `Double`. The orientation tests in `convexHull` are exact: they use
 `Double` when its error bound decides the sign, and `Rational` otherwise.
 
 `centroid` weights polygons by area. If the total area is zero, it weights
-segments by length. If all segments have zero length, it averages the
-coordinates. Lower-dimensional parts do not affect a higher-dimensional
-centroid. Empty input gives `EmptyPoint`. `envelope` and `convexHull` give an
-empty collection for empty input, and a point or line for degenerate input.
-Hull polygons are counterclockwise.
+segments by length. If all segments have zero length, it averages the points,
+and counts each line or ring as one point at its first coordinate, as GEOS
+does. Lower-dimensional parts do not affect a higher-dimensional centroid.
+Empty input gives `EmptyPoint`. `envelope` and `convexHull` give an empty
+collection for empty input, and a point or line for degenerate input. Hull
+polygons are counterclockwise.
 
 The package does not claim full Simple Features conformance. For validity
 checks, spatial predicates such as `intersects` and `contains`, distance,
