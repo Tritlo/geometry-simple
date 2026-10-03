@@ -33,7 +33,6 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.Read as TextRead
 import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Generic.Mutable as M
 
@@ -221,8 +220,9 @@ nextNumber = do
 
 {- | Parse the decimal coefficient exactly, then round once to Double.
 Bound extreme exponents so integer powers stay proportional to input length.
-Use 'fromRational' for rounding. 'TextRead.double' and 'TextRead.rational'
-can underflow intermediate powers, including the power in @5e-324@.
+Use 'fromRational' for rounding. @Data.Text.Read.double@ and
+@Data.Text.Read.rational@ can underflow intermediate powers, including the
+power in @5e-324@.
 WKT also permits @.5@ and @1.@, which those readers do not consume fully.
 -}
 number :: Parser Double
@@ -255,18 +255,28 @@ number = do
         then put rest >> pure (if negative then -0.0 else 0.0)
         else do
             when (power > exponentLimit) (failure "has a non-finite coordinate")
-            case TextRead.decimal (whole <> fraction) :: Either String (Integer, Text) of
-                Right (coefficient, _) -> do
-                    let adjustedPower = power - toInteger (Text.length fraction)
-                        magnitude =
-                            if adjustedPower >= 0
-                                then fromInteger (coefficient * 10 ^ adjustedPower)
-                                else fromRational (coefficient % (10 ^ negate adjustedPower))
-                        value = if negative then negate magnitude else magnitude
-                    if isInfinite value
-                        then failure "has a non-finite coordinate"
-                        else put rest >> pure value
-                _ -> failure "has a non-finite or invalid coordinate"
+            let coefficient = digitsValue (whole <> fraction)
+                adjustedPower = power - toInteger (Text.length fraction)
+                magnitude =
+                    if adjustedPower >= 0
+                        then fromInteger (coefficient * 10 ^ adjustedPower)
+                        else fromRational (coefficient % (10 ^ negate adjustedPower))
+                value = if negative then negate magnitude else magnitude
+            if isInfinite value
+                then failure "has a non-finite coordinate"
+                else put rest >> pure value
+
+{- | Read decimal digits. Split long input in halves, because a digit-by-digit
+loop over a large Integer takes quadratic time.
+-}
+digitsValue :: Text -> Integer
+digitsValue digits
+    | size <= 64 = Text.foldl' (\value c -> 10 * value + toInteger (fromEnum c - fromEnum '0')) 0 digits
+    | otherwise = digitsValue high * 10 ^ (size - half) + digitsValue low
+  where
+    size = Text.length digits
+    half = size `div` 2
+    (high, low) = Text.splitAt half digits
 
 -- | Render a validated geometry with its family and dimension suffix.
 geometryWKT :: forall c. (Coordinate c) => Geometry c -> Builder

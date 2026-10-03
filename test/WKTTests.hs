@@ -13,7 +13,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Data.Word (Word64)
 import GHC.Float (castDoubleToWord64)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 
 -- | Cover independent fixtures, rejected syntax, and parser boundaries.
@@ -80,6 +80,11 @@ tests =
                     _ -> assertFailure "a finite point changed family"
             | (token, expectedBits) <- numericFixtures
             ]
+        , localOption (mkTimeout 5000000) $
+            testCase "long mantissas parse in subquadratic time" $ do
+                let digits = Text.replicate 1000000 "1"
+                decodeWKT ("POINT (" <> digits <> "e-999999 0." <> digits <> ")")
+                    @?= Right (PointGeometry (Point (XY 1.1111111111111112 0.1111111111111111)))
         , testCase "numeric components retain their order in ZM" $ do
             shape <- rightOrFail (decodeWKT "POINT ZM (-0 5e-324 -5e-324 1.7976931348623157e308)" :: Either String (Geometry XYZM))
             case shape of
