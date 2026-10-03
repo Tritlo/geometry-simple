@@ -6,13 +6,9 @@ benchmarks: True
 program-options
   ghc-options: -Wall -Werror
 
--- These private names have no public documentation link.
+-- Haddock has no link destinations for data family instance constructors.
 package geometry-simple
   haddock-options:
-    "--ignore-link-symbol=Data.Geometry.Internal.coordinateComponents"
-    "--ignore-link-symbol=Data.Geometry.Internal.coordinateDimensions"
-    "--ignore-link-symbol=Data.Geometry.Internal.coordinateFromComponents"
-    "--ignore-link-symbol=Data.Geometry.Internal.Dimensions"
     "--ignore-link-symbol=Data.Geometry.Internal.MVPoint"
     "--ignore-link-symbol=Data.Geometry.Internal.MVXY"
     "--ignore-link-symbol=Data.Geometry.Internal.MVXYM"

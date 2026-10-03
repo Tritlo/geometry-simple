@@ -15,3 +15,5 @@ Initial release.
   coordinates. They do not check topology or limit nesting depth.
 - Simple Features accessors, envelopes, areas, lengths, perimeters, centroids,
   and convex hulls in the XY plane. Computed geometries use XY coordinates.
+- `Data.Geometry.Internal` exports the `Coordinate` class methods and the shared
+  validation, without a stability guarantee.

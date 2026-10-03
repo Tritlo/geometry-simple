@@ -63,6 +63,9 @@ unboxed vectors, with one numeric buffer per ordinate and a separate presence
 buffer for empty multipoint members. Rings, polygons, and collection members
 are boxed vectors.
 
+`Data.Geometry.Internal` exports the `Coordinate` class methods and the shared
+validation. It does not follow the PVP and can change in any release.
+
 Work with these values through the `vector` API. A slice shares memory with
 its source. To release the larger buffer, copy the slice with `U.force`.
 

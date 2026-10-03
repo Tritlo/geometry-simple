@@ -43,11 +43,11 @@ source-repository head
 library
   exposed-modules:
     Data.Geometry
+    Data.Geometry.Internal
     Data.Geometry.SimpleFeatures
     Data.Geometry.WKB
     Data.Geometry.WKT
 
-  other-modules: Data.Geometry.Internal
   hs-source-dirs: src
   default-language: Haskell2010
   build-depends:

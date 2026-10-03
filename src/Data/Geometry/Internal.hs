@@ -5,8 +5,14 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_HADDOCK not-home #-}
 
--- | Geometry types and the coordinate class. The public modules re-export them.
+{- | The geometry types, the 'Coordinate' methods, and the validation that the
+codecs share.
+
+This module is internal. It does not follow the PVP, and any release can
+change it. Import "Data.Geometry" and the codec modules for a stable API.
+-}
 module Data.Geometry.Internal where
 
 import Control.DeepSeq (NFData (..), rwhnf)
@@ -33,12 +39,17 @@ data XYZM = XYZM !Double !Double !Double !Double deriving (Eq, Show, Read)
 data Dimensions = DimXY | DimXYZ | DimXYM | DimXYZM
     deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
-{- | The coordinate types t'XY', t'XYZ', t'XYM', and t'XYZM'. The methods are
-internal, so other instances are not supported.
+{- | The coordinate types t'XY', t'XYZ', t'XYM', and t'XYZM'. Other instances
+are not supported.
 -}
 class (Eq c, Show c, Read c, NFData c, U.Unbox c) => Coordinate c where
+    -- | The dimensions of the coordinate type.
     coordinateDimensions :: proxy c -> Dimensions
+
+    -- | The X, Y, Z, and M ordinates. An ordinate that the type does not have is zero.
     coordinateComponents :: c -> (Double, Double, Double, Double)
+
+    -- | Make a coordinate from X, Y, Z, and M. The type ignores ordinates that it does not have.
     coordinateFromComponents :: (Double, Double, Double, Double) -> c
 
 instance Coordinate XY where

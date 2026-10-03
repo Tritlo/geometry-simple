@@ -17,7 +17,8 @@ next to the value.
 
 "Data.Geometry.WKB" and "Data.Geometry.WKT" convert geometries to and from
 ISO WKB and WKT. "Data.Geometry.SimpleFeatures" has accessors and planar
-measurements.
+measurements. "Data.Geometry.Internal" has the 'Coordinate' methods, without a
+stability guarantee.
 -}
 module Data.Geometry (
     XY (..),
