@@ -44,6 +44,10 @@ type Parser = StateT Text (Either String)
 Empty geometries also require matching dimensions. Untagged input is XY.
 -}
 decodeWKT :: (Coordinate c) => Text -> Either String (Geometry c)
+{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XY) #-}
+{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYZ) #-}
+{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYM) #-}
+{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYZM) #-}
 decodeWKT input = do
     (geometry, remaining) <- runStateT (geometryParser <* spaces) input
     if Text.null remaining
@@ -66,6 +70,10 @@ notation with the shortest digits that decode to the same Double, such as
 @1.0e0@.
 -}
 encodeWKT :: (Coordinate c) => Geometry c -> Either String Text
+{-# SPECIALIZE encodeWKT :: Geometry XY -> Either String Text #-}
+{-# SPECIALIZE encodeWKT :: Geometry XYZ -> Either String Text #-}
+{-# SPECIALIZE encodeWKT :: Geometry XYM -> Either String Text #-}
+{-# SPECIALIZE encodeWKT :: Geometry XYZM -> Either String Text #-}
 encodeWKT geometry = do
     validateGeometry (const (Right ())) geometry
     pure (TextEncoding.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (geometryWKT geometry))))

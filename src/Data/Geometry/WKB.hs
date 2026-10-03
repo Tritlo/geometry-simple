@@ -41,6 +41,10 @@ Reject trailing bytes, invalid counts, mixed dimensions, and non-finite
 coordinates. All-NaN point ordinates decode to 'EmptyPoint'.
 -}
 decodeWKB :: (Coordinate c) => ByteString -> Either String (Geometry c)
+{-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XY) #-}
+{-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XYZ) #-}
+{-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XYM) #-}
+{-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XYZM) #-}
 decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) Nothing) bytes
 
 -- | Decode one ISO WKB geometry and retain its coordinate dimensions.
@@ -60,6 +64,10 @@ decodeAnyWKB bytes = runDecoder parser bytes
 Finite coordinates retain their exact bits, including negative zero.
 -}
 encodeWKB :: (Coordinate c) => Geometry c -> Either String ByteString
+{-# SPECIALIZE encodeWKB :: Geometry XY -> Either String ByteString #-}
+{-# SPECIALIZE encodeWKB :: Geometry XYZ -> Either String ByteString #-}
+{-# SPECIALIZE encodeWKB :: Geometry XYM -> Either String ByteString #-}
+{-# SPECIALIZE encodeWKB :: Geometry XYZM -> Either String ByteString #-}
 encodeWKB geometry = do
     validateGeometry checkedLength geometry
     pure (BL.toStrict (Builder.toLazyByteString (putGeometry geometry)))

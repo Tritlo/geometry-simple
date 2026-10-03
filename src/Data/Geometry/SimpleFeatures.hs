@@ -212,6 +212,10 @@ Empty input gives an empty collection. Degenerate bounds give a point or a
 two-point line.
 -}
 envelope :: (Coordinate c) => Geometry c -> Geometry XY
+{-# SPECIALIZE envelope :: Geometry XY -> Geometry XY #-}
+{-# SPECIALIZE envelope :: Geometry XYZ -> Geometry XY #-}
+{-# SPECIALIZE envelope :: Geometry XYM -> Geometry XY #-}
+{-# SPECIALIZE envelope :: Geometry XYZM -> Geometry XY #-}
 envelope geometry
     | minX > maxX = GeometryCollection V.empty
     | minX == maxX && minY == maxY = PointGeometry (Point (XY minX minY))
@@ -230,12 +234,20 @@ not matter. Other families add zero. The cross products of each ring use its
 first vertex as the origin, which limits cancellation far from zero.
 -}
 area :: (Coordinate c) => Geometry c -> Double
+{-# SPECIALIZE area :: Geometry XY -> Double #-}
+{-# SPECIALIZE area :: Geometry XYZ -> Double #-}
+{-# SPECIALIZE area :: Geometry XYM -> Double #-}
+{-# SPECIALIZE area :: Geometry XYZM -> Double #-}
 area geometry = let (weight, _, _) = surfaceMoments (0, 0) geometry in weight / 2
 
 {- | The total length of all lines, including lines in collections, in coordinate
 units. Polygon boundaries and points add zero.
 -}
 curveLength :: (Coordinate c) => Geometry c -> Double
+{-# SPECIALIZE curveLength :: Geometry XY -> Double #-}
+{-# SPECIALIZE curveLength :: Geometry XYZ -> Double #-}
+{-# SPECIALIZE curveLength :: Geometry XYM -> Double #-}
+{-# SPECIALIZE curveLength :: Geometry XYZM -> Double #-}
 curveLength geometry = case geometry of
     LineString points -> pathLength False points
     MultiLineString lineStrings -> V.foldl' (\total points -> total + pathLength False points) 0 lineStrings
@@ -244,6 +256,10 @@ curveLength geometry = case geometry of
 
 -- | The total length of all polygon rings, including holes. Lines and points add zero.
 perimeter :: (Coordinate c) => Geometry c -> Double
+{-# SPECIALIZE perimeter :: Geometry XY -> Double #-}
+{-# SPECIALIZE perimeter :: Geometry XYZ -> Double #-}
+{-# SPECIALIZE perimeter :: Geometry XYM -> Double #-}
+{-# SPECIALIZE perimeter :: Geometry XYZM -> Double #-}
 perimeter geometry = case geometry of
     Polygon rings -> V.foldl' (\total points -> total + pathLength True points) 0 rings
     MultiPolygon polygons -> V.foldl' (\total rings -> total + perimeter (Polygon rings)) 0 polygons
@@ -258,6 +274,10 @@ Lower-dimensional parts do not affect a higher-dimensional centroid. The
 centroid can be outside the geometry, for example in a hole.
 -}
 centroid :: (Coordinate c) => Geometry c -> Point XY
+{-# SPECIALIZE centroid :: Geometry XY -> Point XY #-}
+{-# SPECIALIZE centroid :: Geometry XYZ -> Point XY #-}
+{-# SPECIALIZE centroid :: Geometry XYM -> Point XY #-}
+{-# SPECIALIZE centroid :: Geometry XYZM -> Point XY #-}
 centroid geometry = case foldCoordinates firstCoordinate Nothing geometry of
     Nothing -> EmptyPoint
     Just first ->
@@ -280,6 +300,10 @@ on the hull dimension. The hull has no duplicate or collinear vertices.
 The orientation tests are exact.
 -}
 convexHull :: (Coordinate c) => Geometry c -> Geometry XY
+{-# SPECIALIZE convexHull :: Geometry XY -> Geometry XY #-}
+{-# SPECIALIZE convexHull :: Geometry XYZ -> Geometry XY #-}
+{-# SPECIALIZE convexHull :: Geometry XYM -> Geometry XY #-}
+{-# SPECIALIZE convexHull :: Geometry XYZM -> Geometry XY #-}
 convexHull geometry = case points of
     [] -> GeometryCollection V.empty
     [point] -> PointGeometry (Point (uncurry XY point))
