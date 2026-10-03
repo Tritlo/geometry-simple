@@ -23,7 +23,7 @@ cabal check
 cabal sdist
 ```
 
-The project uses GHC 9.14.1 by default. Use `--with-compiler=ghc-VERSION` to
+Cabal uses the `ghc` on your `PATH`. Use `--with-compiler=ghc-VERSION` to
 select another compiler. The CI compiler matrix is in
 [.github/workflows/ci.yml](https://github.com/Tritlo/geometry-simple/blob/main/.github/workflows/ci.yml).
 

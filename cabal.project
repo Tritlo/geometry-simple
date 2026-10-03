@@ -1,5 +1,4 @@
 packages: .
-with-compiler: ghc-9.14.1
 
 tests: True
 benchmarks: True

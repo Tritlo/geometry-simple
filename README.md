@@ -165,8 +165,8 @@ cabal build all
 cabal test all --test-show-details=direct
 ```
 
-The repository uses GHC 9.14.1 by default. CI covers GHC 9.6.7, 9.8.4, 9.10.3,
-9.12.4, and 9.14.1 on Linux, and GHC 9.14.1 on macOS. See
+CI covers GHC 9.6.7, 9.8.4, 9.10.3, 9.12.4, and 9.14.1 on Linux, and GHC 9.14.1
+on macOS. See
 [CONTRIBUTING.md](https://github.com/Tritlo/geometry-simple/blob/main/CONTRIBUTING.md)
 for formatting, Nix, benchmarks, and releases.
 
