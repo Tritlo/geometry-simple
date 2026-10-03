@@ -72,7 +72,7 @@ test-suite geometry-simple-test
     base >=4.18 && <5,
     bytestring >=0.11.2 && <0.13,
     geometry-simple,
-    QuickCheck >=2.14 && <2.18,
+    QuickCheck >=2.14 && <2.20,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.12,
     tasty-quickcheck >=0.10 && <0.12,
