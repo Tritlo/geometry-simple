@@ -27,5 +27,5 @@ rm -f dist-newstyle/sdist/geometry-simple-[0-9]*.tar.gz
 cabal haddock --haddock-for-hackage geometry-simple
 cabal sdist geometry-simple
 
-cabal upload "${publish_flag[@]}" dist-newstyle/sdist/geometry-simple-[0-9]*.tar.gz
-cabal upload "${publish_flag[@]}" -d dist-newstyle/geometry-simple-[0-9]*-docs.tar.gz
+cabal upload ${publish_flag[@]+"${publish_flag[@]}"} dist-newstyle/sdist/geometry-simple-[0-9]*.tar.gz
+cabal upload ${publish_flag[@]+"${publish_flag[@]}"} -d dist-newstyle/geometry-simple-[0-9]*-docs.tar.gz
