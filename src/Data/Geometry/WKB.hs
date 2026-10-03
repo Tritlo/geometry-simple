@@ -207,8 +207,12 @@ getMultiPoints total little = do
             then Right EmptyPoint
             else validateCoordinate coordinate >> Right (Point coordinate)
 
--- | Fill one unboxed vector without constructing an intermediate list.
+{- | Fill one unboxed vector without constructing an intermediate list.
+Return the shared empty vector for a zero count, so that empty rings do not
+allocate buffers.
+-}
 generateChecked :: (U.Unbox a) => Int -> (Int -> Either String a) -> Either String (U.Vector a)
+generateChecked 0 _ = Right U.empty
 generateChecked count readItem = runST $ do
     target <- UM.new count
     let go i
