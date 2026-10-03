@@ -4,9 +4,10 @@
 
 {- | Checked WKT decoding and encoding for the seven simple geometry families.
 
-Untagged geometries use XY coordinates. Use Z, M, or ZM for other layouts.
-Every geometry in a collection must declare the same layout, including empty
-members. Keywords are case-insensitive. Both MULTIPOINT spellings are accepted.
+Untagged geometries use XY coordinates. Use a Z, M, or ZM tag for other
+coordinate types. Every member of a collection must have the same tag,
+including empty members. Keywords are case-insensitive. The decoder accepts
+@MULTIPOINT (1 2, 3 4)@ and @MULTIPOINT ((1 2), (3 4))@.
 
 Decoding requires complete input, finite coordinates, and whitespace between
 ordinates. It does not check topology.
@@ -39,7 +40,7 @@ import qualified Data.Vector.Generic.Mutable as M
 -- | The remaining text and a controlled parse error.
 type Parser = StateT Text (Either String)
 
-{- | Decode WKT with the requested coordinate layout.
+{- | Decode WKT into the requested coordinate type.
 Empty geometries also require matching dimensions. Untagged input is XY.
 -}
 decodeWKT :: (Coordinate c) => Text -> Either String (Geometry c)
@@ -53,7 +54,7 @@ decodeWKT input = do
         then Right geometry
         else Left "Geometry WKT has trailing input"
 
--- | Decode WKT and retain the coordinate layout declared in its header.
+-- | Decode WKT and keep the coordinate type from its header.
 decodeAnyWKT :: Text -> Either String AnyGeometry
 decodeAnyWKT input = do
     ((_, dimensions), _) <- runStateT header input

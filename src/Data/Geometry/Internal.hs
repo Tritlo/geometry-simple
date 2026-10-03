@@ -65,9 +65,11 @@ instance Coordinate XYZM where
 data Point c = EmptyPoint | Point !c deriving (Eq, Show, Read)
 
 {- | A geometry in one of the seven Simple Features families. All parts use
-the coordinate type @c@. An empty vector is an empty geometry, such as
-@LINESTRING EMPTY@. The constructors do not check ring closure, minimum
-lengths, or other topology rules.
+the coordinate type @c@. Coordinate sequences and multipoints are unboxed
+vectors from "Data.Vector.Unboxed". Rings, polygons, and collection members
+are boxed vectors from "Data.Vector". An empty vector is an empty geometry,
+such as @LINESTRING EMPTY@. The constructors do not check ring closure,
+minimum lengths, or other topology rules.
 -}
 data Geometry c
     = -- | A point, which can be empty.

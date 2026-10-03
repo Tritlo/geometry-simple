@@ -25,8 +25,8 @@ description:
 
   "Data.Geometry.WKB" and "Data.Geometry.WKT" read and write ISO WKB and WKT.
   The decoders reject malformed input, mixed dimensions, and non-finite
-  coordinates. "Data.Geometry.SimpleFeatures" has the standard accessors and
-  computes envelopes, areas, lengths, centroids, and convex hulls in the XY
+  coordinates. "Data.Geometry.SimpleFeatures" has a subset of the standard
+  accessors and computes envelopes, areas, lengths, centroids, and convex hulls in the XY
   plane.
 
   The package needs no native library or database.

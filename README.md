@@ -33,11 +33,17 @@ lineBounds = SF.envelope line
 
 ## Installation
 
-Add `geometry-simple` to your component's `build-depends`:
+Add `geometry-simple` to your component's `build-depends`. Geometries contain
+vectors, so you also need `vector`:
 
 ```cabal
-build-depends: geometry-simple >=0.1 && <0.2
+build-depends:
+  geometry-simple >=0.1 && <0.2,
+  vector >=0.13 && <0.14,
 ```
+
+The WKB functions use `ByteString` from `bytestring`, and the WKT functions
+use `Text` from `text`.
 
 ## Representation
 
@@ -58,7 +64,7 @@ buffer for empty multipoint members. Rings, polygons, and collection members
 are boxed vectors.
 
 Work with these values through the `vector` API. A slice shares memory with
-its source; `U.force` copies a small slice so the larger buffer can be freed.
+its source. To release the larger buffer, copy the slice with `U.force`.
 
 Geometries do not store a CRS or SRID. Keep that metadata next to the value.
 The derived `Eq` instance compares the stored structure and coordinates. Two
@@ -79,11 +85,12 @@ equal. As for `Double`, `0` and `-0` compare equal.
 | Polygon rings | `exteriorRing`, `numInteriorRings`, `interiorRingN` |
 | Planar operations | `envelope`, `area`, `curveLength`, `perimeter`, `centroid`, `convexHull` |
 
-Indices start at one. Accessors return `Nothing` for an index out of range or
-for a geometry family they do not apply to. Member counts include empty
+Indices start at one. Accessors that return `Maybe` give `Nothing` for an
+index out of range or for a geometry family they do not apply to. `isClosed`
+gives `False` for families other than lines. Member counts include empty
 members, and a geometry that is not a collection counts as one member.
 `isEmpty` checks every child. An empty point, line, or polygon keeps its
-family's dimension, and an empty geometry collection has dimension -1.
+family's dimension, and a geometry collection with no members has dimension -1.
 
 Measurements and closure tests use only X and Y. Lengths are in coordinate
 units and areas in square units. `envelope`, `centroid`, and `convexHull`
@@ -126,8 +133,8 @@ GEOS library.
 - `encodeWKB` writes little-endian ISO WKB.
 - `encodeWKT` writes WKT with a Z, M, or ZM suffix where needed. Each
   ordinate uses scientific notation with the shortest digits that decode to the
-  same `Double`, such as `1.0e0` or `1.2345e-2`. This is about three times
-  faster to render than fixed notation such as `1.0`.
+  same `Double`, such as `1.0e0` or `1.2345e-2`. Scientific notation is faster
+  to render than fixed notation such as `1.0`.
 - `decodeWKT` decodes WKT into the requested coordinate type.
 - `decodeAnyWKT` keeps the coordinate type from the WKT header.
 
@@ -141,7 +148,9 @@ or LF. Trailing input is an error.
 WKT without a dimension tag is XY. Other coordinate types need a Z, M, or ZM
 tag, also on empty geometries and on every member of a collection. The decoder
 does not infer dimensions from the number of ordinates or from the requested
-Haskell type. EWKT `SRID=...;` prefixes are not supported.
+Haskell type. Some writers drop the tag from empty members: GEOS 3.13 writes
+`MULTIPOINT EMPTY` inside a `GEOMETRYCOLLECTION M`, in WKT and in WKB. The
+decoders reject that input. EWKT `SRID=...;` prefixes are not supported.
 
 All codecs return `Either String`. The WKB decoder accepts both byte orders,
 also mixed within nested geometries. It rejects trailing bytes, unknown type

@@ -28,8 +28,7 @@ select another compiler. The CI compiler matrix is in
 [.github/workflows/ci.yml](https://github.com/Tritlo/geometry-simple/blob/main/.github/workflows/ci.yml).
 
 `nix-build --no-out-link` builds the package, runs the tests, and generates
-the documentation with the pinned Nix environment. Run Nix development
-commands inside `nix-shell`.
+the documentation with the pinned Nix environment.
 
 ## Code style
 
@@ -65,8 +64,10 @@ behavior changes. Keep unrelated changes in separate commits.
 ## Releases
 
 1. Update the version in `geometry-simple.cabal` and add a changelog entry.
-2. Run `scripts/release.sh`. It uploads a package candidate and its
+2. Push `main`. The README on Hackage links to files on `main`.
+3. Run `scripts/release.sh`. It uploads a package candidate and its
    documentation to Hackage.
-3. Review the candidate on Hackage, then run `scripts/release.sh --publish`.
+4. Review the candidate on Hackage, then run `scripts/release.sh --publish`.
+5. Tag the release commit as `vVERSION` and push the tag.
 
 Cabal uses the Hackage credentials from its configuration, or asks for them.

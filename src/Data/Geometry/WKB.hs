@@ -3,7 +3,7 @@
 {- | Checked ISO WKB decoding and encoding.
 
 The codecs support the seven simple geometry families and all four coordinate
-dimensions. Every child must have the same dimensions as its parent. WKB
+types. Every child must have the same dimensions as its parent. WKB
 children can use different byte orders. EWKB flags and embedded SRIDs are not
 supported. Keep coordinate reference system metadata outside the geometry.
 
@@ -36,7 +36,7 @@ import qualified Data.Vector.Unboxed.Mutable as UM
 import Data.Word (Word32, Word64)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 
-{- | Decode one ISO WKB geometry with the requested coordinate dimensions.
+{- | Decode one ISO WKB geometry into the requested coordinate type.
 Reject trailing bytes, invalid counts, mixed dimensions, and non-finite
 coordinates. All-NaN point ordinates decode to 'EmptyPoint'.
 -}
@@ -47,7 +47,7 @@ decodeWKB :: (Coordinate c) => ByteString -> Either String (Geometry c)
 {-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XYZM) #-}
 decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) Nothing) bytes
 
--- | Decode one ISO WKB geometry and retain its coordinate dimensions.
+-- | Decode one ISO WKB geometry and keep the coordinate type from its header.
 decodeAnyWKB :: ByteString -> Either String AnyGeometry
 decodeAnyWKB bytes = runDecoder parser bytes
   where
