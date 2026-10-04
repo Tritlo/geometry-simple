@@ -4,12 +4,12 @@ module SimpleFeaturesTests (tests) where
 import Control.Monad (forM_)
 import Data.Geometry
 import qualified Data.Geometry.SimpleFeatures as S
-import Data.List (inits, tails)
+import Data.List (inits, permutations, tails)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
-import Test.Tasty.QuickCheck (chooseInt, conjoin, forAll, testProperty, (===))
+import Test.Tasty.QuickCheck (Gen, chooseInt, conjoin, counterexample, forAll, oneof, testProperty, vectorOf, (===))
 
 -- | Cover dimensional layouts, empty values, selectors, and planar measurements.
 tests :: TestTree
@@ -179,6 +179,14 @@ tests =
                 S.centroid (MultiPoint (U.fromList [EmptyPoint, Point (XY 0 0), Point (XY 0 0), Point (XY 6 3)])) @?= Point (XY 2 1)
             , testCase "large point means avoid intermediate overflow" $
                 S.centroid (MultiPoint (U.fromList [Point (XY 1e308 0), Point (XY 1e308 2)])) @?= Point (XY 1e308 1)
+            , testCase "point means retain small terms when large coordinates cancel" $
+                forM_ (permutations [1e16, 1, -1e16]) $ \ordinates ->
+                    S.centroid (MultiPoint (U.fromList [Point (XY value 0) | value <- ordinates])) @?= Point (XY (1 / 3) 0)
+            , testCase "point moments divide after cancellation" $
+                forM_ (permutations [1e16, -4999999999999999, -4999999999999999]) $ \ordinates ->
+                    S.centroid (MultiPoint (U.fromList [Point (XY value 0) | value <- ordinates])) @?= Point (XY (2 / 3) 0)
+            , testCase "overflow in one ordinate does not round the other ordinate early" $
+                S.centroid (MultiPoint (U.fromList [Point (XY 1e308 value) | value <- [1e16, -4999999999999999, -4999999999999999]])) @?= Point (XY 1e308 (2 / 3))
             , testCase "line centroids weight segments by length" $ do
                 let line = LineString (U.fromList [XY 0 0, XY 9 0, XY 9 1])
                 assertPointNear (XY 4.95 0.05) (S.centroid line)
@@ -193,6 +201,50 @@ tests =
             , testCase "zero-length lines fall back to their first coordinates" $ do
                 S.centroid (LineString (U.replicate 3 (XY 7 8))) @?= Point (XY 7 8)
                 S.centroid (GeometryCollection (V.fromList [LineString (U.replicate 3 (XY 1 1)), PointGeometry (Point (XY 3 3))])) @?= Point (XY 2 2)
+            , testCase "a distant zero-length member does not move a multiline centroid" $ do
+                let zero = U.replicate 2 (XY 1e16 1e16)
+                    line = U.fromList [XY 0 0, XY 1 0]
+                forM_ [[zero, line], [line, zero]] $ \members ->
+                    S.centroid (MultiLineString (V.fromList members)) @?= Point (XY 0.5 0)
+            , testCase "a nested zero-length member does not move a line centroid" $ do
+                let zero = GeometryCollection (V.singleton (LineString (U.replicate 2 (XY 1e16 1e16))))
+                    line = LineString (U.fromList [XY 0 0, XY 1 0])
+                forM_ [[zero, line], [line, zero]] $ \members ->
+                    S.centroid (GeometryCollection (V.fromList members)) @?= Point (XY 0.5 0)
+            , testCase "a distant short line retains its small centroid weight" $ do
+                let short = U.fromList [XY 1e16 0, XY 1e16 1e-20]
+                    line = U.fromList [XY 0 0, XY 1 0]
+                forM_ [[short, line], [line, short]] $ \members ->
+                    assertPointNear (XY 0.5001 5e-41) (S.centroid (MultiLineString (V.fromList members)))
+            , testCase "a distant thin polygon retains its small centroid weight" $ do
+                let thin = V.singleton (U.fromList [XY 1e16 0, XY (1e16 + 2) 0, XY (1e16 + 2) 1e-20, XY 1e16 1e-20, XY 1e16 0])
+                    square = V.singleton unitSquare
+                forM_ [[thin, square], [square, thin]] $ \members ->
+                    assertPointNear (XY 0.5002 0.5) (S.centroid (MultiPolygon (V.fromList members)))
+            , testCase "segment endpoints retain offsets before weighted cancellation" $ do
+                let firstLine = U.fromList [XY 1e16 0, XY 1e16 1]
+                    secondLine = U.fromList [XY (-4999999999999999) 0, XY (-4999999999999999) 2]
+                forM_ [[firstLine, secondLine], [secondLine, firstLine]] $ \members ->
+                    assertPointNear (XY (2 / 3) (5 / 6)) (S.centroid (MultiLineString (V.fromList members)))
+            , testCase "polygon offsets survive cancellation between distant components" $ do
+                let rectangle left = V.singleton (U.fromList [XY left 0, XY (left + 2) 0, XY (left + 2) 1, XY left 1, XY left 0])
+                forM_ [[rectangle 1e16, rectangle (-1e16)], [rectangle (-1e16), rectangle 1e16]] $ \members ->
+                    S.centroid (MultiPolygon (V.fromList members)) @?= Point (XY 1 0.5)
+            , testCase "translated thin polygon frames subtract holes locally" $
+                forM_ [(1e8, 1e-8), (1e9, 1e-6)] $ \(offset, inset) -> do
+                    let square low high = U.fromList [XY low low, XY high low, XY high high, XY low high, XY low low]
+                        shell = square offset (offset + 100)
+                        hole = square (offset + inset) (offset + 100 - inset)
+                    assertPointNear (XY (offset + 50) (offset + 50)) (S.centroid (Polygon (V.fromList [shell, hole])))
+            , testCase "ignored zero-length members cannot overflow the centroid" $ do
+                let zero = U.replicate 2 (XY 1e308 1e308)
+                    line = U.fromList [XY 0 0, XY 1 0]
+                forM_ [[zero, line], [line, zero]] $ \members ->
+                    S.centroid (MultiLineString (V.fromList members)) @?= Point (XY 0.5 0)
+            , testCase "empty polygons do not suppress line and point centroids" $ do
+                let empty = Polygon V.empty :: Geometry XY
+                S.centroid (GeometryCollection (V.fromList [empty, LineString (U.fromList [XY 0 0, XY 1 0])])) @?= Point (XY 0.5 0)
+                S.centroid (GeometryCollection (V.fromList [empty, PointGeometry (Point (XY 3 4))])) @?= Point (XY 3 4)
             ]
         , testGroup
             "envelopes and convex hulls"
@@ -217,7 +269,160 @@ tests =
             , testCase "hulls retain nearly collinear extreme vertices" $
                 assertPolygonVertices slenderTriangle (S.convexHull (MultiPoint (U.fromList (map Point slenderTriangle))))
             ]
+        , testGroup
+            "geometric properties"
+            [ testProperty "collections add each applicable measurement" $
+                forAll ((,) <$> geometryGen 1 <*> geometryGen 1) $ \(first, second) ->
+                    let collection = GeometryCollection (V.fromList [first, second])
+                     in conjoin
+                            [ measure collection === measure first + measure second
+                            | measure <- [S.area, S.curveLength, S.perimeter]
+                            ]
+            , testProperty "reversing a line preserves length and centroid" $
+                forAll lineGen $ \points ->
+                    let first = LineString points
+                        reversed = LineString (U.reverse points)
+                     in conjoin
+                            [ counterexample "length" (near (S.curveLength first) (S.curveLength reversed))
+                            , counterexample "centroid" (pointsNear (S.centroid first) (S.centroid reversed))
+                            ]
+            , testProperty "collection order preserves the centroid" $
+                forAll (vectorOf 5 (geometryGen 1)) $ \members ->
+                    let centroid = S.centroid . GeometryCollection . V.fromList
+                     in counterexample (show (centroid members, centroid (reverse members))) $
+                            pointsNear (centroid members) (centroid (reverse members))
+            , testProperty "zero-length members have no weight beside a line" $
+                forAll (chooseInt (54, 80)) $ \power ->
+                    let distant = fromInteger (2 ^ power)
+                        zero = U.replicate 2 (XY distant distant)
+                        line = U.fromList [XY 0 0, XY 1 0]
+                     in S.centroid (MultiLineString (V.fromList [zero, line])) === S.centroid (LineString line)
+            , testProperty "translation preserves measurements and translates centroids" $
+                forAll (geometryGen 2) $ \shape ->
+                    let translate (XY a b) = XY (a + 128) (b - 256)
+                        translated = mapGeometry translate shape
+                        expected = case S.centroid shape of EmptyPoint -> EmptyPoint; Point coordinate -> Point (translate coordinate)
+                     in conjoin
+                            [ S.area translated === S.area shape
+                            , S.curveLength translated === S.curveLength shape
+                            , S.perimeter translated === S.perimeter shape
+                            , counterexample "centroid" (pointsNear expected (S.centroid translated))
+                            ]
+            , testProperty "Z and M do not affect planar results" $
+                forAll (geometryGen 2) $ \shape ->
+                    let xyz = mapGeometry (\(XY a b) -> XYZ a b (a * b)) shape
+                        xym = mapGeometry (\(XY a b) -> XYM a b (a - b)) shape
+                        xyzm = mapGeometry (\(XY a b) -> XYZM a b (a * b) (a - b)) shape
+                     in conjoin [samePlanarResults shape xyz, samePlanarResults shape xym, samePlanarResults shape xyzm]
+            , testProperty "envelopes and hulls are idempotent and share bounds" $
+                forAll (geometryGen 2) $ \shape ->
+                    let hull = S.convexHull shape
+                        bounds = S.envelope shape
+                     in conjoin
+                            [ S.envelope bounds === bounds
+                            , S.convexHull hull === hull
+                            , S.envelope hull === bounds
+                            , S.isEmpty bounds === S.isEmpty shape
+                            , S.isEmpty hull === S.isEmpty shape
+                            ]
+            , testProperty "ring rotation and winding preserve polygon measurements" $
+                forAll polygonGen $ \rings ->
+                    let rotate ring = let open = U.init ring; turned = U.snoc (U.tail open) (U.head open) in U.snoc turned (U.head turned)
+                        original = Polygon rings
+                        changed = Polygon (V.map (U.reverse . rotate) rings)
+                     in conjoin
+                            [ S.area changed === S.area original
+                            , S.perimeter changed === S.perimeter original
+                            , counterexample "centroid" (pointsNear (S.centroid original) (S.centroid changed))
+                            ]
+            , testProperty "line selectors recover every stored coordinate" $
+                forAll lineGen $ \points ->
+                    let line = LineString points
+                     in conjoin
+                            [ S.numPoints line === Just (U.length points)
+                            , conjoin [S.pointN (index + 1) line === Just coordinate | (index, coordinate) <- zip [0 ..] (U.toList points)]
+                            , S.startPoint line === points U.!? 0
+                            , S.endPoint line === points U.!? (U.length points - 1)
+                            , S.pointN 0 line === Nothing
+                            , S.pointN (U.length points + 1) line === Nothing
+                            ]
+            ]
         ]
+
+-- | Generate finite integer coordinates so that translations remain exact.
+coordinateGen :: Gen XY
+coordinateGen = XY <$> ordinate <*> ordinate
+  where
+    ordinate = fromIntegral <$> chooseInt (-1000, 1000)
+
+-- | Generate empty lines and lines with at least two coordinates.
+lineGen :: Gen (U.Vector XY)
+lineGen = do
+    count <- oneof [pure 0, chooseInt (2, 12)]
+    U.fromList <$> vectorOf count coordinateGen
+
+-- | Generate valid rectangles with a rectangular hole and integral coordinates.
+polygonGen :: Gen (V.Vector (U.Vector XY))
+polygonGen = do
+    XY left bottom <- coordinateGen
+    width <- fromIntegral <$> chooseInt (4, 100)
+    height <- fromIntegral <$> chooseInt (4, 100)
+    let rectangle a b c d = U.fromList [XY a b, XY c b, XY c d, XY a d, XY a b]
+        shell = rectangle left bottom (left + width) (bottom + height)
+        hole = rectangle (left + 1) (bottom + 1) (left + width - 1) (bottom + height - 1)
+    oneof [pure (V.singleton shell), pure (V.fromList [shell, hole])]
+
+-- | Generate all geometry families with valid polygons and bounded collections.
+geometryGen :: Int -> Gen (Geometry XY)
+geometryGen depth =
+    oneof $
+        [ PointGeometry <$> pointGen
+        , LineString <$> lineGen
+        , Polygon <$> oneof [pure V.empty, polygonGen]
+        , MultiPoint . U.fromList <$> (chooseInt (0, 8) >>= (`vectorOf` pointGen))
+        , MultiLineString . V.fromList <$> (chooseInt (0, 4) >>= (`vectorOf` lineGen))
+        , MultiPolygon <$> oneof [pure V.empty, V.singleton <$> polygonGen]
+        ]
+            ++ [GeometryCollection . V.fromList <$> (chooseInt (0, 4) >>= (`vectorOf` geometryGen (depth - 1))) | depth > 0]
+  where
+    pointGen = oneof [pure EmptyPoint, Point <$> coordinateGen]
+
+-- | Map stored coordinates and preserve every empty value and member boundary.
+mapGeometry :: (Coordinate a, Coordinate b) => (a -> b) -> Geometry a -> Geometry b
+mapGeometry convert shape = case shape of
+    PointGeometry point -> PointGeometry (mapPoint point)
+    LineString points -> LineString (U.map convert points)
+    Polygon rings -> Polygon (V.map (U.map convert) rings)
+    MultiPoint points -> MultiPoint (U.map mapPoint points)
+    MultiLineString lineStrings -> MultiLineString (V.map (U.map convert) lineStrings)
+    MultiPolygon polygons -> MultiPolygon (V.map (V.map (U.map convert)) polygons)
+    GeometryCollection children -> GeometryCollection (V.map (mapGeometry convert) children)
+  where
+    mapPoint EmptyPoint = EmptyPoint
+    mapPoint (Point coordinate) = Point (convert coordinate)
+
+-- | Compare all planar results after a change to the coordinate layout.
+samePlanarResults :: (Coordinate c) => Geometry XY -> Geometry c -> Bool
+samePlanarResults original changed =
+    and
+        [ S.area original == S.area changed
+        , S.curveLength original == S.curveLength changed
+        , S.perimeter original == S.perimeter changed
+        , S.centroid original == S.centroid changed
+        , S.convexHull original == S.convexHull changed
+        , S.envelope original == S.envelope changed
+        , S.isClosed original == S.isClosed changed
+        ]
+
+-- | Allow rounding at the scale of the bounded property fixtures.
+near :: Double -> Double -> Bool
+near expected actual = abs (actual - expected) <= 1e-10 * max 1 (abs expected)
+
+-- | Compare empty or finite centroid results.
+pointsNear :: Point XY -> Point XY -> Bool
+pointsNear EmptyPoint EmptyPoint = True
+pointsNear (Point (XY a b)) (Point (XY c d)) = near a c && near b d
+pointsNear _ _ = False
 
 -- | Empty fixtures retain their geometry family and inherent dimension.
 emptyFamilies :: [(String, Geometry XY, Int)]

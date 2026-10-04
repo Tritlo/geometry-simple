@@ -30,6 +30,31 @@ select another compiler. The CI compiler matrix is in
 `nix-build --no-out-link` builds the package, runs the tests, and generates
 the documentation with the pinned Nix environment.
 
+### Shapely comparison
+
+The optional comparison tests check every Simple Features function and both
+codec formats against Shapely. Python and GEOS are test dependencies only.
+Use `nix-shell -A env` for the pinned Haskell environment, then run:
+
+```sh
+cabal build -fshapely-tests exe:geometry-simple-shapely-probe
+uv run --script test/shapely_compare.py --probe "$(cabal list-bin -fshapely-tests exe:geometry-simple-shapely-probe)" --report /tmp/geometry-shapely-report.json
+```
+
+The script pins its Python dependencies. It uses fixed edge cases and generated
+geometries with a repeatable seed. It reports each method's comparison count
+and exits with a failure status for unexpected differences. The comparison
+maps one-based indices to Shapely indices and checks curve lengths separately
+from polygon perimeters. It compares degenerate envelopes as points or lines.
+It reports documented differences in empty geometry metadata separately.
+Use `--cases` and `--seed` to change the generated inputs.
+
+Type-check the Python script in strict mode with:
+
+```sh
+uv run --no-project --with shapely==2.1.2 --with types-shapely==2.1.0.20260728 --with pyright==1.1.414 pyright test/shapely_compare.py
+```
+
 ## Code style
 
 Write straightforward Haskell and keep the dependency list short. Document

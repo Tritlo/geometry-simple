@@ -36,6 +36,13 @@ extra-doc-files:
   CONTRIBUTING.md
   README.md
 
+extra-source-files: test/shapely_compare.py
+
+flag shapely-tests
+  description: Build the driver for the optional Shapely comparison tests
+  default: False
+  manual: True
+
 source-repository head
   type: git
   location: https://github.com/Tritlo/geometry-simple.git
@@ -85,6 +92,19 @@ benchmark geometry-simple-bench
   hs-source-dirs: bench
   default-language: Haskell2010
   ghc-options: -rtsopts
+  build-depends:
+    base >=4.18 && <5,
+    bytestring >=0.11.2 && <0.13,
+    geometry-simple,
+    text >=2.0 && <2.2,
+    vector >=0.13 && <0.14,
+
+executable geometry-simple-shapely-probe
+  if !flag(shapely-tests)
+    buildable: False
+  main-is: ShapelyProbe.hs
+  hs-source-dirs: test
+  default-language: Haskell2010
   build-depends:
     base >=4.18 && <5,
     bytestring >=0.11.2 && <0.13,
