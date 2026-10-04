@@ -44,9 +44,14 @@ uv run --script test/shapely_compare.py --probe "$(cabal list-bin -fshapely-test
 The script pins its Python dependencies. It uses fixed edge cases and generated
 geometries with a repeatable seed. It reports each method's comparison count
 and exits with a failure status for unexpected differences. The comparison
-maps one-based indices to Shapely indices and checks curve lengths separately
-from polygon perimeters. It compares degenerate envelopes as points or lines.
-It reports documented differences in empty geometry metadata separately.
+maps one-based indices to Shapely indices. It checks total geometry length
+directly and checks curve lengths separately from polygon perimeters.
+Hull comparisons use XY coordinates and normalize vertex order.
+Envelopes and empty geometry metadata are compared directly. Codec fixtures
+also check accepted and rejected inputs without running planar operations on
+non-finite coordinates. Empty child layouts can differ because `Geometry c`
+has one coordinate type for all children. Numeric measurements use a tolerance;
+finite coordinate round trips retain exact bits.
 Use `--cases` and `--seed` to change the generated inputs.
 
 Type-check the Python script in strict mode with:

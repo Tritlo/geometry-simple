@@ -20,7 +20,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Numeric (showHex)
 
--- | Read FORMAT-tab-payload requests. Write one tab-separated response per line.
+-- | Read FORMAT-tab-payload requests. CODEC- formats omit numerical operations.
 main :: IO ()
 main = do
     requests <- T.lines <$> T.getContents
@@ -34,7 +34,9 @@ main = do
 -- | Decode either text or hex ISO WKB and retain the declared coordinate type.
 response :: Text -> Text
 response request =
-    let (format, rest) = T.breakOn "\t" request
+    let (requestedFormat, rest) = T.breakOn "\t" request
+        codecOnly = T.isPrefixOf "CODEC-" requestedFormat
+        format = if codecOnly then T.drop 6 requestedFormat else requestedFormat
         payload = T.drop 1 rest
         bytes = unhex payload
         decoded = case format of
@@ -48,7 +50,11 @@ response request =
                     _ -> bytes >>= WKB.decodeWKB
                 typedResult = render <$> (typed `asTypeOf` Right shape)
                 codec = if format == "WKT" then "decodeWKT" else "decodeWKB"
-             in T.intercalate "\t" ("OK" : [key <> "=" <> value | (key, value) <- (codec, either errorText id typedResult) : (T.replace "decode" "decodeAny" codec, render shape) : fields shape])
+                results =
+                    [(codec, either errorText id typedResult), (T.replace "decode" "decodeAny" codec, render shape)]
+                        ++ [("encodeWKT", render shape), ("encodeWKB", either errorText hex (WKB.encodeWKB shape))]
+                        ++ if codecOnly then [] else fields shape
+             in T.intercalate "\t" ("OK" : [key <> "=" <> value | (key, value) <- results])
      in case decoded of
             Left failure -> "ERROR\t" <> T.pack failure
             Right (GeometryXY shape) -> report shape
@@ -75,12 +81,11 @@ fields shape =
     , ("numInteriorRings", optional shown (S.numInteriorRings shape))
     , ("envelope", render (S.envelope shape))
     , ("area", shown (S.area shape))
+    , ("geometryLength", shown (S.geometryLength shape))
     , ("curveLength", shown (S.curveLength shape))
     , ("perimeter", shown (S.perimeter shape))
     , ("centroid", render (PointGeometry (S.centroid shape)))
     , ("convexHull", render (S.convexHull shape))
-    , ("encodeWKT", render shape)
-    , ("encodeWKB", either errorText hex (WKB.encodeWKB shape))
     ]
         ++ [("geometryN." <> shown i, optional render (S.geometryN i shape)) | i <- [0 .. S.numGeometries shape + 1]]
         ++ [("pointN." <> shown i, optional renderCoordinate (S.pointN i shape)) | i <- [0 .. maybe 0 id (S.numPoints shape) + 1]]

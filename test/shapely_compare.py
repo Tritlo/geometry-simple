@@ -12,9 +12,12 @@ use the supplied seed. Unexpected mismatches give a nonzero exit status.
 
 Contract adapters are explicit in expected_results: indices start at one,
 point accessors apply to lines, ring accessors return coordinate sequences,
-curve length and polygon perimeter are separate, and degenerate envelopes use
-points or lines. GEOS can discard Z/M metadata from empty values; only that
-exact discrepancy is counted separately.
+and curve length and polygon perimeter are separate. Metadata queries are
+compared directly. Hull comparisons use XY and normalize vertex order.
+Structural geometry comparisons ignore empty coordinate
+layouts because Geometry c gives every member the same static layout.
+Codec-only requests check reader acceptance without running measurements on
+nonfinite coordinates or invalid topology.
 Shapely WKT input is compared after its writer has applied its own rounding.
 """
 
@@ -28,6 +31,7 @@ import math
 from pathlib import Path
 import random
 import re
+import struct
 import subprocess
 import sys
 from typing import Callable, TypeAlias, cast
@@ -75,15 +79,16 @@ METHODS: dict[str, str] = {
     "pointN": "get_point(index - 1) for LineString",
     "startPoint": "get_point(0) for nonempty LineString",
     "endPoint": "get_point(-1) for nonempty LineString",
-    "isClosed": "is_closed for lines; all nonempty closed members for MultiLineString",
-    "exteriorRing": "get_exterior_ring for nonempty Polygon, otherwise None",
+    "isClosed": "is_closed",
+    "exteriorRing": "get_exterior_ring for Polygon, otherwise None",
     "numInteriorRings": "get_num_interior_rings for Polygon, otherwise None",
     "interiorRingN": "get_interior_ring(index - 1), reject nonpositive indices",
-    "envelope": "bounds as XY point/line/polygon; empty input -> empty GeometryCollection",
+    "envelope": "envelope",
     "area": "area",
+    "geometryLength": "length",
     "curveLength": "sum length of linear components",
     "perimeter": "sum length of polygon components",
-    "centroid": "centroid(force_2d)",
+    "centroid": "centroid",
     "convexHull": "convex_hull(force_2d)",
     "encodeWKT": "from_wkt of Haskell output, structural coordinate comparison",
     "encodeWKB": "from_wkb of Haskell output, structural coordinate comparison",
@@ -104,6 +109,19 @@ class Case:
     name: str
     wkt: str
     layout: str
+    codec_only: bool = False
+    mixed_layouts: bool = False
+
+
+@dataclass(frozen=True)
+class Request:
+    """One input and the native reader result for that exact input."""
+
+    case: Case
+    format_name: str
+    payload: str
+    geometry: BaseGeometry | None
+    error: str | None = None
 
 
 def lift_layout(wkt: str, layout: str) -> str:
@@ -127,6 +145,8 @@ def fixed_cases() -> list[Case]:
         ("empty-point-members", "MULTIPOINT (EMPTY,(1 2),EMPTY)"),
         ("empty-line-member", "MULTILINESTRING (EMPTY,(0 0,3 4))"),
         ("empty-polygon-member", "MULTIPOLYGON (EMPTY,((0 0,2 0,0 2,0 0)))"),
+        ("empty-polygon-rings", "POLYGON (EMPTY,EMPTY)"),
+        ("empty-polygon-hole", "POLYGON ((0 0,2 0,0 2,0 0),EMPTY)"),
         ("nested", "GEOMETRYCOLLECTION (POINT EMPTY,GEOMETRYCOLLECTION (LINESTRING (0 0,3 4),POLYGON ((0 0,2 0,0 2,0 0))))"),
         ("empty-nested", "GEOMETRYCOLLECTION (POINT EMPTY,GEOMETRYCOLLECTION (LINESTRING EMPTY))"),
         ("empty-multi-members", "GEOMETRYCOLLECTION (MULTIPOINT EMPTY,MULTILINESTRING EMPTY,MULTIPOLYGON EMPTY,POINT (1 2))"),
@@ -171,6 +191,75 @@ def random_case(rng: random.Random, index: int) -> Case:
     return Case(f"random-{index}-{layout}", lift_layout(wkt, layout), layout)
 
 
+def codec_cases() -> list[Case]:
+    """Exercise native reader acceptance without requiring valid finite topology."""
+    fixtures = [
+        ("inferred-z-point", "POINT (1 2 3)", "XYZ"),
+        ("inferred-zm-point", "POINT (1 2 3 4)", "XYZM"),
+        ("inferred-z-line", "LINESTRING (0 0 5,1 1 9)", "XYZ"),
+        ("inferred-zm-line", "LINESTRING (0 0 5 6,1 1 9 10)", "XYZM"),
+        ("attached-z", "POINTZ (1 2 3)", "XYZ"),
+        ("untagged-z-child", "GEOMETRYCOLLECTION Z (POINT (1 2 3))", "XYZ"),
+        ("untagged-m-child", "GEOMETRYCOLLECTION M (POINT (1 2 3))", "XYM"),
+        ("empty-multi-other-layout", "GEOMETRYCOLLECTION (MULTIPOINT M EMPTY,POINT (1 2))", "XY"),
+        ("singleton-line", "LINESTRING (0 0)", "XY"),
+        ("unclosed-ring", "POLYGON ((0 0,1 0,0 1))", "XY"),
+        ("two-coordinate-ring", "POLYGON ((0 0,0 0))", "XY"),
+        ("three-coordinate-ring", "POLYGON ((0 0,1 0,0 0))", "XY"),
+        ("ring-closes-in-xy", "POLYGON Z ((0 0 1,1 0 2,0 0 3))", "XYZ"),
+        ("empty-shell-and-hole", "POLYGON (EMPTY,EMPTY)", "XY"),
+        ("empty-shell-nonempty-hole", "POLYGON (EMPTY,(0 0,1 0,0 0))", "XY"),
+        ("empty-hole", "POLYGON ((0 0,2 0,0 2,0 0),EMPTY)", "XY"),
+        ("mixed-multipoint-syntax", "MULTIPOINT (0 0,(1 1))", "XY"),
+        ("empty-then-flat-multipoint", "MULTIPOINT (EMPTY,1 1)", "XY"),
+        ("empty-then-bracketed-multipoint", "MULTIPOINT (EMPTY,(1 1))", "XY"),
+        ("partial-nan-x", "POINT (NaN 1)", "XY"),
+        ("partial-nan-y", "POINT (1 NaN)", "XY"),
+        ("all-nan-point", "POINT (NaN NaN)", "XY"),
+        ("nan-xy-finite-z", "POINT Z (NaN NaN 3)", "XYZ"),
+        ("nan-xy-finite-zm", "POINT ZM (NaN NaN 3 4)", "XYZM"),
+        ("infinities", "POINT (Inf -Inf)", "XY"),
+        ("infinity-spelling", "POINT (Infinity 2)", "XY"),
+        ("signed-nan", "POINT (+nan -nan)", "XY"),
+        ("overflow", "POINT (1e309 -1e309)", "XY"),
+        ("underflow", "POINT (1e-9999 -1e-9999)", "XY"),
+        ("nonfinite-line", "LINESTRING (0 0,NaN Infinity)", "XY"),
+        ("inconsistent-arity", "LINESTRING (0 0,1 1 2)", "XY"),
+        ("trailing-wkt", "POINT (1 2) POINT (3 4)", "XY"),
+        ("trailing-semicolon", "POINT (1 2);", "XY"),
+        ("missing-exponent", "POINT (1e 2)", "XY"),
+    ]
+    return [Case("codec-" + name, text, layout, codec_only=name not in {"empty-shell-and-hole", "empty-hole", "empty-multi-other-layout"}) for name, text, layout in fixtures] + [
+        Case("codec-mixed-nonempty-layouts", "GEOMETRYCOLLECTION (POINT Z (1 2 3),POINT (4 5))", "XYZ", codec_only=True, mixed_layouts=True),
+        Case("codec-empty-atomic-other-layout", "GEOMETRYCOLLECTION (POINT Z EMPTY,POINT (4 5))", "XYZ", codec_only=True, mixed_layouts=True),
+    ]
+
+
+def read_request(case: Case, format_name: str, payload: str) -> Request:
+    """Record acceptance or rejection from the pinned native GEOS reader."""
+    try:
+        geometry = sh.from_wkt(payload) if format_name == "WKT" else sh.from_wkb(bytes.fromhex(payload))
+        return Request(case, format_name, payload, geometry)
+    except GEOSException as failure:
+        return Request(case, format_name, payload, None, str(failure))
+
+
+def binary_requests() -> list[Request]:
+    """Include constructor failures and empty child headers not written by GEOS."""
+    point = b"\x01" + struct.pack("<I2d", 1, 1, 2)
+    empty_point = b"\x01" + struct.pack("<I2d", 1, math.nan, math.nan)
+    xyz_point = b"\x01" + struct.pack("<I3d", 1001, 1, 2, 3)
+    collection = b"\x01" + struct.pack("<II", 1007, 2)
+    fixtures = [
+        ("truncated-point", point[:-1], "XY"),
+        ("singleton-line", b"\x01" + struct.pack("<II2d", 2, 1, 0, 0), "XY"),
+        ("empty-child-other-layout", collection + empty_point + xyz_point, "XYZ"),
+        ("nan-xy-finite-z", b"\x01" + struct.pack("<I3d", 1001, math.nan, math.nan, 3), "XYZ"),
+        ("partial-nan-point", b"\x01" + struct.pack("<I2d", 1, math.nan, 1), "XY"),
+    ]
+    return [read_request(Case("binary-" + name, "", layout, codec_only=name != "empty-child-other-layout"), "WKB", payload.hex()) for name, payload, layout in fixtures]
+
+
 def children(geometry: BaseGeometry) -> list[BaseGeometry]:
     """Return direct members only for collection families."""
     if int(get_type_id(geometry)) < 4:
@@ -186,18 +275,6 @@ def component_length(geometry: BaseGeometry, polygons: bool) -> float:
     return sum((component_length(child, polygons) for child in children(geometry)), 0.0)
 
 
-def expected_envelope(geometry: BaseGeometry) -> BaseGeometry:
-    """Use the package's point and line forms for degenerate XY bounds."""
-    if geometry.is_empty:
-        return sh.GeometryCollection()
-    min_x, min_y, max_x, max_y = geometry.bounds
-    if min_x == max_x and min_y == max_y:
-        return sh.Point(min_x, min_y)
-    if min_x == max_x or min_y == max_y:
-        return sh.LineString([(min_x, min_y), (max_x, max_y)])
-    return sh.envelope(force_2d(geometry))
-
-
 def expected_results(geometry: BaseGeometry) -> dict[str, Value]:
     """Map every public method to Shapely, with documented family/index adapters."""
     kind = int(get_type_id(geometry))
@@ -206,7 +283,7 @@ def expected_results(geometry: BaseGeometry) -> dict[str, Value]:
     ring_count = int(get_num_interior_rings(geometry)) if kind == 3 else None
     member_count = int(get_num_geometries(geometry))
     planar = force_2d(geometry)
-    closed = bool(sh.is_closed(geometry)) if kind == 1 else kind == 5 and bool(children(geometry)) and all(not child.is_empty and bool(sh.is_closed(child)) for child in children(geometry))
+    closed = bool(sh.is_closed(geometry))
     values: dict[str, Value] = {
         "geometryType": geometry.geom_type.upper(), "dimension": int(get_dimensions(geometry)),
         "coordinateDimension": int(get_coordinate_dimension(geometry)), "spatialDimension": 3 if sh.has_z(geometry) else 2,
@@ -214,10 +291,10 @@ def expected_results(geometry: BaseGeometry) -> dict[str, Value]:
         "numGeometries": member_count, "numPoints": point_count,
         "startPoint": get_point(geometry, 0) if kind == 1 else None,
         "endPoint": get_point(geometry, -1) if kind == 1 else None,
-        "isClosed": closed, "exteriorRing": get_exterior_ring(geometry) if kind == 3 and not empty else None,
-        "numInteriorRings": ring_count, "envelope": expected_envelope(geometry),
-        "area": float(area(geometry)), "curveLength": component_length(geometry, False),
-        "perimeter": component_length(geometry, True), "centroid": sh.centroid(planar), "convexHull": sh.convex_hull(planar),
+        "isClosed": closed, "exteriorRing": get_exterior_ring(geometry) if kind == 3 else None,
+        "numInteriorRings": ring_count, "envelope": sh.envelope(geometry),
+        "area": float(area(geometry)), "geometryLength": float(length(geometry)), "curveLength": component_length(geometry, False),
+        "perimeter": component_length(geometry, True), "centroid": sh.centroid(geometry), "convexHull": sh.convex_hull(planar),
         "encodeWKT": geometry, "encodeWKB": geometry,
     }
     for i in range(member_count + 2):
@@ -229,12 +306,13 @@ def expected_results(geometry: BaseGeometry) -> dict[str, Value]:
     for i, row in enumerate(sh.get_coordinates(geometry, include_z=True, include_m=True)):
         for column, method in enumerate(("x", "y", "z", "m")):
             value = float(row[column])
-            values[f"{method}.{i}"] = None if math.isnan(value) else value
+            absent = (method == "z" and not sh.has_z(geometry)) or (method == "m" and not sh.has_m(geometry))
+            values[f"{method}.{i}"] = None if absent else value
     return values
 
 
 def signature(geometry: BaseGeometry) -> tuple[object, ...]:
-    """Preserve family, member order, duplicates, Z/M, and signed coordinate bits."""
+    """Preserve serialized structure and bits; empty coordinate layouts follow c."""
     kind = int(get_type_id(geometry))
     if kind == 2:  # Ring accessors return plain coordinate vectors in Haskell.
         kind = 1
@@ -243,8 +321,11 @@ def signature(geometry: BaseGeometry) -> tuple[object, ...]:
         coords = tuple(tuple(float(value).hex() for value in row) for row in sh.get_coordinates(geometry, include_z=True, include_m=True))
         return kind, dimensions, coords
     if kind == 3:
+        # Native writers omit the rings of an empty polygon. Accessors check them.
+        if geometry.is_empty:
+            return kind, dimensions, ()
         rings = [get_exterior_ring(geometry)] + [get_interior_ring(geometry, i) for i in range(int(get_num_interior_rings(geometry)))]
-        return kind, dimensions, tuple(signature(ring) for ring in rings if ring is not None and not ring.is_empty)
+        return kind, dimensions, tuple(signature(ring) for ring in rings if ring is not None)
     return kind, dimensions, tuple(signature(child) for child in children(geometry))
 
 
@@ -272,7 +353,7 @@ def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
         if geometry.is_empty or expected.is_empty:
             return geometry.is_empty == expected.is_empty
         return matches("centroid_scalar", str(float(get_x(geometry))), float(get_x(expected)), strict) and matches("centroid_scalar", str(float(get_y(geometry))), float(get_y(expected)), strict)
-    if method in ("convexHull", "envelope"):
+    if method == "convexHull":
         return bool(sh.equals_exact(sh.normalize(geometry), sh.normalize(expected), tolerance=0.0))
     return signature(geometry) == signature(expected)
 
@@ -287,17 +368,10 @@ def declared_layout(format_name: str, payload: str) -> str:
     return {None: "XY", "Z": "XYZ", "M": "XYM", "ZM": "XYZM"}[tag.group(1) if tag else None]
 
 
-def dropped_empty_member_tags(case: Case, format_name: str, payload: str) -> bool:
-    """Recognize only the verified GEOS tag loss in the fixed empty-multi fixture."""
-    if case.name != "empty-multi-members-" + case.layout or case.layout == "XY" or payload == case.wkt:
-        return False
-    if declared_layout(format_name, payload) != case.layout:
-        return False
-    if format_name == "WKT":
-        return all(family + " EMPTY" in payload for family in ("MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON"))
-    # This fixture has a 9-byte collection header and three 9-byte empty members.
-    raw = bytes.fromhex(payload)
-    return all(declared_layout("WKB", raw[offset:].hex()) == "XY" for offset in (9, 18, 27))
+def codec_results(geometry: BaseGeometry) -> dict[str, Value]:
+    """Apply native WKB normalization, including XY-NaN points becoming empty."""
+    written = sh.to_wkb(geometry, byte_order=1, output_dimension=4, flavor="iso")
+    return {"encodeWKT": geometry, "encodeWKB": sh.from_wkb(written)}
 
 
 def describe(value: Value) -> str:
@@ -320,47 +394,55 @@ def main() -> int:
     if case_count < 0:
         parser.error("--cases must be nonnegative")
     rng = random.Random(seed)
-    cases = fixed_cases() + [random_case(rng, i) for i in range(case_count)]
-    requests: list[tuple[Case, str, str, BaseGeometry]] = []
+    cases = fixed_cases() + codec_cases() + [random_case(rng, i) for i in range(case_count)]
+    requests: list[Request] = []
     known: Counter[str] = Counter()
-    for case in cases:
-        geometry = sh.from_wkt(case.wkt)
-        if case.name.startswith("random-") and not geometry.is_valid:
-            raise RuntimeError("Random generator produced invalid topology: " + case.wkt)
-        requests.append((case, "WKT", case.wkt, geometry))
-        text = str(sh.to_wkt(geometry, rounding_precision=-1, output_dimension=4))
-        try:
-            written_geometry = sh.from_wkt(text)
-        except GEOSException:
-            if not dropped_empty_member_tags(case, "WKT", text):
-                raise
-            known["Shapely WKT reader rejects its nested empty Z/M tags"] += 1
-            written_geometry = geometry
-        requests.append((case, "WKT", text, written_geometry))
-        for byte_order in (0, 1):
-            blob = sh.to_wkb(geometry, byte_order=byte_order, output_dimension=4, flavor="iso")
-            requests.append((case, "WKB", blob.hex(), sh.from_wkb(blob)))
-    completed = subprocess.run([str(probe.resolve())], input="\n".join(format_name + "\t" + payload for _, format_name, payload, _ in requests) + "\n", text=True, capture_output=True, check=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for case in cases:
+            request = read_request(case, "WKT", case.wkt)
+            requests.append(request)
+            geometry = request.geometry
+            if geometry is None:
+                continue
+            if case.name.startswith("random-") and not geometry.is_valid:
+                raise RuntimeError("Random generator produced invalid topology: " + case.wkt)
+            text = str(sh.to_wkt(geometry, rounding_precision=-1, output_dimension=4))
+            requests.append(read_request(case, "WKT", text))
+            for byte_order in (0, 1):
+                blob = sh.to_wkb(geometry, byte_order=byte_order, output_dimension=4, flavor="iso")
+                requests.append(read_request(case, "WKB", blob.hex()))
+        requests.extend(binary_requests())
+    inputs = [("CODEC-" if request.case.codec_only else "") + request.format_name + "\t" + request.payload for request in requests]
+    completed = subprocess.run([str(probe.resolve())], input="\n".join(inputs) + "\n", text=True, capture_output=True, check=True)
     lines = completed.stdout.splitlines()
     if len(lines) != len(requests):
         raise RuntimeError(f"Probe returned {len(lines)} responses for {len(requests)} requests: {completed.stderr}")
     checked: Counter[str] = Counter()
     failures: list[dict[str, str]] = []
+    rejected = 0
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        for (case, format_name, payload, geometry), line in zip(requests, lines, strict=True):
-            if dropped_empty_member_tags(case, format_name, payload):
-                expected_error = "ERROR\tGeometry " + format_name + " has the wrong coordinate dimensions"
-                if line == expected_error:
-                    known["decode" + format_name + ": GEOS discarded nested empty Z/M tags"] += 1
+        for request, line in zip(requests, lines, strict=True):
+            case, format_name, payload, geometry = request.case, request.format_name, request.payload, request.geometry
+            if geometry is None:
+                checked["decodeAny" + format_name] += 1
+                rejected += 1
+                if not line.startswith("ERROR\t"):
+                    failures.append({"case": case.name, "method": "decodeAny" + format_name, "format": format_name, "input": payload, "expected": request.error or "native reader rejection", "actual": line})
+                continue
+            if case.mixed_layouts:
+                if line.startswith("ERROR\t"):
+                    known["Geometry c cannot store heterogeneous coordinate layouts"] += 1
                 else:
-                    failures.append({"case": case.name, "method": "decode" + format_name, "format": format_name, "input": payload, "expected": expected_error, "actual": line})
+                    failures.append({"case": case.name, "method": "decodeAny" + format_name, "format": format_name, "input": payload, "expected": "reject heterogeneous coordinate layouts", "actual": line})
                 continue
             if not line.startswith("OK\t"):
-                failures.append({"case": case.name, "method": "decode" + format_name, "format": format_name, "input": payload, "expected": "successful decode", "actual": line})
+                failures.append({"case": case.name, "method": "decodeAny" + format_name, "format": format_name, "input": payload, "expected": "successful native decode", "actual": line})
                 continue
             actual_fields = dict(field.split("=", 1) for field in line.split("\t")[1:])
-            expected_fields = expected_results(geometry)
+            expected_fields = {} if case.codec_only else expected_results(geometry)
+            expected_fields.update(codec_results(geometry))
             expected_fields["decode" + format_name] = geometry
             expected_fields["decodeAny" + format_name] = geometry
             if actual_fields.keys() != expected_fields.keys():
@@ -369,22 +451,18 @@ def main() -> int:
                 method = key.split(".", 1)[0]
                 checked[method] += 1
                 actual = actual_fields.get(key, "!missing field")
-                layout = declared_layout(format_name, payload)
+                layout = case.layout if format_name == "WKT" and payload == case.wkt else declared_layout(format_name, payload)
                 codec = method.startswith(("encode", "decode"))
                 output_format = "WKB" if method == "encodeWKB" else "WKT"
                 tags_match = not codec or (not actual.startswith("!") and declared_layout(output_format, actual) == layout)
                 if tags_match and matches(method, actual, expected, case.name.startswith("numeric-")):
-                    continue
-                declared: dict[str, Value] = {"coordinateDimension": {"XY": 2, "XYZ": 3, "XYM": 3, "XYZM": 4}[layout], "spatialDimension": 3 if "Z" in layout else 2, "is3D": "Z" in layout, "isMeasured": "M" in layout}
-                if geometry.is_empty and method in declared and matches(method, actual, declared[method], False):
-                    known[method + ": GEOS discarded empty Z/M tags"] += 1
                     continue
                 failures.append({"case": case.name, "method": key, "format": format_name, "input": payload, "expected": describe(expected), "actual": actual})
     missing = METHODS.keys() - checked.keys()
     if missing:
         raise RuntimeError("Methods were not exercised: " + ", ".join(sorted(missing)))
     mismatch_counts = Counter(failure["method"].split(".", 1)[0] for failure in failures)
-    summary: dict[str, object] = {"shapely": sh.__version__, "geos": sh.geos_version_string, "seed": seed, "shapes": len(cases), "requests": len(requests), "methods": dict(sorted(checked.items())), "known_empty_tag_differences": dict(sorted(known.items())), "mismatch_counts": dict(sorted(mismatch_counts.items())), "mismatches": failures}
+    summary: dict[str, object] = {"shapely": sh.__version__, "geos": sh.geos_version_string, "seed": seed, "shapes": len(cases), "requests": len(requests), "native_rejections": rejected, "methods": dict(sorted(checked.items())), "known_type_constraints": dict(sorted(known.items())), "mismatch_counts": dict(sorted(mismatch_counts.items())), "mismatches": failures}
     if report is not None:
         report.write_text(json.dumps(summary, indent=2) + "\n")
     print(f"Shapely {sh.__version__}; GEOS {sh.geos_version_string}; seed {seed}; {len(cases)} shapes; {len(requests)} requests")
