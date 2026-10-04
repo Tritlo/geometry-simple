@@ -24,8 +24,8 @@ description:
   in unboxed vectors.
 
   "Data.Geometry.WKB" and "Data.Geometry.WKT" read and write ISO WKB and WKT.
-  The decoders reject malformed input, mixed dimensions, and non-finite
-  coordinates. "Data.Geometry.SimpleFeatures" has a subset of the standard
+  The codecs check input structure, coordinate dimensions, line lengths,
+  and ring closure. "Data.Geometry.SimpleFeatures" has a subset of the standard
   accessors and computes envelopes, areas, lengths, centroids, and convex hulls in the XY
   plane.
 

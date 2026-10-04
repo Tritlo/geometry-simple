@@ -27,8 +27,8 @@ main = do
     args <- getArgs
     count <- case args of
         [] -> pure 1000000
-        [arg] | Just n <- readMaybe arg, n > 0 -> pure n
-        _ -> fail "Usage: geometry-simple-bench [positive point count] +RTS -T -RTS"
+        [arg] | Just n <- readMaybe arg, n >= 2 -> pure n
+        _ -> fail "Usage: geometry-simple-bench [point count >= 2] +RTS -T -RTS"
     let coordinate i = let x = fromIntegral i in XY x (2 * x)
         unboxed = U.generate count coordinate
         boxed = V.generate count coordinate

@@ -110,7 +110,7 @@ tests =
                 S.numInteriorRings shape @?= Just 1
                 S.interiorRingN 1 shape @?= Just hole
                 forM_ [minBound, -1, 0, 2, maxBound] $ \index -> S.interiorRingN index shape @?= Nothing
-                S.exteriorRing (Polygon V.empty :: Geometry XY) @?= Nothing
+                S.exteriorRing (Polygon V.empty :: Geometry XY) @?= Just U.empty
                 S.numInteriorRings (Polygon V.empty :: Geometry XY) @?= Just 0
                 S.interiorRingN 1 (Polygon V.empty :: Geometry XY) @?= Nothing
                 S.exteriorRing (LineString unitSquare) @?= Nothing
@@ -136,9 +136,13 @@ tests =
                 S.area shape @?= 1
                 S.curveLength shape @?= 5
                 S.perimeter shape @?= 4
+                S.geometryLength shape @?= 9
                 S.centroid shape @?= Point (XY 0.5 0.5)
                 S.curveLength holedPolygon @?= 0
+                S.geometryLength holedPolygon @?= 32
                 S.perimeter (LineString unitSquare) @?= 0
+                S.geometryLength (LineString unitSquare) @?= 4
+                S.geometryLength (PointGeometry (Point (XY 1 2))) @?= 0
             , testCase "measurements project Z and M coordinates to XY" $ do
                 let line = LineString (U.fromList [XYZM 0 0 100 200, XYZM 3 4 (-100) (-200)])
                     polygon = Polygon (V.singleton (U.map (\(XY a b) -> XYZM a b 100 200) unitSquare))
@@ -169,6 +173,7 @@ tests =
             , testCase "empty values have zero measurements and no centroid" $
                 forM_ emptyFamilies $ \(_, shape, _) -> do
                     S.area shape @?= 0
+                    S.geometryLength shape @?= 0
                     S.curveLength shape @?= 0
                     S.perimeter shape @?= 0
                     S.centroid shape @?= EmptyPoint
@@ -248,16 +253,23 @@ tests =
             ]
         , testGroup
             "envelopes and convex hulls"
-            [ testCase "empty values produce empty XY collections" $
+            [ testCase "empty envelopes are points and empty hulls are collections" $
                 forM_ emptyFamilies $ \(_, shape, _) -> do
-                    S.envelope shape @?= GeometryCollection V.empty
+                    S.envelope shape @?= PointGeometry EmptyPoint
                     S.convexHull shape @?= GeometryCollection V.empty
             , testCase "one XY location produces a point" $ do
                 let shape = MultiPoint (U.fromList [Point (XYZM 1 2 3 4), EmptyPoint, Point (XYZM 1 2 5 6)])
                 S.envelope shape @?= PointGeometry (Point (XY 1 2))
                 S.convexHull shape @?= PointGeometry (Point (XY 1 2))
-            , testCase "vertical envelopes are lines" $
-                assertLineEndpoints (XY 2 (-1)) (XY 2 4) (S.envelope (LineString (U.fromList [XY 2 4, XY 2 (-1), XY 2 0])))
+            , testCase "vertical envelopes retain repeated polygon corners" $
+                S.envelope (LineString (U.fromList [XY 2 4, XY 2 (-1), XY 2 0]))
+                    @?= Polygon (V.singleton (U.fromList [XY 2 (-1), XY 2 (-1), XY 2 4, XY 2 4, XY 2 (-1)]))
+            , testCase "horizontal envelopes retain repeated polygon corners" $
+                S.envelope (LineString (U.fromList [XY 4 2, XY (-1) 2, XY 0 2]))
+                    @?= Polygon (V.singleton (U.fromList [XY (-1) 2, XY 4 2, XY 4 2, XY (-1) 2, XY (-1) 2]))
+            , testCase "envelopes discard Z and M even on empty input" $ do
+                S.envelope (PointGeometry (Point (XYZM 1 2 3 4))) @?= PointGeometry (Point (XY 1 2))
+                S.envelope (PointGeometry EmptyPoint :: Geometry XYZM) @?= PointGeometry EmptyPoint
             , testCase "collection envelopes include every component" $ do
                 let shape = GeometryCollection (V.fromList [LineString (U.fromList [XY 1 2, XY 3 4]), PointGeometry (Point (XY (-2) 7))])
                 assertPolygonVertices [XY (-2) 2, XY 3 2, XY 3 7, XY (-2) 7] (S.envelope shape)
@@ -436,14 +448,37 @@ emptyFamilies =
     , ("GEOMETRYCOLLECTION", GeometryCollection V.empty, -1)
     ]
 
--- | Check dimensional metadata for both full and empty points.
+-- | Check layouts of atomic geometries, empty members, and empty collections.
 checkDimensions :: (Coordinate c) => c -> Int -> Int -> Bool -> Bool -> Assertion
-checkDimensions coordinate coordinateCount spatialCount hasZ hasM =
-    forM_ [PointGeometry (Point coordinate), PointGeometry EmptyPoint] $ \shape -> do
+checkDimensions coordinate coordinateCount spatialCount hasZ hasM = do
+    let retainLayout =
+            [ PointGeometry EmptyPoint
+            , LineString U.empty
+            , Polygon V.empty
+            , MultiPoint (U.singleton EmptyPoint)
+            , MultiLineString (V.singleton U.empty)
+            , MultiPolygon (V.singleton V.empty)
+            ] ::
+                [Geometry XY]
+        noMembers =
+            [ MultiPoint U.empty
+            , MultiLineString V.empty
+            , MultiPolygon V.empty
+            , GeometryCollection V.empty
+            ] ::
+                [Geometry XY]
+        nested = GeometryCollection . V.singleton
+        convert = mapGeometry (const coordinate)
+    forM_ (PointGeometry (Point coordinate) : map convert (retainLayout ++ map nested retainLayout ++ map (nested . nested) retainLayout)) $ \shape -> do
         S.coordinateDimension shape @?= coordinateCount
         S.spatialDimension shape @?= spatialCount
         S.is3D shape @?= hasZ
         S.isMeasured shape @?= hasM
+    forM_ (map convert (noMembers ++ map nested noMembers ++ map (nested . nested) noMembers)) $ \shape -> do
+        S.coordinateDimension shape @?= 2
+        S.spatialDimension shape @?= 2
+        S.is3D shape @?= False
+        S.isMeasured shape @?= False
 
 -- | Check coordinates whose X and Y ordinates are one and two.
 checkCoordinate :: (Coordinate c) => c -> Maybe Double -> Maybe Double -> Assertion

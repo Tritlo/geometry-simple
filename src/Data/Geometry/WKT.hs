@@ -4,13 +4,14 @@
 
 {- | Checked WKT decoding and encoding for the seven simple geometry families.
 
-Untagged geometries use XY coordinates. Use a Z, M, or ZM tag for other
-coordinate types. Every member of a collection must have the same tag,
-including empty members. Keywords are case-insensitive. The decoder accepts
+Untagged coordinates infer XY, XYZ, or XYZM from their arity. Use M for
+measured coordinates. Explicit collection tags also constrain their children.
+Keywords are case-insensitive. The decoder accepts
 @MULTIPOINT (1 2, 3 4)@ and @MULTIPOINT ((1 2), (3 4))@.
 
-Decoding requires complete input, finite coordinates, and whitespace between
-ordinates. It does not check topology.
+Decoding requires complete input and whitespace between ordinates. It checks
+line lengths and ring closure. NaN and infinity are accepted. It does not
+check polygon topology.
 EWKT SRID prefixes are not supported. Keep CRS metadata beside the geometry.
 -}
 module Data.Geometry.WKT (
@@ -22,13 +23,15 @@ module Data.Geometry.WKT (
 import Control.Monad (unless, when)
 import Control.Monad.ST (runST)
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.State.Strict (StateT (..), get, gets, modify', put)
+import Control.Monad.Trans.State.Strict (StateT (..), get, modify', put)
+import Data.Bits ((.|.))
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Builder.RealFloat as RealFloat
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Geometry.Internal
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
 import Data.Text (Text)
@@ -36,33 +39,49 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Generic.Mutable as M
+import qualified Data.Vector.Unboxed as U
 
 -- | The remaining text and a controlled parse error.
 type Parser = StateT Text (Either String)
 
 {- | Decode WKT into the requested coordinate type.
-Empty geometries also require matching dimensions. Untagged input is XY.
+Untagged coordinates infer dimensions from their arity. An untagged EMPTY
+body is XY. Collections infer dimensions from their members. The inferred
+root dimensions must match the type.
 -}
-decodeWKT :: (Coordinate c) => Text -> Either String (Geometry c)
+decodeWKT :: forall c. (Coordinate c) => Text -> Either String (Geometry c)
 {-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XY) #-}
 {-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYZ) #-}
 {-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYM) #-}
 {-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYZM) #-}
 decodeWKT input = do
-    (geometry, remaining) <- runStateT (geometryParser <* spaces) input
+    ((geometry, dimensions, _), remaining) <- runStateT (geometryParser <* spaces) input
+    unless (dimensions == coordinateDimensions (Proxy :: Proxy c)) $
+        Left "Geometry WKT has the wrong coordinate dimensions"
     if Text.null remaining
         then Right geometry
         else Left "Geometry WKT has trailing input"
 
--- | Decode WKT and keep the coordinate type from its header.
+-- | Decode WKT and retain explicit or inferred coordinate dimensions.
 decodeAnyWKT :: Text -> Either String AnyGeometry
 decodeAnyWKT input = do
     ((_, dimensions), _) <- runStateT header input
     case dimensions of
-        DimXY -> GeometryXY <$> decodeWKT input
-        DimXYZ -> GeometryXYZ <$> decodeWKT input
-        DimXYM -> GeometryXYM <$> decodeWKT input
-        DimXYZM -> GeometryXYZM <$> decodeWKT input
+        Just DimXY -> GeometryXY <$> decodeWKT input
+        Just DimXYZ -> GeometryXYZ <$> decodeWKT input
+        Just DimXYM -> GeometryXYM <$> decodeWKT input
+        Just DimXYZM -> GeometryXYZM <$> decodeWKT input
+        Nothing ->
+            firstSuccess
+                [ GeometryXY <$> decodeWKT input
+                , GeometryXYZ <$> decodeWKT input
+                , GeometryXYM <$> decodeWKT input
+                , GeometryXYZM <$> decodeWKT input
+                ]
+  where
+    firstSuccess [] = Left "Geometry WKT has inconsistent coordinate dimensions or invalid syntax"
+    firstSuccess (Right shape : _) = Right shape
+    firstSuccess (Left _ : rest) = firstSuccess rest
 
 {- | Encode WKT with a dimension suffix for XYZ, XYM, and XYZM geometries.
 Empty geometries retain their dimensions. Each ordinate uses scientific
@@ -120,7 +139,7 @@ emptyKeyword = do
         else pure False
 
 -- | Read the geometry family and an attached or separate dimension suffix.
-header :: Parser (Int, Dimensions)
+header :: Parser (Int, Maybe Dimensions)
 header = do
     name <- word
     let families = [("POINT", 1), ("LINESTRING", 2), ("POLYGON", 3), ("MULTIPOINT", 4), ("MULTILINESTRING", 5), ("MULTIPOLYGON", 6), ("GEOMETRYCOLLECTION", 7)]
@@ -132,40 +151,70 @@ header = do
             input <- get
             let (tag, rest) = Text.span (\c -> isAsciiLower c || isAsciiUpper c) input
             case lookup (Text.toUpper tag) suffixes of
-                Just dimensions -> put rest >> pure (family, dimensions)
-                Nothing -> pure (family, DimXY)
+                Just dimensions -> put rest >> pure (family, Just dimensions)
+                Nothing -> pure (family, Nothing)
         Nothing -> case attached of
-            [result] -> pure result
+            [(family, dimensions)] -> pure (family, Just dimensions)
             _ -> failure "has an unsupported geometry type"
 
--- | Parse one geometry and check dimensions before allocating its children.
-geometryParser :: forall c. (Coordinate c) => Parser (Geometry c)
+-- | Keep the parsed tag separate from the dimensions retained by GEOS geometry values.
+geometryParser :: forall c. (Coordinate c) => Parser (Geometry c, Dimensions, Dimensions)
 geometryParser = do
-    (family, dimensions) <- header
-    unless (dimensions == coordinateDimensions (Proxy :: Proxy c)) $
-        failure "has the wrong coordinate dimensions"
-    let line = vector coordinate
-        polygon = vector line
-    case family of
-        1 -> PointGeometry <$> point True
-        2 -> LineString <$> line
-        3 -> Polygon <$> polygon
-        4 -> MultiPoint <$> vector (point False)
-        5 -> MultiLineString <$> vector line
-        6 -> MultiPolygon <$> vector polygon
-        _ -> GeometryCollection <$> vector geometryParser
+    (family, declared) <- header
+    let wanted = coordinateDimensions (Proxy :: Proxy c)
+        position = do
+            unless (maybe (wanted /= DimXYM) (== wanted) declared) $
+                failure "has the wrong coordinate dimensions"
+            coordinate
+        line = do
+            points <- vector position
+            lift (validateLine points)
+            pure points
+        polygon = do
+            rings <- vector (vector position)
+            lift (validatePolygon rings)
+            pure rings
+    if family == 7
+        then do
+            members <- vector geometryParser
+            let observed = V.foldl' (\acc (_, _, dim) -> toEnum (fromEnum acc .|. fromEnum dim)) DimXY members
+                dimensions = fromMaybe observed declared
+            case declared of
+                Just dim -> unless (V.all (\(_, child, _) -> child == dim) members) (failure "has mixed coordinate dimensions")
+                Nothing -> pure ()
+            pure (GeometryCollection (V.map (\(shape, _, _) -> shape) members), dimensions, observed)
+        else do
+            shape <- case family of
+                1 -> PointGeometry <$> point position
+                2 -> LineString <$> line
+                3 -> Polygon <$> polygon
+                4 -> MultiPoint <$> multiPoint position
+                5 -> MultiLineString <$> vector line
+                _ -> MultiPolygon <$> vector polygon
+            let dimensions = fromMaybe (if geometryEmpty shape then DimXY else wanted) declared
+                observed = case shape of
+                    MultiPoint points | U.null points -> DimXY
+                    MultiLineString lineStrings | V.null lineStrings -> DimXY
+                    MultiPolygon polygons | V.null polygons -> DimXY
+                    _ -> dimensions
+            pure (shape, dimensions, observed)
 
--- | Parse an empty point or coordinates, with optional MULTIPOINT parentheses.
-point :: (Coordinate c) => Bool -> Parser (Point c)
-point requireParens = do
+-- | Parse a parenthesized coordinate or an empty point.
+point :: Parser c -> Parser (Point c)
+point position = do
     empty <- emptyKeyword
     if empty
         then pure EmptyPoint
-        else do
-            parenthesized <- gets ((== Just '(') . fmap fst . Text.uncons)
-            if requireParens || parenthesized
-                then symbol '(' *> (Point <$> coordinate) <* symbol ')'
-                else Point <$> coordinate
+        else symbol '(' *> (Point <$> position) <* symbol ')'
+
+-- | MULTIPOINT uses one spelling throughout: bare coordinates or point bodies.
+multiPoint :: (Coordinate c) => Parser c -> Parser (U.Vector (Point c))
+multiPoint position = do
+    spaces
+    input <- get
+    let first = Text.dropWhile whitespace (Text.drop 1 input)
+        parenthesized = Text.isPrefixOf "(" first || Text.isPrefixOf "EMPTY" (Text.toUpper first)
+    vector (if parenthesized then point position else Point <$> position)
 
 -- | Build each sequence directly in a growable vector, then copy its used slice.
 vector :: (V.Vector v a) => Parser a -> Parser (v a)
@@ -223,7 +272,7 @@ nextNumber = do
     spaces
     number
 
-{- | Parse the decimal coefficient exactly, then round once to Double.
+{- | Read named IEEE values or an exactly rounded decimal ordinate.
 Bound extreme exponents so integer powers stay proportional to input length.
 Use 'fromRational' for rounding. @Data.Text.Read.double@ and
 @Data.Text.Read.rational@ can underflow intermediate powers, including the
@@ -237,7 +286,16 @@ number = do
             Just ('-', rest) -> (True, rest)
             Just ('+', rest) -> (False, rest)
             _ -> (False, input)
-        (whole, afterWhole) = Text.span isDigit unsigned
+        (keyword, afterKeyword) = Text.span (\c -> isAsciiLower c || isAsciiUpper c) unsigned
+        special = lookup (Text.toUpper keyword) [("NAN", 0 / 0), ("INF", 1 / 0), ("INFINITY", 1 / 0)]
+    case special of
+        Just value -> put afterKeyword >> pure (if negative then negate value else value)
+        Nothing -> decimalNumber negative unsigned
+
+-- | Round a decimal once. Clamp only exponents whose values must be zero or infinity.
+decimalNumber :: Bool -> Text -> Parser Double
+decimalNumber negative unsigned = do
+    let (whole, afterWhole) = Text.span isDigit unsigned
         (fraction, afterFraction) = case Text.uncons afterWhole of
             Just ('.', rest) -> Text.span isDigit rest
             _ -> (Text.empty, afterWhole)
@@ -259,17 +317,17 @@ number = do
     if (Text.all (== '0') whole && Text.all (== '0') fraction) || power < negate exponentLimit
         then put rest >> pure (if negative then -0.0 else 0.0)
         else do
-            when (power > exponentLimit) (failure "has a non-finite coordinate")
             let coefficient = digitsValue (whole <> fraction)
                 adjustedPower = power - toInteger (Text.length fraction)
                 magnitude =
-                    if adjustedPower >= 0
-                        then fromInteger (coefficient * 10 ^ adjustedPower)
-                        else fromRational (coefficient % (10 ^ negate adjustedPower))
+                    if power > exponentLimit
+                        then 1 / 0
+                        else
+                            if adjustedPower >= 0
+                                then fromInteger (coefficient * 10 ^ adjustedPower)
+                                else fromRational (coefficient % (10 ^ negate adjustedPower))
                 value = if negative then negate magnitude else magnitude
-            if isInfinite value
-                then failure "has a non-finite coordinate"
-                else put rest >> pure value
+            put rest >> pure value
 
 {- | Read decimal digits. Split long input in halves, because a digit-by-digit
 loop over a large Integer takes quadratic time.
@@ -295,10 +353,10 @@ geometryWKT geometry = name <> suffix <> " " <> body
     (name, body) = case geometry of
         PointGeometry value -> ("POINT", pointWKT value)
         LineString points -> ("LINESTRING", sequenceWKT coordinateWKT points)
-        Polygon rings -> ("POLYGON", sequenceWKT (sequenceWKT coordinateWKT) rings)
+        Polygon rings -> ("POLYGON", sequenceWKT (sequenceWKT coordinateWKT) (normalizePolygon rings))
         MultiPoint points -> ("MULTIPOINT", sequenceWKT pointWKT points)
         MultiLineString lineStrings -> ("MULTILINESTRING", sequenceWKT (sequenceWKT coordinateWKT) lineStrings)
-        MultiPolygon polygons -> ("MULTIPOLYGON", sequenceWKT (sequenceWKT (sequenceWKT coordinateWKT)) polygons)
+        MultiPolygon polygons -> ("MULTIPOLYGON", sequenceWKT (sequenceWKT (sequenceWKT coordinateWKT) . normalizePolygon) polygons)
         GeometryCollection children -> ("GEOMETRYCOLLECTION", sequenceWKT geometryWKT children)
 
 -- | Render an empty point or a parenthesized coordinate.

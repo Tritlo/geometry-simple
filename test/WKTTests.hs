@@ -91,6 +91,18 @@ tests =
                 PointGeometry (Point (XYZM x y z m)) ->
                     map castDoubleToWord64 [x, y, z, m] @?= [0x8000000000000000, 1, 0x8000000000000001, 0x7fefffffffffffff]
                 _ -> assertFailure "a ZM point changed family"
+        , testCase "non-finite WKT ordinates remain stored coordinates" $ do
+            forM_ ["NaN", "nan", "+NaN", "-NaN"] $ \token -> do
+                shape <- rightOrFail (decodeWKT ("POINT (" <> token <> " NaN)") :: Either String (Geometry XY))
+                case shape of
+                    PointGeometry (Point (XY x y)) -> assertBool "NaN point became empty" (isNaN x && isNaN y)
+                    _ -> assertFailure "WKT NaN coordinates must remain a nonempty point"
+                rendered <- rightOrFail (encodeWKT shape)
+                assertBool "NaN output" (Text.isInfixOf "NaN" rendered)
+            forM_ [("Inf", 1 / 0), ("-Infinity", -1 / 0), ("1e309", 1 / 0), ("-1e" <> Text.replicate 200 "9", -1 / 0)] $ \(token, expected) -> do
+                decodeWKT ("POINT (" <> token <> " 2)") @?= Right (PointGeometry (Point (XY expected 2)))
+        , testCase "untagged triples infer Z rather than M" $
+            assertLeft (decodeWKT "POINT (1 2 3)" :: Either String (Geometry XYM))
         , testGroup "rejected syntax" [testCase (Text.unpack input) (assertRejected input) | input <- invalidInputs]
         , testCase "all finite fixtures reject trailing input" $
             forM_ fixtures $ \(input, _) ->
@@ -106,8 +118,8 @@ tests =
                 decodeWKT (nestText levels (family <> " EMPTY")) @?= Right (nestGeometry levels emptyShape)
             | (family, input, shape, emptyShape) <-
                 [ ("MULTIPOINT", "MULTIPOINT ((1 2))", MultiPoint (U.singleton (Point (XY 1 2))), MultiPoint U.empty)
-                , ("MULTILINESTRING", "MULTILINESTRING ((1 2))", MultiLineString (V.singleton (U.singleton (XY 1 2))), MultiLineString V.empty)
-                , ("MULTIPOLYGON", "MULTIPOLYGON (((1 2)))", MultiPolygon (V.singleton (V.singleton (U.singleton (XY 1 2)))), MultiPolygon V.empty)
+                , ("MULTILINESTRING", "MULTILINESTRING ((1 2,1 2))", MultiLineString (V.singleton (U.replicate 2 (XY 1 2))), MultiLineString V.empty)
+                , ("MULTIPOLYGON", "MULTIPOLYGON (((1 2,1 2,1 2)))", MultiPolygon (V.singleton (V.singleton (U.replicate 3 (XY 1 2)))), MultiPolygon V.empty)
                 ]
             ]
         , testCase "nested empty point children parse beyond 128 levels" $
@@ -140,7 +152,7 @@ dimensionFixtures suffix first second a b wrap = do
         [ ("POINT", "(" <> first <> ")", PointGeometry (Point a), PointGeometry EmptyPoint)
         , ("LINESTRING", lineText, LineString line, LineString U.empty)
         , ("POLYGON", polygonText, Polygon (V.singleton ring), Polygon V.empty)
-        , ("MULTIPOINT", "((" <> first <> "), EMPTY, " <> second <> ")", MultiPoint (U.fromList [Point a, EmptyPoint, Point b]), MultiPoint U.empty)
+        , ("MULTIPOINT", "((" <> first <> "), EMPTY, (" <> second <> "))", MultiPoint (U.fromList [Point a, EmptyPoint, Point b]), MultiPoint U.empty)
         , ("MULTILINESTRING", "(" <> lineText <> ", EMPTY)", MultiLineString (V.fromList [line, U.empty]), MultiLineString V.empty)
         , ("MULTIPOLYGON", "(" <> polygonText <> ", EMPTY)", MultiPolygon (V.fromList [V.singleton ring, V.empty]), MultiPolygon V.empty)
         , ("GEOMETRYCOLLECTION", "(POINT" <> suffix <> " (" <> first <> "), LINESTRING" <> suffix <> " EMPTY)", GeometryCollection (V.fromList [PointGeometry (Point a), LineString U.empty]), GeometryCollection V.empty)
@@ -150,16 +162,23 @@ dimensionFixtures suffix first second a b wrap = do
 -- | Cover holes, empty children, optional numeric components, and delimiters.
 literalFixtures :: [(Text, AnyGeometry)]
 literalFixtures =
-    [ ("pOiNt\t( +.5\n-2.E+1 )", GeometryXY (PointGeometry (Point (XY 0.5 (-20)))))
+    [ ("POINT (1 2 3)", GeometryXYZ (PointGeometry (Point (XYZ 1 2 3))))
+    , ("POINT (1 2 3 4)", GeometryXYZM (PointGeometry (Point (XYZM 1 2 3 4))))
+    , ("GEOMETRYCOLLECTION Z (POINT (1 2 3))", GeometryXYZ (GeometryCollection (V.singleton (PointGeometry (Point (XYZ 1 2 3))))))
+    , ("GEOMETRYCOLLECTION (POINT EMPTY,POINT Z (1 2 3))", GeometryXYZ (GeometryCollection (V.fromList [PointGeometry EmptyPoint, PointGeometry (Point (XYZ 1 2 3))])))
+    , ("GEOMETRYCOLLECTION (POINT M EMPTY)", GeometryXYM (GeometryCollection (V.singleton (PointGeometry EmptyPoint))))
+    , ("GEOMETRYCOLLECTION (MULTIPOINT M EMPTY,POINT (1 2))", GeometryXY (GeometryCollection (V.fromList [MultiPoint U.empty, PointGeometry (Point (XY 1 2))])))
+    , ("GEOMETRYCOLLECTION (GEOMETRYCOLLECTION M (MULTIPOINT M EMPTY),POINT (1 2))", GeometryXY (GeometryCollection (V.fromList [GeometryCollection (V.singleton (MultiPoint U.empty)), PointGeometry (Point (XY 1 2))])))
+    , ("GEOMETRYCOLLECTION (POINT Z EMPTY,POINT ZM (1 2 3 4))", GeometryXYZM (GeometryCollection (V.fromList [PointGeometry EmptyPoint, PointGeometry (Point (XYZM 1 2 3 4))])))
+    , ("POLYGON (EMPTY,EMPTY)", GeometryXY (Polygon (V.replicate 2 U.empty)))
+    , ("POLYGON Z ((0 0 1,1 1 2,0 0 3))", GeometryXYZ (Polygon (V.singleton (U.fromList [XYZ 0 0 1, XYZ 1 1 2, XYZ 0 0 3]))))
+    , ("pOiNt\t( +.5\n-2.E+1 )", GeometryXY (PointGeometry (Point (XY 0.5 (-20)))))
     , ("POINT(+1. -2.)", GeometryXY (PointGeometry (Point (XY 1 (-2)))))
     , ("POINT (.5 .25)", GeometryXY (PointGeometry (Point (XY 0.5 0.25))))
     , ("POINT (001 002)", GeometryXY (PointGeometry (Point (XY 1 2))))
     , ("POINT (1e+2 2E-1)", GeometryXY (PointGeometry (Point (XY 100 0.2))))
     , ("MULTIPOINT(1 2, 3 4)", GeometryXY (MultiPoint (U.fromList [Point (XY 1 2), Point (XY 3 4)])))
     , ("MULTIPOINT((1 2),(3 4))", GeometryXY (MultiPoint (U.fromList [Point (XY 1 2), Point (XY 3 4)])))
-    , ("MULTIPOINT(1 2,(3 4),EMPTY,5 6)", GeometryXY (MultiPoint (U.fromList [Point (XY 1 2), Point (XY 3 4), EmptyPoint, Point (XY 5 6)])))
-    , ("LINESTRING (1 2)", GeometryXY (LineString (U.singleton (XY 1 2))))
-    , ("POLYGON (EMPTY, (1 2))", GeometryXY (Polygon (V.fromList [U.empty, U.singleton (XY 1 2)])))
     ,
         ( "POLYGON ((0 0,4 0,4 4,0 0),(1 1,2 1,1 2,1 1))"
         , GeometryXY (Polygon (V.fromList [U.fromList [XY 0 0, XY 4 0, XY 4 4, XY 0 0], U.fromList [XY 1 1, XY 2 1, XY 1 2, XY 1 1]]))
@@ -221,7 +240,6 @@ invalidInputs =
     , "MULTIPOLYGON (())"
     , "GEOMETRYCOLLECTION ()"
     , "POINT (1)"
-    , "POINT (1 2 3)"
     , "POINT Z (1 2)"
     , "POINT M (1 2 3 4)"
     , "POINT ZM (1 2 3)"
@@ -255,18 +273,32 @@ invalidInputs =
     , "POLYGON (1 2,3 4)"
     , "MULTIPOLYGON ((1 2,3 4))"
     , "GEOMETRYCOLLECTION (1 2)"
-    , "GEOMETRYCOLLECTION Z (POINT (1 2 3))"
     , "GEOMETRYCOLLECTION Z (POINT EMPTY)"
     , "GEOMETRYCOLLECTION M (POINT Z EMPTY)"
     , "GEOMETRYCOLLECTION ZM (GEOMETRYCOLLECTION EMPTY)"
-    , "GEOMETRYCOLLECTION (POINT Z EMPTY)"
     , "GEOMETRYCOLLECTION (POINT EMPTY,)"
     , "CIRCULARSTRING (0 0,1 1,2 0)"
     , "POINT XY (1 2)"
     , "SRID=4326;POINT (1 2)"
     , "{\"type\":\"Point\",\"coordinates\":[1,2]}"
     ]
-        ++ ["POINT (" <> token <> " 0)" | token <- ["NaN", "nan", "+NaN", "Inf", "-inf", "Infinity", "-Infinity", "1e309", "-1e309", "1.7976931348623159e308", "1e" <> Text.replicate 200 "9"]]
+        ++ [ "LINESTRING (1 2)"
+           , "POLYGON ((0 0,0 0))"
+           , "POLYGON ((0 0,1 1,2 2))"
+           , "POLYGON (EMPTY,(0 0,1 1,0 0))"
+           , "POLYGON ((NaN NaN,1 1,NaN NaN))"
+           , "MULTIPOINT(1 2,(3 4),EMPTY,5 6)"
+           , "MULTIPOINT(EMPTY,1 2)"
+           , "MULTIPOINT(1 2,EMPTY)"
+           , "GEOMETRYCOLLECTION M (POINT (1 2 3))"
+           , "LINESTRING (0 0,1 1 2)"
+           , "LINESTRING (0 0 3,1 1)"
+           , "GEOMETRYCOLLECTION (POINT Z EMPTY,POINT (1 2))"
+           , "GEOMETRYCOLLECTION (POINT M EMPTY,POINT Z (1 2 3))"
+           , "GEOMETRYCOLLECTION (POINT (1 2),POINT Z (3 4 5))"
+           , "POINT (NaNx 0)"
+           , "POINT (Infinityx 0)"
+           ]
 
 -- | Decode a fixture with its declared static coordinate type.
 assertTypedDecode :: Text -> AnyGeometry -> Assertion

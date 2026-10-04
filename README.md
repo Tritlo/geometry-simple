@@ -86,7 +86,7 @@ equal. As for `Double`, `0` and `-0` compare equal.
 | Collection members | `numGeometries`, `geometryN` |
 | Line coordinates | `numPoints`, `pointN`, `startPoint`, `endPoint`, `isClosed` |
 | Polygon rings | `exteriorRing`, `numInteriorRings`, `interiorRingN` |
-| Planar operations | `envelope`, `area`, `curveLength`, `perimeter`, `centroid`, `convexHull` |
+| Planar operations | `envelope`, `area`, `geometryLength`, `curveLength`, `perimeter`, `centroid`, `convexHull` |
 
 Indices start at one. Accessors that return `Maybe` give `Nothing` for an
 index out of range or for a geometry family they do not apply to. `isClosed`
@@ -94,6 +94,10 @@ gives `False` for families other than lines. Member counts include empty
 members, and a geometry that is not a collection counts as one member.
 `isEmpty` checks every child. An empty point, line, or polygon keeps its
 family's dimension, and a geometry collection with no members has dimension -1.
+Coordinate layout queries follow GEOS: atomic empty geometries retain their
+layout, but multi-geometries with no members report XY. Collections report the
+layout of their atomic members, or XY when they have none. The Haskell
+coordinate type remains unchanged.
 
 Measurements and closure tests use only X and Y. Lengths are in coordinate
 units and areas in square units. `envelope`, `centroid`, and `convexHull`
@@ -101,10 +105,11 @@ return `XY` geometries. The operations are planar, so for longitude and
 latitude input, lengths are in degrees.
 
 `area` treats the first ring of each polygon as the exterior and the other
-rings as holes. Ring orientation does not matter. `curveLength` measures lines,
-and `perimeter` measures polygon rings, including holes. The planar operations
-assume finite X and Y values and valid polygon topology. Area and perimeter
-close open rings.
+rings as holes. Ring orientation does not matter. `geometryLength` matches
+GEOS length: it includes lines and polygon boundaries. `curveLength` measures
+only lines, and `perimeter` measures only polygon rings, including holes.
+The planar operations assume finite X and Y values and valid polygon topology.
+Area and perimeter close open rings supplied through the Haskell constructors.
 
 The measurements use `Double` arithmetic. Polygon cross products use coordinates
 relative to a ring vertex. Centroids use compensated sums and keep polygon positions
@@ -122,9 +127,16 @@ when all intermediate values are finite.
 segments by length. If all segments have zero length, it averages the points,
 and counts each line or ring as one point at its first coordinate, as GEOS
 does. Lower-dimensional parts do not affect a higher-dimensional centroid.
-Empty input gives `EmptyPoint`. `envelope` and `convexHull` give an empty
-collection for empty input, and a point or line for degenerate input. Hull
-polygons are counterclockwise.
+Empty input gives `EmptyPoint`. An empty envelope is an empty point. An envelope
+with one XY location is a point. Other envelopes are polygons, including
+degenerate polygons for horizontal or vertical bounds. Hull polygons are
+counterclockwise.
+
+The comparison tests use Shapely 2.1.2 with GEOS 3.13.1. Measurements can differ
+in their last floating-point digits. WKT formatting also differs. The current
+API uses one-based selectors and returns XY hulls; GEOS uses zero-based
+selectors and retains Z in nonempty hulls. Hull vertex order also differs.
+Mixed nonempty coordinate layouts cannot be represented by `Geometry c`.
 
 The package does not claim full Simple Features conformance. For validity
 checks, spatial predicates such as `intersects` and `contains`, distance,
@@ -143,7 +155,7 @@ GEOS library.
   same `Double`, such as `1.0e0` or `1.2345e-2`. Scientific notation is faster
   to render than fixed notation such as `1.0`.
 - `decodeWKT` decodes WKT into the requested coordinate type.
-- `decodeAnyWKT` keeps the coordinate type from the WKT header.
+- `decodeAnyWKT` keeps the explicit or inferred coordinate type.
 
 `Data.Geometry.WKB` has the WKB functions and `Data.Geometry.WKT` has the WKT
 functions. The WKT decoder accepts lowercase keywords, attached dimension
@@ -152,29 +164,40 @@ tags such as `POINTZ`, and both `MULTIPOINT (1 2, 3 4)` and
 exponent. Ordinates must be separated by whitespace, which is space, tab, CR,
 or LF. Trailing input is an error.
 
-WKT without a dimension tag is XY. Other coordinate types need a Z, M, or ZM
-tag, also on empty geometries and on every member of a collection. The decoder
-does not infer dimensions from the number of ordinates or from the requested
-Haskell type. Some writers drop the tag from empty members: GEOS 3.13 writes
-`MULTIPOINT EMPTY` inside a `GEOMETRYCOLLECTION M`, in WKT and in WKB. The
-decoders reject that input. EWKT `SRID=...;` prefixes are not supported.
+Untagged WKT infers XY, XYZ, or XYZM from two, three, or four ordinates.
+XYM needs an M tag. Nonempty collection members must use the same coordinate
+type. Explicitly tagged WKT collections require matching tags or inferred
+dimensions on their children, including empty children. GEOS 3.13 can drop tags
+from empty collection members when it writes WKT; its reader and this decoder
+reject those mixed dimensions. Untagged collections can promote empty children
+to the common coordinate type. The WKB decoder accepts empty children with
+different dimension tags and retains the parent's coordinate type.
+EWKT `SRID=...;` prefixes are not supported.
 
 All codecs return `Either String`. The WKB decoder accepts both byte orders,
 also mixed within nested geometries. It rejects trailing bytes, unknown type
-codes, and inconsistent dimensions. It checks every count against the remaining
-input before it allocates a vector. EWKB flags and embedded SRIDs are not
-supported.
+codes, and inconsistent nonempty dimensions. It checks every count against
+the remaining input before it allocates a vector. EWKB flags and embedded
+SRIDs are not supported.
+
+The codecs require each line to be empty or have at least two coordinates.
+Each ring must be empty or have at least three coordinates and close in XY.
+A polygon with an empty exterior cannot have a nonempty hole. These are
+construction checks. They do not detect self-intersections or overlapping holes.
+Writers normalize polygons that contain only empty rings to an empty polygon.
+Readers retain empty holes, so ring counts can change after encoding.
 
 Finite `Double` values keep their exact bits through WKB and through WKT from
 `encodeWKT`, including negative zero and subnormals. The WKT decoder rounds
 other numbers to the nearest `Double`. Underflow gives a signed zero and
-overflow is an error. In WKB, an empty point has NaN in every ordinate. The
-codecs reject all other NaN and infinite values. Use `EmptyPoint` for an empty
-point in Haskell.
+overflow gives an infinity. The codecs accept NaN and infinite ordinates.
+The planar operations require finite X and Y values.
+In WKB, NaN in both X and Y denotes an empty point, regardless of Z and M.
+Non-finite coordinates do not have the finite-coordinate round-trip guarantee.
+Use `EmptyPoint` for an empty point in Haskell.
 
 The codecs have no nesting limit. WKB counts must fit in 32 bits; WKT has no
-count limit. The codecs check structure and finite coordinates, but not ring
-closure, self-intersection, or other topology rules.
+count limit.
 
 ## Development
 

@@ -9,10 +9,11 @@ Initial release.
 - Checked ISO WKB decoding and encoding. Decoding accepts both byte orders,
   also mixed within one geometry.
 - WKT encoding and decoding for all families and coordinate types, including
-  empty geometries. Encoded values decode to the same bits. The decoder rejects
+  empty geometries. Finite coordinates decode to the same bits. The decoder rejects
   malformed tokens, missing separators, and trailing input.
-- The codecs reject malformed payloads, inconsistent dimensions, and non-finite
-  coordinates. They do not check topology or limit nesting depth.
+- The codecs follow GEOS construction rules for line lengths and closed rings.
+  They accept non-finite ordinates. They reject inconsistent nonempty dimensions.
+  They do not check polygon topology or limit nesting depth.
 - Simple Features accessors, envelopes, areas, lengths, perimeters, centroids,
   and convex hulls in the XY plane. Computed geometries use XY coordinates.
 - Centroids retain small contributions from distant components. Zero-length

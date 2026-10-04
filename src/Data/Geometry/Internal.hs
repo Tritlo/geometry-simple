@@ -16,8 +16,7 @@ change it. Import "Data.Geometry" and the codec modules for a stable API.
 module Data.Geometry.Internal where
 
 import Control.DeepSeq (NFData (..), rwhnf)
-import Control.Monad (unless)
-import Data.Proxy (Proxy (..))
+import Control.Monad (unless, when)
 import qualified Data.Vector as V
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as M
@@ -138,33 +137,21 @@ instance NFData AnyGeometry where
         GeometryXYM value -> rnf value
         GeometryXYZM value -> rnf value
 
--- | Check each ordinate present in the coordinate type.
-coordinateAll :: forall c. (Coordinate c) => (Double -> Bool) -> c -> Bool
-{-# INLINE coordinateAll #-}
-coordinateAll predicate coordinate =
-    let (x, y, z, m) = coordinateComponents coordinate
-        extra = case coordinateDimensions (Proxy :: Proxy c) of
-            DimXY -> True
-            DimXYZ -> predicate z
-            DimXYM -> predicate m
-            DimXYZM -> predicate z && predicate m
-     in predicate x && predicate y && extra
-
--- | Reject NaN and infinity outside the empty-point representation.
+-- | Test whether an ordinate is neither NaN nor infinity.
 finite :: Double -> Bool
 {-# INLINE finite #-}
 finite value = not (isNaN value || isInfinite value)
 
--- | Check finite coordinates and the output format's vector length bounds.
+-- | Check the constructor rules that the GEOS readers require.
 validateGeometry :: (Coordinate c) => (Int -> Either String ()) -> Geometry c -> Either String ()
 validateGeometry checkLength geometry = case geometry of
-    PointGeometry EmptyPoint -> pure ()
-    PointGeometry (Point coordinate) -> validateCoordinate coordinate
-    LineString points -> validateLine points
-    Polygon rings -> checkLength (V.length rings) >> V.mapM_ validateLine rings
-    MultiPoint points -> do
-        checkLength (U.length points)
-        U.mapM_ (validateGeometry checkLength . PointGeometry) points
+    PointGeometry _ -> pure ()
+    LineString points -> checkLength (U.length points) >> validateLine points
+    Polygon rings -> do
+        checkLength (V.length rings)
+        V.mapM_ (checkLength . U.length) rings
+        validatePolygon rings
+    MultiPoint points -> checkLength (U.length points)
     MultiLineString lineStrings -> do
         checkLength (V.length lineStrings)
         V.mapM_ (validateGeometry checkLength . LineString) lineStrings
@@ -174,14 +161,60 @@ validateGeometry checkLength geometry = case geometry of
     GeometryCollection children -> do
         checkLength (V.length children)
         V.mapM_ (validateGeometry checkLength) children
-  where
-    -- Check a line or ring without topology restrictions.
-    validateLine points = checkLength (U.length points) >> U.mapM_ validateCoordinate points
 
--- | Check that one coordinate contains only finite ordinates.
-validateCoordinate :: (Coordinate c) => c -> Either String ()
-{-# INLINE validateCoordinate #-}
-validateCoordinate coordinate = unless (coordinateAll finite coordinate) (Left "Geometry has a non-finite coordinate")
+-- | A line has zero coordinates or at least two coordinates.
+validateLine :: (U.Unbox c) => U.Vector c -> Either String ()
+validateLine points = when (U.length points == 1) (Left "Geometry line must have zero or at least two coordinates")
+
+-- | Rings have zero or at least three coordinates and close in X and Y.
+validatePolygon :: (Coordinate c) => V.Vector (U.Vector c) -> Either String ()
+validatePolygon rings = do
+    V.mapM_ validateRing rings
+    unless (V.null rings || not (U.null (V.head rings)) || V.all U.null rings) $
+        Left "Geometry polygon has an empty shell and nonempty holes"
+  where
+    validateRing points
+        | U.null points = pure ()
+        | U.length points < 3 = Left "Geometry ring must have zero or at least three coordinates"
+        | otherwise =
+            let (x, y, _, _) = coordinateComponents (U.head points)
+                (x', y', _, _) = coordinateComponents (U.last points)
+             in unless (x == x' && y == y') (Left "Geometry ring is not closed")
+
+-- | GEOS writes polygons with only empty rings as an empty polygon.
+normalizePolygon :: (U.Unbox c) => V.Vector (U.Vector c) -> V.Vector (U.Vector c)
+normalizePolygon rings = if V.all U.null rings then V.empty else rings
+
+-- | Test whether a geometry has no stored coordinates.
+geometryEmpty :: (Coordinate c) => Geometry c -> Bool
+geometryEmpty geometry = case geometry of
+    PointGeometry EmptyPoint -> True
+    PointGeometry (Point _) -> False
+    LineString points -> U.null points
+    Polygon rings -> V.all U.null rings
+    MultiPoint points -> U.all emptyPoint points
+    MultiLineString lineStrings -> V.all U.null lineStrings
+    MultiPolygon polygons -> V.all (V.all U.null) polygons
+    GeometryCollection children -> V.all geometryEmpty children
+  where
+    emptyPoint EmptyPoint = True
+    emptyPoint (Point _) = False
+
+-- | Convert an empty geometry to another coordinate type without losing members.
+convertEmptyGeometry :: (Coordinate a, Coordinate b) => Geometry a -> Maybe (Geometry b)
+convertEmptyGeometry geometry = case geometry of
+    PointGeometry EmptyPoint -> Just (PointGeometry EmptyPoint)
+    PointGeometry (Point _) -> Nothing
+    LineString points -> if U.null points then Just (LineString U.empty) else Nothing
+    Polygon rings -> Polygon <$> traverse emptyLine rings
+    MultiPoint points -> MultiPoint . U.fromList <$> traverse emptyPoint (U.toList points)
+    MultiLineString lineStrings -> MultiLineString <$> traverse emptyLine lineStrings
+    MultiPolygon polygons -> MultiPolygon <$> traverse (traverse emptyLine) polygons
+    GeometryCollection children -> GeometryCollection <$> traverse convertEmptyGeometry children
+  where
+    emptyLine points = if U.null points then Just U.empty else Nothing
+    emptyPoint EmptyPoint = Just EmptyPoint
+    emptyPoint (Point _) = Nothing
 
 -- Unboxed vectors store coordinates as tuples, so each ordinate has its own buffer.
 

@@ -10,6 +10,7 @@ import qualified Data.ByteString as BS
 import Data.Char (digitToInt)
 import Data.Either (isLeft)
 import Data.Geometry
+import qualified Data.Geometry.SimpleFeatures as S
 import Data.Geometry.WKB
 import Data.Geometry.WKT (encodeWKT)
 import qualified Data.Geometry.WKT as WKT
@@ -112,13 +113,78 @@ tests =
                 points = MultiPoint (U.slice 1 2 (U.fromList [Point (XY 9 9), EmptyPoint, Point (XY 1 2), Point (XY 8 8)]))
             encodeWKB line @?= Right (wkb True 2 (count True 2 <> coordinates True [1, 2, 3, 4]))
             encodeWKB points @?= Right (children True 4 [emptyWKB True 0 1, point True 0 [1, 2]])
-        , testCase "structural validation does not impose topology" $ do
-            let openRing = U.fromList [XY 0 0, XY 1 1]
-                polygon = Polygon (V.fromList [U.empty, openRing])
-            (encodeWKB polygon >>= decodeWKB) @?= Right polygon
-            encodeWKT polygon @?= Right "POLYGON (EMPTY, (0.0e0 0.0e0, 1.0e0 1.0e0))"
-            let singletonLine = LineString (U.singleton (XY 1 2))
-            (encodeWKB singletonLine >>= decodeWKB) @?= Right singletonLine
+        , testCase "constructor validation matches GEOS without checking polygon topology" $ do
+            let openRing = Polygon (V.singleton (U.fromList [XY 0 0, XY 1 1, XY 2 2]))
+                singletonLine = LineString (U.singleton (XY 1 2))
+                emptyShell = Polygon (V.fromList [U.empty, U.fromList [XY 0 0, XY 1 1, XY 0 0]])
+            forM_ [openRing, singletonLine, emptyShell] $ \shape -> do
+                assertLeft (encodeWKB shape)
+                assertLeft (encodeWKT shape)
+            let degenerate = Polygon (V.singleton (U.fromList [XY 0 0, XY 1 1, XY 0 0]))
+            (encodeWKB degenerate >>= decodeWKB) @?= Right degenerate
+            (encodeWKT degenerate >>= WKT.decodeWKT) @?= Right degenerate
+        , testCase "empty polygon rings normalize to an empty polygon" $ do
+            let shape = Polygon (V.fromList [U.empty, U.empty]) :: Geometry XY
+            encodeWKT shape @?= Right "POLYGON EMPTY"
+            (encodeWKB shape >>= decodeWKB) @?= Right (Polygon V.empty :: Geometry XY)
+        , testCase "readers retain empty polygon holes before writing" $ do
+            fromText <- rightOrFail (WKT.decodeWKT "POLYGON (EMPTY,EMPTY)" :: Either String (Geometry XY))
+            fromBinary <- rightOrFail (decodeWKB (wkb True 3 (count True 2 <> count True 0 <> count True 0)) :: Either String (Geometry XY))
+            forM_ [fromText, fromBinary] $ \shape -> do
+                S.numInteriorRings shape @?= Just 1
+                encodeWKT shape @?= Right "POLYGON EMPTY"
+                encodeWKB shape @?= Right (emptyWKB True 0 3)
+        , testCase "empty WKB children can use different dimension tags" $
+            forM_ [0, 1000, 2000, 3000] $ \parentOffset ->
+                forM_ [0, 1000, 2000, 3000] $ \childOffset ->
+                    forM_ [1 .. 7] $ \family -> do
+                        let bytes = children True (parentOffset + 7) [emptyWKB False childOffset family]
+                            canonical = children True (parentOffset + 7) [emptyWKB True parentOffset family]
+                        (decodeAnyWKB bytes >>= encodeAnyWKB) @?= Right canonical
+        , testCase "multipoint empty children have independent byte lengths" $ do
+            let bytes = children True 3004 [emptyWKB False 0 1, point True 3000 [1, 2, 3, 4], emptyWKB True 1000 1]
+            decodeAnyWKB bytes @?= Right (GeometryXYZM (MultiPoint (U.fromList [EmptyPoint, Point (XYZM 1 2 3 4), EmptyPoint])))
+        , testCase "mixed-width multipoints preserve bits and following siblings" $
+            forM_ [(0, [-0.0, 5e-324]), (1000, [-0.0, 5e-324, 3]), (2000, [-0.0, 5e-324, 4]), (3000, [-0.0, 5e-324, 3, 4])] $ \(offset, values) ->
+                forM_ [False, True] $ \little -> do
+                    let parts = [point False 0 [0 / 0, 0 / 0], point True 1000 [0 / 0, 0 / 0, 3], point False 2000 [0 / 0, 0 / 0, 1 / 0], point True 3000 [0 / 0, 0 / 0, 3, -0.0], point little offset values]
+                        multi = children little (offset + 4) parts
+                        sibling = point (not little) offset values
+                        bytes = children (not little) (offset + 7) [multi, sibling]
+                        canonicalMulti = children True (offset + 4) (replicate 4 (emptyWKB True offset 1) ++ [point True offset values])
+                        canonical = children True (offset + 7) [canonicalMulti, point True offset values]
+                    (decodeAnyWKB bytes >>= encodeAnyWKB) @?= Right canonical
+                    forM_ [0 .. BS.length multi - 1] $ \size ->
+                        assertRejected "truncated mixed-width child" (BS.take size multi)
+                    forM_ [0, 4, 6, maxBound] $ \wrongCount ->
+                        assertRejected "multipoint count crosses a sibling boundary" $
+                            children little (offset + 7) [wkb little (offset + 4) (count little wrongCount <> BS.concat parts), sibling]
+        , testCase "mixed-width empties do not permit later nonempty dimension changes" $
+            forM_ [point False 1000 [1, 2, 3], point True 1000 [0 / 0, 2, 3], point False 3000 [1, 2, 3, 4]] $ \wrongChild ->
+                assertRejected "nonempty point has the wrong dimensions" $
+                    children True 2004 [emptyWKB False 0 1, wrongChild]
+        , testCase "WKB empty points depend on X and Y, not Z and M" $
+            forM_ [(1000, [0 / 0, 0 / 0, 3]), (2000, [0 / 0, 0 / 0, 3]), (3000, [0 / 0, 0 / 0, 3, 4])] $ \(offset, values) ->
+                (decodeAnyWKB (point False offset values) >>= encodeAnyWKB) @?= Right (emptyWKB True offset 1)
+        , testCase "WKT and WKB have different NaN point construction rules" $ do
+            let shape = PointGeometry (Point (XYZM (0 / 0) (0 / 0) 3 4))
+            (encodeWKB shape >>= decodeWKB) @?= Right (PointGeometry EmptyPoint :: Geometry XYZM)
+            textShape <- rightOrFail (encodeWKT shape >>= WKT.decodeWKT :: Either String (Geometry XYZM))
+            case textShape of
+                PointGeometry (Point (XYZM x y z m)) -> do
+                    assertBool "WKT point lost NaN ordinates" (isNaN x && isNaN y)
+                    (z, m) @?= (3, 4)
+                _ -> assertFailure "WKT NaN point became empty"
+        , testCase "line and ring buffers retain non-finite ordinates" $
+            forM_ [LineString (U.fromList [XY (0 / 0) (1 / 0), XY (-1 / 0) 2]), Polygon (V.singleton (U.fromList [XY 0 0, XY (0 / 0) (1 / 0), XY 0 0]))] $ \shape -> do
+                bytes <- rightOrFail (encodeWKB shape)
+                (decodeAnyWKB bytes >>= encodeAnyWKB) @?= Right bytes
+                rendered <- rightOrFail (encodeWKT shape)
+                decoded <- rightOrFail (WKT.decodeWKT rendered :: Either String (Geometry XY))
+                assertBool "non-finite geometry changed family" $ case (shape, decoded) of
+                    (LineString _, LineString _) -> True
+                    (Polygon _, Polygon _) -> True
+                    _ -> False
         , testCase "every proper fixture prefix is truncated" $
             forM_ samples $ \(label, bytes, _, _, _) ->
                 forM_ [0 .. BS.length bytes - 1] $ \size ->
@@ -127,7 +193,7 @@ tests =
             forM_ samples $ \(label, bytes, _, _, _) ->
                 assertRejected label (bytes <> BS.singleton 0)
         , testGroup "malformed WKB" [testCase label (assertRejected label bytes) | (label, bytes) <- malformed]
-        , testGroup "invalid constructed coordinates" invalidConstructedTests
+        , testGroup "non-finite constructed coordinates" nonfiniteConstructedTests
         , testCase "nested collections round-trip beyond 128 levels" $
             forM_ [127, 128, 1024] $ \levels -> do
                 let shape = nestedGeometry levels
@@ -256,49 +322,33 @@ malformed =
            , ("ring count exceeds payload", wkb True 3 (count True 2 <> count True 0))
            , ("ring coordinate count exceeds payload", wkb True 3 (count True 1 <> count True maxBound))
            , ("child count exceeds payload", wkb True 7 (count True 2 <> emptyWKB True 0 7))
-           , ("point partially NaN", point True 0 [0 / 0, 2])
-           , ("point positive infinity", point True 0 [1 / 0, 2])
-           , ("point negative infinity", point False 0 [1, -1 / 0])
-           , ("line all-NaN coordinate", wkb True 2 (count True 1 <> coordinates True [0 / 0, 0 / 0]))
-           , ("polygon NaN coordinate", wkb True 3 (count True 1 <> count True 1 <> coordinates True [0 / 0, 2]))
-           , ("point Z partial NaN", point True 1000 [0 / 0, 0 / 0, 3])
-           , ("point ZM infinite measure", point False 3000 [1, 2, 3, 1 / 0])
+           , ("singleton line", wkb True 2 (count True 1 <> coordinates True [0 / 0, 0 / 0]))
+           , ("singleton ring", wkb True 3 (count True 1 <> count True 1 <> coordinates True [0 / 0, 2]))
            , ("collection child byte order", children True 7 [BS.singleton 2 <> BS.drop 1 (point True 0 [1, 2])])
            , ("collection child type", children True 7 [wkb False 8 (count False 0)])
            ]
         ++ [("multi family mismatch " ++ show family, children True family [wkb False 7 (count False 0)]) | family <- [4 .. 6]]
-        ++ [("multi dimensions mismatch " ++ show family, children True family [emptyWKB False 1000 (family - 3)]) | family <- [4 .. 6]]
         ++ [ ("multi M is not Z", children True 2004 [point False 1000 [1, 2, 3]])
-           , ("empty collection dimensions differ", children False 1007 [emptyWKB True 2000 7])
            , ("nested point dimensions differ", children False 7 [point True 1000 [1, 2, 3]])
-           , ("nested empty point dimensions differ", children True 3007 [emptyWKB False 0 1])
            ]
 
--- | Non-finite coordinates must fail through both output formats.
-invalidConstructedTests :: [TestTree]
-invalidConstructedTests =
-    testCase
-        "all-NaN coordinates require EmptyPoint"
-        ( do
-            let shape = PointGeometry (Point (XY (0 / 0) (0 / 0)))
-            assertLeft (encodeWKB shape)
-            assertLeft (encodeWKT shape)
-        )
-        : [ testCase label $ do
-                assertLeft (encodeAnyWKB shape)
-                assertLeft (encodeAnyWKT shape)
-          | value <- [0 / 0, 1 / 0, -1 / 0]
-          , (label, shape) <-
-                [ ("point " ++ show value, GeometryXY (PointGeometry (Point (XY value 2))))
-                , ("line " ++ show value, GeometryXY (LineString (U.singleton (XY 1 value))))
-                , ("ring " ++ show value, GeometryXY (Polygon (V.singleton (U.singleton (XY value 2)))))
-                , ("multipoint " ++ show value, GeometryXY (MultiPoint (U.fromList [EmptyPoint, Point (XY 1 value)])))
-                , ("nested collection " ++ show value, GeometryXY (GeometryCollection (V.singleton (PointGeometry (Point (XY value 2))))))
-                , ("Z " ++ show value, GeometryXYZ (PointGeometry (Point (XYZ 1 2 value))))
-                , ("M " ++ show value, GeometryXYM (PointGeometry (Point (XYM 1 2 value))))
-                , ("ZM " ++ show value, GeometryXYZM (PointGeometry (Point (XYZM 1 2 3 value))))
-                ]
-          ]
+-- | Both writers retain non-finite ordinates that GEOS constructors accept.
+nonfiniteConstructedTests :: [TestTree]
+nonfiniteConstructedTests =
+    [ testCase ("non-finite ordinate " ++ show value) $ do
+        let shape = PointGeometry (Point (XYZM value 2 value value))
+        encoded <- rightOrFail (encodeWKB shape)
+        encoded @?= point True 3000 [value, 2, value, value]
+        rendered <- rightOrFail (encodeWKT shape)
+        actual <- rightOrFail (WKT.decodeWKT rendered :: Either String (Geometry XYZM))
+        case actual of
+            PointGeometry (Point (XYZM x y z m)) -> do
+                y @?= 2
+                forM_ [x, z, m] $ \ordinate ->
+                    assertBool "non-finite value changed" (if isNaN value then isNaN ordinate else ordinate == value)
+            _ -> assertFailure "non-finite point changed family"
+    | value <- [0 / 0, 1 / 0, -1 / 0]
+    ]
 
 -- | Generate small trees independently of the codec representation.
 geometryGen :: (Coordinate c) => Gen c -> Int -> Gen (Geometry c)
@@ -314,8 +364,21 @@ geometryGen coordinate depth =
             ++ [(1, GeometryCollection . V.fromList <$> shortList (geometryGen coordinate (depth - 1))) | depth > 0]
   where
     pointGen = frequency [(1, pure EmptyPoint), (3, Point <$> coordinate)]
-    lineGen = U.fromList <$> shortList coordinate
-    polygonGen = V.fromList <$> shortList lineGen
+    lineGen = do
+        n <- elements [0, 2, 3]
+        U.fromList <$> vectorOf n coordinate
+    polygonGen =
+        frequency
+            [ (1, pure V.empty)
+            ,
+                ( 3
+                , do
+                    first <- coordinate
+                    second <- coordinate
+                    holes <- shortList (frequency [(1, pure U.empty), (3, do a <- coordinate; b <- coordinate; pure (U.fromList [a, b, a]))])
+                    pure (V.fromList (U.fromList [first, second, first] : holes))
+                )
+            ]
 
 -- | Limit the size of each container independently of QuickCheck's size.
 shortList :: Gen a -> Gen [a]

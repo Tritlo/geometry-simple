@@ -3,12 +3,12 @@
 {- | Checked ISO WKB decoding and encoding.
 
 The codecs support the seven simple geometry families and all four coordinate
-types. Every child must have the same dimensions as its parent. WKB
+types. Nonempty children must have the same dimensions as their parent. WKB
 children can use different byte orders. EWKB flags and embedded SRIDs are not
 supported. Keep coordinate reference system metadata outside the geometry.
 
-The codecs check finite coordinates, lengths, and dimensions.
-They do not validate topology.
+The codecs check line lengths, ring closure, counts, and dimensions.
+They accept non-finite ordinates and do not validate polygon topology.
 -}
 module Data.Geometry.WKB (
     decodeWKB,
@@ -18,7 +18,7 @@ module Data.Geometry.WKB (
 
 import Control.Monad (unless, when)
 import Control.Monad.ST (runST)
-import Data.Binary.Get (Get, bytesRead, getByteString, getWord32be, getWord32le, getWord64be, getWord64le, getWord8, lookAhead, runGetOrFail)
+import Data.Binary.Get (Get, bytesRead, getByteString, getWord32be, getWord32le, getWord64be, getWord64le, getWord8, lookAhead, runGetOrFail, skip)
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
@@ -37,15 +37,21 @@ import Data.Word (Word32, Word64)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 
 {- | Decode one ISO WKB geometry into the requested coordinate type.
-Reject trailing bytes, invalid counts, mixed dimensions, and non-finite
-coordinates. All-NaN point ordinates decode to 'EmptyPoint'.
+Reject trailing bytes, invalid counts, and mixed nonempty dimensions.
+A point with NaN in both X and Y decodes to 'EmptyPoint'.
 -}
-decodeWKB :: (Coordinate c) => ByteString -> Either String (Geometry c)
+decodeWKB :: forall c. (Coordinate c) => ByteString -> Either String (Geometry c)
 {-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XY) #-}
 {-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XYZ) #-}
 {-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XYM) #-}
 {-# SPECIALIZE decodeWKB :: ByteString -> Either String (Geometry XYZM) #-}
-decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) Nothing) bytes
+decodeWKB bytes = runDecoder parser bytes
+  where
+    parser = do
+        (_, dimensions, _) <- lookAhead getHeader
+        unless (dimensions == coordinateDimensions (Proxy :: Proxy c)) $
+            fail "Geometry WKB has the wrong coordinate dimensions"
+        getGeometry (fromIntegral (BS.length bytes)) Nothing
 
 -- | Decode one ISO WKB geometry and keep the coordinate type from its header.
 decodeAnyWKB :: ByteString -> Either String AnyGeometry
@@ -111,18 +117,34 @@ getCount total little minimumBytes = do
 getGeometry :: forall c. (Coordinate c) => Int64 -> Maybe Word32 -> Get (Geometry c)
 getGeometry total expectedFamily = do
     (little, dimensions, family) <- getHeader
-    unless (dimensions == coordinateDimensions (Proxy :: Proxy c)) $
-        fail "Geometry WKB has the wrong coordinate dimensions"
     case expectedFamily of
         Just expected | family /= expected -> fail "Geometry WKB multi child has the wrong family"
         _ -> pure ()
+    if dimensions == coordinateDimensions (Proxy :: Proxy c)
+        then getGeometryBody total little family
+        else case dimensions of
+            DimXY -> emptyBody little family (Proxy :: Proxy XY)
+            DimXYZ -> emptyBody little family (Proxy :: Proxy XYZ)
+            DimXYM -> emptyBody little family (Proxy :: Proxy XYM)
+            DimXYZM -> emptyBody little family (Proxy :: Proxy XYZM)
+  where
+    emptyBody :: forall a. (Coordinate a) => Bool -> Word32 -> Proxy a -> Get (Geometry c)
+    emptyBody little family _ = do
+        shape <- getGeometryBody total little family :: Get (Geometry a)
+        maybe (fail "Geometry WKB has mixed nonempty coordinate dimensions") pure (convertEmptyGeometry shape)
+
+-- | Read a body after its byte order and family have been checked.
+getGeometryBody :: forall c. (Coordinate c) => Int64 -> Bool -> Word32 -> Get (Geometry c)
+getGeometryBody total little family = do
     let line = getLineCoordinates total little
     case family of
         1 -> PointGeometry <$> getPoint little
         2 -> LineString <$> line
         3 -> do
             count <- getCount total little 4
-            Polygon <$> V.replicateM count line
+            rings <- V.replicateM count line
+            either fail pure (validatePolygon rings)
+            pure (Polygon rings)
         4 -> MultiPoint <$> getMultiPoints total little
         5 -> do
             count <- getCount total little 9
@@ -156,7 +178,7 @@ dimensionCount DimXY = 2
 dimensionCount DimXYZM = 4
 dimensionCount _ = 3
 
--- | Read a coordinate tuple, allowing all-NaN ordinates for an empty point.
+-- | NaN in both X and Y marks an empty WKB point, including Z and M points.
 getPoint :: forall c. (Coordinate c) => Bool -> Get (Point c)
 getPoint little = do
     let number = castWord64ToDouble <$> (if little then getWord64le else getWord64be)
@@ -167,60 +189,63 @@ getPoint little = do
         DimXYZ -> do z <- number; pure (z, 0)
         DimXYM -> do m <- number; pure (0, m)
         DimXYZM -> (,) <$> number <*> number
-    let coordinate = coordinateFromComponents (x, y, z, m)
-    if coordinateAll isNaN coordinate
-        then pure EmptyPoint
-        else
-            if coordinateAll finite coordinate
-                then pure (Point coordinate)
-                else fail "Geometry WKB has a non-finite coordinate"
+    pure (if isNaN x && isNaN y then EmptyPoint else Point (coordinateFromComponents (x, y, z, m)))
 
--- | Read a line or ring. Empty points are not coordinates in a line or ring.
+-- | Read a line or ring and retain every ordinate, including NaN and infinity.
 getLineCoordinates :: forall c. (Coordinate c) => Int64 -> Bool -> Get (U.Vector c)
 getLineCoordinates total little = do
     let stride = 8 * dimensionCount (coordinateDimensions (Proxy :: Proxy c))
     count <- getCount total little (fromIntegral stride)
+    when (count == 1) (fail "Geometry line must have zero or at least two coordinates")
     bytes <- getByteString (count * stride)
-    either fail pure $ generateChecked count $ \i -> do
-        let coordinate = coordinateAt little bytes (i * stride)
-        validateCoordinate coordinate
-        pure coordinate
+    pure (U.generate count (\i -> coordinateAt little bytes (i * stride)))
 
--- | Read fixed-size point children directly into an unboxed vector.
+-- | Read point children with independent headers, including untagged empty points.
 getMultiPoints :: forall c. (Coordinate c) => Int64 -> Bool -> Get (U.Vector (Point c))
 getMultiPoints total little = do
-    let dimensions = coordinateDimensions (Proxy :: Proxy c)
-        stride = 5 + 8 * dimensionCount dimensions
-        expectedTag = 1 + 1000 * fromIntegral (fromEnum dimensions)
-    count <- getCount total little (fromIntegral stride)
-    bytes <- getByteString (count * stride)
-    either fail pure $ generateChecked count $ \i -> do
-        let offset = i * stride
-        childLittle <- case BS.index bytes offset of
-            0 -> Right False
-            1 -> Right True
-            _ -> Left "Geometry WKB has an invalid byte order"
-        unless (word32At childLittle bytes (offset + 1) == expectedTag) $
-            Left "Geometry WKB multi child has the wrong family or dimensions"
-        let coordinate = coordinateAt childLittle bytes (offset + 5)
-        if coordinateAll isNaN coordinate
-            then Right EmptyPoint
-            else validateCoordinate coordinate >> Right (Point coordinate)
+    count <- getCount total little 21
+    if count == 0
+        then pure U.empty
+        else do
+            consumed <- bytesRead
+            bytes <- lookAhead (getByteString (fromIntegral (total - consumed)))
+            (points, size) <- either fail pure (multiPointsAt count bytes)
+            skip size
+            pure points
 
-{- | Fill one unboxed vector without constructing an intermediate list.
-Return the shared empty vector for a zero count, so that empty rings do not
-allocate buffers.
--}
-generateChecked :: (U.Unbox a) => Int -> (Int -> Either String a) -> Either String (U.Vector a)
-generateChecked 0 _ = Right U.empty
-generateChecked count readItem = runST $ do
+-- | Read checked point children of different byte lengths into one unboxed vector.
+multiPointsAt :: forall c. (Coordinate c) => Int -> ByteString -> Either String (U.Vector (Point c), Int)
+multiPointsAt count bytes = runST $ do
     target <- UM.new count
-    let go i
-            | i == count = Right <$> U.unsafeFreeze target
-            | otherwise = case readItem i of
+    let go index offset
+            | index == count = do
+                points <- U.unsafeFreeze target
+                pure (Right (points, offset))
+            | BS.length bytes - offset < 5 = pure (Left "Geometry WKB point header exceeds the remaining bytes")
+            | otherwise = case BS.index bytes offset of
+                0 -> child index offset False
+                1 -> child index offset True
+                _ -> pure (Left "Geometry WKB has an invalid byte order")
+        child index offset little
+            | dimensionTag > 3 || family < 1 || family > 7 = pure (Left "Geometry WKB has an unsupported type")
+            | family /= 1 = pure (Left "Geometry WKB multi child has the wrong family")
+            | stride > BS.length bytes - offset = pure (Left "Geometry WKB point exceeds the remaining bytes")
+            | otherwise = case point of
                 Left message -> pure (Left message)
-                Right value -> UM.write target i value >> go (i + 1)
-    go 0
+                Right value -> UM.write target index value >> go (index + 1) (offset + stride)
+          where
+            (dimensionTag, family) = word32At little bytes (offset + 1) `quotRem` 1000
+            dimensions = toEnum (fromIntegral dimensionTag)
+            stride = 5 + 8 * dimensionCount dimensions
+            point
+                | dimensions == coordinateDimensions (Proxy :: Proxy c) =
+                    let coordinate = coordinateAt little bytes (offset + 5)
+                        (x, y, _, _) = coordinateComponents coordinate
+                     in Right (if isNaN x && isNaN y then EmptyPoint else Point coordinate)
+                | isNaN (ordinate 5) && isNaN (ordinate 13) = Right EmptyPoint
+                | otherwise = Left "Geometry WKB has mixed nonempty coordinate dimensions"
+            ordinate position = castWord64ToDouble (word64At little bytes (offset + position))
+    go 0 0
 
 -- | Read a coordinate from a block whose complete byte length was checked.
 coordinateAt :: forall c. (Coordinate c) => Bool -> ByteString -> Int -> c
@@ -279,7 +304,9 @@ putGeometry geometry =
         <> case geometry of
             PointGeometry point -> putPoint point
             LineString points -> putLine points
-            Polygon rings -> putLength (V.length rings) <> V.foldMap putLine rings
+            Polygon rings ->
+                let normalized = normalizePolygon rings
+                 in putLength (V.length normalized) <> V.foldMap putLine normalized
             MultiPoint points -> putLength (U.length points) <> U.foldMap (putGeometry . PointGeometry) points
             MultiLineString lineStrings -> putLength (V.length lineStrings) <> V.foldMap (putGeometry . LineString) lineStrings
             MultiPolygon polygons -> putLength (V.length polygons) <> V.foldMap (putGeometry . Polygon) polygons
@@ -299,7 +326,7 @@ geometryFamily (GeometryCollection _) = 7
 putLength :: Int -> Builder
 putLength = Builder.word32LE . fromIntegral
 
--- | Write an empty point or its finite coordinates.
+-- | Write an empty point or its stored ordinates.
 putPoint :: forall c. (Coordinate c) => Point c -> Builder
 putPoint EmptyPoint =
     let nan = Builder.word64LE 0x7ff8000000000000

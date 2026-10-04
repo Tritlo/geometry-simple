@@ -42,6 +42,7 @@ module Data.Geometry.SimpleFeatures (
     interiorRingN,
     envelope,
     area,
+    geometryLength,
     curveLength,
     perimeter,
     centroid,
@@ -80,35 +81,40 @@ dimension geometry = case geometry of
     MultiPolygon _ -> 2
     GeometryCollection children -> V.foldl' (\n child -> max n (dimension child)) (-1) children
 
--- | The number of ordinates in each coordinate: 2, 3, or 4.
-coordinateDimension :: forall c. (Coordinate c) => Geometry c -> Int
-coordinateDimension _ = case coordinateDimensions (Proxy :: Proxy c) of
+{- | The number of ordinates in the geometry's coordinate layout: 2, 3, or 4.
+Atomic empty geometries retain their type's layout. Multi-geometries with no
+members and collections with no atomic members report XY.
+-}
+coordinateDimension :: (Coordinate c) => Geometry c -> Int
+coordinateDimension geometry = case geometryDimensions geometry of
     DimXY -> 2
     DimXYZM -> 4
     _ -> 3
 
--- | 2 for t'XY' and t'XYM', or 3 for t'XYZ' and t'XYZM'.
+-- | The number of spatial ordinates: 3 when 'is3D' is true, or 2 otherwise.
 spatialDimension :: (Coordinate c) => Geometry c -> Int
 spatialDimension geometry = if is3D geometry then 3 else 2
 
--- | Whether the coordinate type has Z. The value depends only on the type.
-is3D :: forall c. (Coordinate c) => Geometry c -> Bool
-is3D _ = coordinateDimensions (Proxy :: Proxy c) `elem` [DimXYZ, DimXYZM]
+-- | Whether the geometry's coordinate layout has Z. See 'coordinateDimension'.
+is3D :: (Coordinate c) => Geometry c -> Bool
+is3D geometry = geometryDimensions geometry `elem` [DimXYZ, DimXYZM]
 
--- | Whether the coordinate type has M. The value depends only on the type.
-isMeasured :: forall c. (Coordinate c) => Geometry c -> Bool
-isMeasured _ = coordinateDimensions (Proxy :: Proxy c) `elem` [DimXYM, DimXYZM]
+-- | Whether the geometry's coordinate layout has M. See 'coordinateDimension'.
+isMeasured :: (Coordinate c) => Geometry c -> Bool
+isMeasured geometry = geometryDimensions geometry `elem` [DimXYM, DimXYZM]
+
+-- | Find the layout of atomic members. Collections without atomic members are XY.
+geometryDimensions :: forall c. (Coordinate c) => Geometry c -> Dimensions
+geometryDimensions geometry = case geometry of
+    MultiPoint points | U.null points -> DimXY
+    MultiLineString lineStrings | V.null lineStrings -> DimXY
+    MultiPolygon polygons | V.null polygons -> DimXY
+    GeometryCollection children -> V.foldl' (\dimensions child -> max dimensions (geometryDimensions child)) DimXY children
+    _ -> coordinateDimensions (Proxy :: Proxy c)
 
 -- | Whether the geometry has no coordinates. A collection of empty members is empty.
 isEmpty :: (Coordinate c) => Geometry c -> Bool
-isEmpty geometry = case geometry of
-    PointGeometry point -> point == EmptyPoint
-    LineString points -> U.null points
-    Polygon rings -> V.all U.null rings
-    MultiPoint points -> U.all (== EmptyPoint) points
-    MultiLineString lineStrings -> V.all U.null lineStrings
-    MultiPolygon polygons -> V.all (V.all U.null) polygons
-    GeometryCollection children -> V.all isEmpty children
+isEmpty = geometryEmpty
 
 -- | The X ordinate.
 x :: (Coordinate c) => c -> Double
@@ -192,9 +198,9 @@ isClosed geometry = case geometry of
   where
     closed points = not (U.null points) && xy (U.head points) == xy (U.last points)
 
--- | The exterior ring of a 'Polygon', or 'Nothing' when it has no rings.
-exteriorRing :: Geometry c -> Maybe (U.Vector c)
-exteriorRing (Polygon rings) = rings V.!? 0
+-- | The exterior ring of a 'Polygon'. An empty polygon has an empty ring.
+exteriorRing :: (Coordinate c) => Geometry c -> Maybe (U.Vector c)
+exteriorRing (Polygon rings) = Just (fromMaybe U.empty (rings V.!? 0))
 exteriorRing _ = Nothing
 
 -- | The number of holes in a 'Polygon'. Other families give 'Nothing'.
@@ -209,8 +215,8 @@ interiorRingN index (Polygon rings)
 interiorRingN _ _ = Nothing
 
 {- | The smallest XY bounding rectangle, as a counterclockwise 'Polygon'.
-Empty input gives an empty collection. Degenerate bounds give a point or a
-two-point line.
+Empty input gives an empty point. A single XY location gives a point.
+Horizontal and vertical bounds give a polygon with repeated corners.
 -}
 envelope :: (Coordinate c) => Geometry c -> Geometry XY
 {-# SPECIALIZE envelope :: Geometry XY -> Geometry XY #-}
@@ -218,9 +224,8 @@ envelope :: (Coordinate c) => Geometry c -> Geometry XY
 {-# SPECIALIZE envelope :: Geometry XYM -> Geometry XY #-}
 {-# SPECIALIZE envelope :: Geometry XYZM -> Geometry XY #-}
 envelope geometry
-    | minX > maxX = GeometryCollection V.empty
+    | minX > maxX = PointGeometry EmptyPoint
     | minX == maxX && minY == maxY = PointGeometry (Point (XY minX minY))
-    | minX == maxX || minY == maxY = LineString (U.fromList [XY minX minY, XY maxX maxY])
     | otherwise = Polygon (V.singleton (U.fromList [XY minX minY, XY maxX minY, XY maxX maxY, XY minX maxY, XY minX minY]))
   where
     -- An inverted infinite box remains inverted when there are no coordinates.
@@ -240,6 +245,14 @@ area :: (Coordinate c) => Geometry c -> Double
 {-# SPECIALIZE area :: Geometry XYM -> Double #-}
 {-# SPECIALIZE area :: Geometry XYZM -> Double #-}
 area geometry = let (weight, _, _) = surfaceMoments (0, 0) geometry in weight / 2
+
+-- | The total XY length of lines and polygon boundaries, including holes.
+geometryLength :: (Coordinate c) => Geometry c -> Double
+{-# SPECIALIZE geometryLength :: Geometry XY -> Double #-}
+{-# SPECIALIZE geometryLength :: Geometry XYZ -> Double #-}
+{-# SPECIALIZE geometryLength :: Geometry XYM -> Double #-}
+{-# SPECIALIZE geometryLength :: Geometry XYZM -> Double #-}
+geometryLength geometry = curveLength geometry + perimeter geometry
 
 {- | The total length of all lines, including lines in collections, in coordinate
 units. Polygon boundaries and points add zero.
