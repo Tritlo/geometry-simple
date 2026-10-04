@@ -272,28 +272,39 @@ area. If the total area is zero, segments are weighted by length. If all
 segments have zero length, the result is the mean of the points, and each
 line or ring counts as one point at its first coordinate, as in GEOS.
 Lower-dimensional parts do not affect a higher-dimensional centroid. The
-centroid can be outside the geometry, for example in a hole. The moments can
+centroid can be outside the geometry, for example in a hole. Compensated sums
+retain small contributions when large moments cancel. Polygon positions and
+local moments stay separate until summation. The moments can
 overflow when a polygon spans more than about 1e100 units or a line more than
-about 1e150 units, and underflow at the reciprocal sizes.
+about 1e150 units, and underflow at the reciprocal sizes. Products still round
+to Double. Strong cancellation between products can reduce accuracy even
+when all intermediate values are finite.
 -}
 centroid :: (Coordinate c) => Geometry c -> Point XY
 {-# SPECIALIZE centroid :: Geometry XY -> Point XY #-}
 {-# SPECIALIZE centroid :: Geometry XYZ -> Point XY #-}
 {-# SPECIALIZE centroid :: Geometry XYM -> Point XY #-}
 {-# SPECIALIZE centroid :: Geometry XYZM -> Point XY #-}
-centroid geometry = case weightedMean 2 surfaceMoments of
+centroid geometry = case weightedMean 2 of
     Just point -> point
-    Nothing -> case weightedMean 1 linearMoments of
+    Nothing -> case weightedMean 1 of
         Just point -> point
-        Nothing -> fromMaybe EmptyPoint (weightedMean 0 pointMoments)
+        Nothing -> fromMaybe EmptyPoint (weightedMean 0)
   where
-    -- Take moments about a coordinate of the parts that the pass measures,
-    -- so that a distant part of lower dimension cannot cause cancellation.
-    weightedMean minimumDimension moments = do
-        origin@(originX, originY) <- xy <$> firstCoordinate minimumDimension geometry
-        case moments origin geometry of
-            (weight, mx, my) | weight /= 0 -> Just (Point (XY (originX + mx / weight) (originY + my / weight)))
-            _ -> Nothing
+    weightedMean dimensionToMeasure =
+        let (weight, mx, my) = moments dimensionToMeasure 1
+         in if weight == 0
+                then Nothing
+                else
+                    if finite mx && finite my
+                        then Just (Point (XY (mx / weight) (my / weight)))
+                        else
+                            -- Normalize before summation only when raw moments overflow.
+                            let (_, normalizedX, normalizedY) = moments dimensionToMeasure weight
+                             in Just (Point (XY (if finite mx then mx / weight else normalizedX) (if finite my then my / weight else normalizedY)))
+    moments dimensionToMeasure divisor =
+        let CentroidMoments w wc mx mxc my myc = foldCentroidMoments dimensionToMeasure divisor (CentroidMoments 0 0 0 0 0 0) geometry
+         in (compensatedValue (w, wc), compensatedValue (mx, mxc), compensatedValue (my, myc))
 
 {- | The XY convex hull, from Andrew's monotone chain algorithm. The result is
 an empty collection, a point, a line, or a counterclockwise polygon, depending
@@ -322,20 +333,6 @@ convexHull geometry = case points of
 -- | Extract the planar coordinate pair.
 xy :: (Coordinate c) => c -> (Double, Double)
 xy coordinate = (x coordinate, y coordinate)
-
--- | The first stored coordinate of the parts with at least the given dimension.
-firstCoordinate :: (Coordinate c) => Int -> Geometry c -> Maybe c
-firstCoordinate minimumDimension geometry = case geometry of
-    PointGeometry (Point coordinate) | minimumDimension <= 0 -> Just coordinate
-    MultiPoint points | minimumDimension <= 0 -> U.foldr (\point rest -> case point of Point coordinate -> Just coordinate; EmptyPoint -> rest) Nothing points
-    LineString points | minimumDimension <= 1 -> points U.!? 0
-    MultiLineString lineStrings | minimumDimension <= 1 -> firstOf (U.!? 0) lineStrings
-    Polygon rings -> firstOf (U.!? 0) rings
-    MultiPolygon polygons -> firstOf (firstOf (U.!? 0)) polygons
-    GeometryCollection children -> firstOf (firstCoordinate minimumDimension) children
-    _ -> Nothing
-  where
-    firstOf select = V.foldr (\value rest -> maybe rest Just (select value)) Nothing
 
 -- | Fold coordinates in stored order. Skip explicit empty points.
 foldCoordinates :: (Coordinate c) => (a -> c -> a) -> a -> Geometry c -> a
@@ -419,39 +416,72 @@ surfaceMoments origin geometry = case geometry of
         let (weight, mx, my) = ringMoments origin ring
          in addMoments total (if index == 0 then (weight, mx, my) else (-weight, -mx, -my))
 
--- | Use segment lengths as weights. Include polygon rings for zero-area fallback.
-linearMoments :: (Coordinate c) => (Double, Double) -> Geometry c -> Moments
-linearMoments origin@(originX, originY) geometry = case geometry of
-    LineString points -> path False points
-    Polygon rings -> V.foldl' (\total points -> addMoments total (path True points)) (0, 0, 0) rings
-    MultiLineString lineStrings -> V.foldl' (\total points -> addMoments total (path False points)) (0, 0, 0) lineStrings
-    MultiPolygon polygons -> V.foldl' (\total rings -> addMoments total (linearMoments origin (Polygon rings))) (0, 0, 0) polygons
-    GeometryCollection children -> V.foldl' (\total child -> addMoments total (linearMoments origin child)) (0, 0, 0) children
-    _ -> (0, 0, 0)
-  where
-    path close = foldSegments close step (0, 0, 0)
-    step total a b =
-        let weight = segmentLength a b
-            midX = ((x a - originX) + (x b - originX)) / 2
-            midY = ((y a - originY) + (y b - originY)) / 2
-         in addMoments total (weight, weight * midX, weight * midY)
+-- | A sum and the rounding error retained by Neumaier summation.
+type Compensated = (Double, Double)
 
-{- | Count each point once, and each line or ring once at its first coordinate.
-GEOS uses the same weights when all lines and rings have zero length.
+-- | Strict sums and corrections for the weight, X moment, and Y moment.
+data CentroidMoments = CentroidMoments !Double !Double !Double !Double !Double !Double
+
+-- | Add one value without discarding small terms when larger terms cancel.
+addCompensated :: Compensated -> Double -> Compensated
+{-# INLINE addCompensated #-}
+addCompensated (total, correction) value =
+    let !next = total + value
+        !errorTerm = if abs total >= abs value then (total - next) + value else (value - next) + total
+        !nextCorrection = correction + errorTerm
+     in (next, nextCorrection)
+
+-- | Include the retained rounding error in the result.
+compensatedValue :: Compensated -> Double
+compensatedValue (total, correction) = total + correction
+
+{- | Fold weights and separate moment contributions for one centroid dimension.
+Keep polygon bases separate from local moments, and keep segment endpoints
+separate. Rounding their absolute centroids first would discard small offsets.
+The divisor scales moments on the overflow retry. Weights stay unscaled.
 -}
-pointMoments :: (Coordinate c) => (Double, Double) -> Geometry c -> Moments
-pointMoments origin@(originX, originY) geometry = case geometry of
-    PointGeometry EmptyPoint -> (0, 0, 0)
-    PointGeometry (Point coordinate) -> single coordinate
-    LineString points -> first points
-    Polygon rings -> V.foldl' (\total ring -> addMoments total (first ring)) (0, 0, 0) rings
-    MultiPoint points -> U.foldl' (\total point -> addMoments total (pointMoments origin (PointGeometry point))) (0, 0, 0) points
-    MultiLineString lineStrings -> V.foldl' (\total points -> addMoments total (first points)) (0, 0, 0) lineStrings
-    MultiPolygon polygons -> V.foldl' (\total rings -> addMoments total (pointMoments origin (Polygon rings))) (0, 0, 0) polygons
-    GeometryCollection children -> V.foldl' (\total child -> addMoments total (pointMoments origin child)) (0, 0, 0) children
+foldCentroidMoments :: (Coordinate c) => Int -> Double -> CentroidMoments -> Geometry c -> CentroidMoments
+{-# INLINE foldCentroidMoments #-}
+foldCentroidMoments dimensionToMeasure divisor = go
   where
-    single coordinate = (1, x coordinate - originX, y coordinate - originY)
-    first points = maybe (0, 0, 0) single (points U.!? 0)
+    go initial geometry = case geometry of
+        PointGeometry (Point coordinate) | dimensionToMeasure == 0 -> single initial coordinate
+        LineString points -> case dimensionToMeasure of
+            1 -> foldSegments False segment initial points
+            0 -> first initial points
+            _ -> initial
+        Polygon rings -> case dimensionToMeasure of
+            2 -> surface initial rings
+            1 -> V.foldl' (foldSegments True segment) initial rings
+            _ -> V.foldl' first initial rings
+        MultiPoint points | dimensionToMeasure == 0 -> U.foldl' (\total point -> case point of EmptyPoint -> total; Point coordinate -> single total coordinate) initial points
+        MultiLineString lineStrings -> V.foldl' (\total points -> recurse total (LineString points)) initial lineStrings
+        MultiPolygon polygons -> V.foldl' (\total rings -> recurse total (Polygon rings)) initial polygons
+        GeometryCollection children -> V.foldl' recurse initial children
+        _ -> initial
+    recurse = go
+    step (CentroidMoments w wc mx mxc my myc) a b c =
+        let (w', wc') = addCompensated (w, wc) a
+            (mx', mxc') = addCompensated (mx, mxc) b
+            (my', myc') = addCompensated (my, myc) c
+         in CentroidMoments w' wc' mx' mxc' my' myc'
+    single total coordinate = step total 1 (x coordinate / divisor) (y coordinate / divisor)
+    -- A zero-length line or ring counts as one point in the point fallback.
+    first total points = maybe total (single total) (points U.!? 0)
+    segment total a b
+        | weight == 0 = total
+        | otherwise = step (step total weight (factor * x a) (factor * y a)) 0 (factor * x b) (factor * y b)
+      where
+        weight = segmentLength a b
+        factor = (weight / divisor) / 2
+    surface total rings
+        | V.null rings || U.null (V.head rings) || weight == 0 = total
+        | otherwise = step (step total weight (factor * baseX) (factor * baseY)) 0 (mx / divisor) (my / divisor)
+      where
+        (baseX, baseY) = xy (U.head (V.head rings))
+        -- Subtract holes locally before multiplying by the polygon position.
+        (weight, mx, my) = surfaceMoments (baseX, baseY) (Polygon rings)
+        factor = weight / divisor
 
 {- | The turn of three XY points: 'GT' for counterclockwise, 'LT' for clockwise,
 and 'EQ' for collinear. Use the Double determinant when its error bound

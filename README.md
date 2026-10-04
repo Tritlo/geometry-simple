@@ -106,13 +106,17 @@ and `perimeter` measures polygon rings, including holes. The planar operations
 assume finite X and Y values and valid polygon topology. Area and perimeter
 close open rings.
 
-The measurements use `Double` arithmetic. Area and centroid calculations use
-coordinates relative to a nearby vertex, which keeps them accurate far from the
-origin, for example in projected coordinates. `centroid` multiplies coordinate
+The measurements use `Double` arithmetic. Polygon cross products use coordinates
+relative to a ring vertex. Centroids use compensated sums and keep polygon positions
+separate from local moments. This retains small contributions when large moments
+cancel. `centroid` multiplies coordinate
 differences, so it can overflow when a polygon spans more than about 1e100 units
 or a line more than about 1e150 units. It can underflow when a polygon spans
 less than about 1e-100 units or a line less than about 1e-150 units. The orientation tests in `convexHull` are exact: they use
 `Double` when its error bound decides the sign, and `Rational` otherwise.
+Compensated sums do not recover rounding errors in products. Strong
+cancellation between weighted products can reduce centroid accuracy even
+when all intermediate values are finite.
 
 `centroid` weights polygons by area. If the total area is zero, it weights
 segments by length. If all segments have zero length, it averages the points,

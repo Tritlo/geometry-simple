@@ -15,5 +15,8 @@ Initial release.
   coordinates. They do not check topology or limit nesting depth.
 - Simple Features accessors, envelopes, areas, lengths, perimeters, centroids,
   and convex hulls in the XY plane. Computed geometries use XY coordinates.
+- Centroids retain small contributions from distant components. Zero-length
+  components do not affect a nonzero-length centroid. Compensated sums retain
+  local polygon offsets and point contributions when large moments cancel.
 - `Data.Geometry.Internal` exports the `Coordinate` class methods and the shared
   validation, without a stability guarantee.
