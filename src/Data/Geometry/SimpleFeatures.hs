@@ -347,17 +347,14 @@ between products can reduce accuracy even when all intermediate values are finit
 centroid :: Geometry -> Point
 centroid geometry = fromMaybe (EmptyPoint DimXY) (weightedMean SurfaceDimension <|> weightedMean CurveDimension <|> weightedMean PointDimension)
   where
-    weightedMean dimensionToMeasure =
-        let (weight, mx, my) = moments dimensionToMeasure 1
-         in if weight == 0
-                then Nothing
-                else
-                    if finite mx && finite my
-                        then Just (PointXY (XY (mx / weight) (my / weight)))
-                        else
-                            -- Normalize before summation only when raw moments overflow.
-                            let (_, normalizedX, normalizedY) = moments dimensionToMeasure weight
-                             in Just (PointXY (XY (if finite mx then mx / weight else normalizedX) (if finite my then my / weight else normalizedY)))
+    weightedMean dimensionToMeasure
+        | weight == 0 = Nothing
+        | finite mx && finite my = Just (PointXY (XY (mx / weight) (my / weight)))
+        -- Normalize before summation only when raw moments overflow.
+        | otherwise = Just (PointXY (XY (if finite mx then mx / weight else normalizedX) (if finite my then my / weight else normalizedY)))
+      where
+        (weight, mx, my) = moments dimensionToMeasure 1
+        (_, normalizedX, normalizedY) = moments dimensionToMeasure weight
     moments dimensionToMeasure divisor =
         let CentroidMoments w wc mx mxc my myc = foldCentroidMoments dimensionToMeasure divisor (CentroidMoments 0 0 0 0 0 0) geometry
          in (compensatedValue (w, wc), compensatedValue (mx, mxc), compensatedValue (my, myc))
