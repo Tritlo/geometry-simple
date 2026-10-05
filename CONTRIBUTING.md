@@ -21,6 +21,8 @@ python3 dev/check_sdist.py dist-newstyle/sdist/geometry-simple-*.tar.gz
 ```
 
 Also build an extracted archive when package metadata or source lists change.
+CI runs the Haskell suite against the extracted library in a fresh build directory.
+This checks the release contents without packaging development tests.
 `nix-build -A checks --no-out-link` builds and tests both packages;
 `nix-build --no-out-link` builds only the library. See the compiler matrix in
 [CI](.github/workflows/ci.yml).
@@ -32,6 +34,7 @@ types and functions with Haddock. State units, empty behavior, and preconditions
 fourmolu --mode inplace src/Data/Geometry.hs src/Data/Geometry/*.hs src/Data/Geometry/Topology/*.hs dev/test/*.hs dev/bench/*.hs
 cabal-gild --mode format geometry-simple.cabal
 cabal-gild --mode format dev/geometry-simple-dev.cabal
+cabal-gild --mode format cabal.project
 ```
 
 ## Standard and native comparisons

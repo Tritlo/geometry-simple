@@ -35,6 +35,16 @@ jobs:
       - run: cabal sdist .
       - name: Check release contents
         run: python3 dev/check_sdist.py dist-newstyle/sdist/geometry-simple-*.tar.gz
+      - name: Test the extracted release archive
+        if: matrix.ghc == '9.14.1'
+        shell: bash
+        run: |
+          archive_root=$(mktemp -d)
+          mkdir "$archive_root/package"
+          tar -xzf dist-newstyle/sdist/geometry-simple-*.tar.gz -C "$archive_root/package" --strip-components=1
+          printf 'packages: %s/package %s/dev\ntests: True\n' "$archive_root" "$GITHUB_WORKSPACE" > "$archive_root/cabal.project"
+          cd "$archive_root"
+          cabal test all --builddir=build --disable-documentation --test-show-details=direct
       - name: Build release documentation
         if: matrix.ghc == '9.14.1'
         run: cabal haddock geometry-simple --haddock-for-hackage

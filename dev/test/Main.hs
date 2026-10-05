@@ -170,6 +170,10 @@ tests =
             (encodeWKB shape >>= decodeWKB) @?= Right shape
         , testProperty "mixed-layout WKB round trips" $ roundTripProperty Nothing False
         , testProperty "XY WKT round trips" $ roundTripProperty (Just DimXY) True
+        , testProperty "mixed-layout WKT stabilizes after format promotion" $
+            forAll (geometryGen Nothing 3) $ \shape -> case encodeWKT shape of
+                Left message -> counterexample message False
+                Right encoded -> (WKT.decodeWKT encoded >>= encodeWKT) === Right encoded
         , testProperty "finite point bit patterns" $
             forAll finiteDouble $ \x -> forAll finiteDouble $ \y ->
                 let bytes = point True 0 [x, y] in (decodeWKB bytes >>= encodeWKB) === Right bytes

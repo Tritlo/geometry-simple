@@ -1,10 +1,11 @@
 packages: . dev
-
 tests: True
 benchmarks: True
 
 program-options
-  ghc-options: -Wall -Werror
+  ghc-options:
+    -Wall
+    -Werror
 
 -- Haddock has no link destinations for data family instance constructors.
 package geometry-simple
