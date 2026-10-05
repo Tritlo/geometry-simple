@@ -14,9 +14,8 @@ Initial release.
   `Either TopologyException Geometry`. They use bounded snapping when output
   rounding changes topology; exhausted retries return `Left PrecisionFailure`.
   Unrepresentable buffer offsets return `Left CoordinateOverflow`.
-  The retry schedule follows GEOS 3.13.1. Its additional self-union and
-  precision-grid attempts are omitted, so results and precision failures can
-  differ. See the [overlay precision policy](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md#overlay-precision).
+  The retry schedule follows GEOS 3.13.1, without its self-union and
+  precision-grid attempts, so results and precision failures can differ. See the [overlay precision policy](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md#overlay-precision).
 - Constructed planar results use XY. Polygon exteriors run counterclockwise
   and holes clockwise. Hull vertices use a deterministic XY order.
 - Measured-location queries with linear interpolation along segments.

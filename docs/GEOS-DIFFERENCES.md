@@ -62,7 +62,8 @@ Sources: [OGC common architecture](https://docs.ogc.org/is/06-103r4/06-103r4.pdf
   `T`, `F`, `*`, `0`, `1`, and `2`; invalid patterns return `False`.
   Distance to an empty geometry is NaN.
 - Buffers have round caps and joins, with eight segments per quadrant by
-  default. Negative distances erode polygons and empty points and lines.
+  default. Negative distances erode polygons. For points and lines, they give
+  an empty polygon.
   Zero distance extracts polygonal regions. Invalid input can lose regions,
   such as one lobe of a self-crossing bowtie. Circular arcs are approximations.
 - Overlay line results join through vertices with exactly two neighbors.
@@ -99,8 +100,9 @@ Buffers use scaled norms when intermediate products overflow or underflow.
 An offset outside the finite `Double` range returns `Left CoordinateOverflow`.
 These rules can differ from GEOS at extreme coordinate scales.
 
-Repeated winding queries use aggregated crossing counts. Dense arrangements
-can still take quadratic time. Predicates can reject incompatible dimensions
+Repeated winding queries use aggregated crossing counts. Arrangements in which
+many segment bounds overlap can still take quadratic time, even when the shapes
+do not intersect, such as slanted interleaved combs. Predicates can reject incompatible dimensions
 or bounds before constructing a full relation matrix.
 
 ### Overlay precision
@@ -154,8 +156,8 @@ layout for DuckDB interchange.
 
 The WKT decoder accepts attached tags such as `POINTZ`, both multipoint
 syntaxes, signed numbers, fractions, and exponents. Whitespace between ordinates
-is required: space, tab, CR, or LF. Other decimal inputs round to the nearest
-`Double`. Underflow produces signed zero; overflow produces infinity.
+is required: space, tab, CR, or LF. The decoder rounds each decimal ordinate
+to the nearest `Double`. Underflow produces signed zero; overflow produces infinity.
 
 Both codecs accept nonfinite ordinates for storage. NaN in both WKB point XY
 ordinates denotes an empty point. Nonfinite values do not have the finite-bit

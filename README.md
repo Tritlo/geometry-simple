@@ -127,8 +127,8 @@ conformance or implement SQL, CRS metadata, Triangle, TIN, or PolyhedralSurface.
 `encodeWKB` writes little-endian ISO WKB. `decodeWKB` accepts either byte order,
 including mixed byte orders in collections. The WKT decoder accepts explicit
 or inferred coordinate layouts, lowercase keywords, and scientific notation.
-All four codec functions return `Either String` and reject invalid construction
-or trailing input.
+All four codec functions return `Either String` and reject invalid construction.
+The decoders also reject trailing input.
 
 Finite ordinates retain their exact bits through WKB and through text produced
 by `encodeWKT`, including negative zero and subnormals. Writers can promote
