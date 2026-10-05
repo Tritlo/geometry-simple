@@ -28,10 +28,13 @@ Do not interpolate measures across a polygon interior or between members.
 Segments with nonfinite M values do not interpolate. Their matching endpoints
 can still contribute points. A NaN interval bound matches nothing.
 -}
+
+{- HLINT ignore locateBetween "Use >" -}
 locateBetween :: Double -> Double -> Geometry -> Maybe Geometry
 locateBetween lower upper geometry
     | geometryEmpty geometry = Nothing
     | not (measured layout) = Just (PointGeometry (EmptyPoint DimXY))
+    -- A NaN bound fails this comparison, so it selects nothing.
     | not (lower <= upper) = Just empty
     | otherwise = Just result
   where
