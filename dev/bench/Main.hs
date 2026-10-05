@@ -33,7 +33,9 @@ main = do
         [arg] | Just n <- readMaybe arg, n >= 2 -> codecBenchmarks n
         ["--topology"] -> forM_ [100, 200, 400, 1000] topologyBenchmarks
         ["--topology", arg] | Just n <- readMaybe arg, n >= 4 -> topologyBenchmarks n
-        _ -> fail "Usage: geometry-simple-bench [point count >= 2 | --topology [vertices >= 4]] +RTS -T -RTS"
+        ["--arrangements"] -> forM_ [100, 400, 1600] arrangementBenchmarks
+        ["--arrangements", arg] | Just n <- readMaybe arg, n >= 4 -> arrangementBenchmarks n
+        _ -> fail "Usage: geometry-simple-bench [point count >= 2 | --topology [vertices >= 4] | --arrangements [vertices >= 4]] +RTS -T -RTS"
 
 -- | Compare codec and vector costs with the same prepared coordinate sequence.
 codecBenchmarks :: Int -> IO ()
@@ -111,11 +113,55 @@ topologyBenchmarks count = do
             (a, b) <- readIORef inputs
             evaluate (if predicate a b then 1 else 0)
 
--- | Measure seven trials. Input reads stay inside each action.
+-- | Measure full relations, polygon predicates, distance, overlay, and buffering.
+arrangementBenchmarks :: Int -> IO ()
+arrangementBenchmarks count = do
+    let circle cx radius =
+            let points = [XY (cx + radius * cos angle) (radius * sin angle) | i <- [0 .. count - 1], let angle = 2 * pi * fromIntegral i / fromIntegral count]
+             in Polygon (PolygonRings (CoordinatesXY (U.fromList (points ++ take 1 points))) V.empty)
+        origin = circle 0 1
+        overlap = circle 0.5 1
+        nested = circle 0 0.5
+        -- Reflect the second polygon so its nearest vertex is always on the X axis.
+        disjoint = circle 3 (-1)
+        predicates =
+            [ ("contains-overlap", S.contains, overlap, False)
+            , ("contains-nested", S.contains, nested, True)
+            , ("covers-nested", S.covers, nested, True)
+            , ("touches-overlap", S.touches, overlap, False)
+            , ("equals-overlap", S.equals, overlap, False)
+            ]
+    forM_ predicates $ \(name, predicate, second, expected) -> do
+        inputs <- evaluate (force (origin, second)) >>= newIORef
+        benchmarkTrials 3 name count (if expected then 1 else 0) $ do
+            (a, b) <- readIORef inputs
+            evaluate (if predicate a b then 1 else 0)
+    overlapping <- evaluate (force (origin, overlap)) >>= newIORef
+    separated <- evaluate (force (origin, disjoint)) >>= newIORef
+    benchmarkTrials 3 "relate-overlap" count 1 $ do
+        (a, b) <- readIORef overlapping
+        evaluate (if S.relate a b == "212101212" then 1 else 0)
+    benchmarkTrials 3 "distance-disjoint" count 1 $ do
+        (a, b) <- readIORef separated
+        evaluate (S.distance a b)
+    benchmarkTrials 3 "intersection-overlap" count 1 $ do
+        (a, b) <- readIORef overlapping
+        result <- evaluate (force (S.intersection a b))
+        evaluate (if S.area result > 0 && S.area result < S.area a then 1 else 0)
+    benchmarkTrials 3 "buffer-positive" count 1 $ do
+        (a, _) <- readIORef overlapping
+        result <- evaluate (force (S.buffer 0.1 a))
+        evaluate (if S.area result > S.area a && S.area result < 4 then 1 else 0)
+
+-- | Measure seven trials for the short workloads.
 benchmark :: String -> Int -> Double -> IO Double -> IO ()
-benchmark name count expected action = do
+benchmark = benchmarkTrials 7
+
+-- | Measure repeated trials. Input reads stay inside each action.
+benchmarkTrials :: Int -> String -> Int -> Double -> IO Double -> IO ()
+benchmarkTrials trials name count expected action = do
     action >>= check expected
-    forM_ [1 .. 7 :: Int] $ \trial -> do
+    forM_ [1 .. trials] $ \trial -> do
         performMajorGC
         before <- getRTSStats
         start <- getMonotonicTimeNSec

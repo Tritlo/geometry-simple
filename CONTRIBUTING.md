@@ -117,16 +117,35 @@ vertices. Add a vertex count after `--topology` to select one size.
 ```sh
 cabal run -O1 geometry-simple-bench -- 1000000 +RTS -T -RTS
 cabal run -O1 geometry-simple-bench -- --topology +RTS -T -RTS
+cabal run -O1 geometry-simple-bench -- --arrangements +RTS -T -RTS
 ```
 
 Cases include disjoint polygons with overlapping envelopes, boundary points,
 and crossing lines. Report workload sizes and distinguish total allocation
 from retained memory.
 
-The README timings were measured with GHC 9.14.1, `-O1`, and a Ryzen 9 7950X.
-Inputs were prepared 400-vertex unit circles centered at `(0,0)` and `(0.5,0)`.
-The distance case used centers `(0,0)` and `(3,0)`. Each reported slow operation
-was evaluated once with its result fully forced.
+`--arrangements` measures full relations, polygon predicates, distance,
+intersection, and buffering at 100, 400, and 1,600 vertices. Add a vertex count
+to select one size. It uses three measured trials after a warmup. Results are
+fully evaluated, and input construction stays outside the timed action.
+
+Sample medians on GHC 9.14.1, `-O1`, and a Ryzen 9 7950X:
+
+| Operation and input | 400 vertices | 1,600 vertices |
+| --- | ---: | ---: |
+| `contains`, overlapping polygons | 0.25 ms | 1.27 ms |
+| `contains`, nested polygons | 291 ms | 4,426 ms |
+| `touches`, overlapping polygons | 0.37 ms | 1.81 ms |
+| `equals`, overlapping polygons | 0.20 ms | 1.06 ms |
+| `relate`, overlapping polygons | 317 ms | 4,585 ms |
+| `intersection`, overlapping polygons | 273 ms | 3,764 ms |
+| `distance`, disjoint polygons | 25 ms | 190 ms |
+| `buffer`, distance 0.1 | 113 ms | 1,412 ms |
+
+Inputs approximate unit circles centered at `(0,0)` and `(0.5,0)`. The nested
+circle has radius 0.5 and center `(0,0)`. The disjoint circle is centered at
+`(3,0)` and rotated by half a turn. Compare identical inputs and compiler
+settings before attributing a timing change to an implementation change.
 
 ## Pull requests and releases
 

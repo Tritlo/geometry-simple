@@ -94,10 +94,11 @@ geometry model in OGC Simple Feature Access 1.2.1, section 6.1.2.5.
 
 `intersects` and `disjoint` reject separated envelopes and stop at the first
 contact. Point containment uses direct point-location tests. Full relation
-matrices and overlays can examine all segment pairs. A local GHC 9.14.1 `-O1`
-run on 400-vertex polygons took 5.0 s for `relate`, 5.6 s for `intersection`,
-and 0.95 s for distance between disjoint polygons. Costs depend on the input
-and hardware.
+matrices and overlays use indexed segment bounds, but repeated point-location
+checks can still take quadratic time. Local GHC 9.14.1 `-O1` medians on
+400-vertex polygons were 0.32 s for `relate`, 0.27 s for `intersection`, and
+0.025 s for distance between disjoint polygons. At 1,600 vertices, `relate`
+took 4.6 s and `intersection` took 3.8 s. Costs depend on the input and hardware.
 For large indexed workloads, use a native library such as
 [`geos`](https://hackage.haskell.org/package/geos).
 
