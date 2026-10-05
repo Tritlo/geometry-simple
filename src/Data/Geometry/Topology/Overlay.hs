@@ -8,6 +8,8 @@ start from the original inputs. The schedule follows
 -}
 module Data.Geometry.Topology.Overlay where
 
+import Control.DeepSeq (NFData (..), rwhnf)
+import Control.Exception (Exception)
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar
 import Data.Geometry.Topology.Snapping (snapPlanars)
@@ -23,23 +25,31 @@ import Data.Tree (flatten)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
--- | A topology construction failure returned by overlays and buffers.
+{- | A topology construction failure returned by overlays and buffers.
+It is an 'Exception', so callers can rethrow it, for example with
+@either throwIO pure@.
+-}
 data TopologyException
-    = -- | Rounded output remains invalid after precision retries.
-      OverlayPrecisionFailure
-    | -- | A selected boundary has no outgoing edge before the ring closes.
-      OpenBoundary
-    | -- | A hole has no containing exterior ring.
-      UncontainedHole
+    = -- | Rounded output remains invalid after all precision retries.
+      PrecisionFailure
     | -- | A constructed coordinate exceeds the finite Double range.
       CoordinateOverflow
+    | -- | A selected boundary does not close. This is a library defect; please report it.
+      OpenBoundary
+    | -- | A hole has no containing exterior ring. This is a library defect; please report it.
+      UncontainedHole
     deriving (Eq, Show, Read)
+
+instance Exception TopologyException
+
+instance NFData TopologyException where
+    rnf = rwhnf
 
 {- | The points common to both geometries. Coordinates must have finite XY values.
 Line results join consecutive edges through vertices with exactly two neighbors.
 Their component count and order can differ from other implementations.
 If Double rounding changes topology, retry with bounded snapping. Thin regions
-can collapse. Return 'Left' 'OverlayPrecisionFailure' if every attempt remains invalid.
+can collapse. Return 'Left' 'PrecisionFailure' if every attempt remains invalid.
 See the module documentation for the tolerance schedule.
 -}
 intersection :: Geometry -> Geometry -> Either TopologyException Geometry
@@ -90,7 +100,7 @@ robustOperation emptyDimension padding operation a b = case operation a b >>= va
         let result = combinePlanar (map planar parts)
         validateResult (assemble emptyDimension (planarPolygons result) (planarLines result) (planarPoints result))
   where
-    firstValid [] = Left OverlayPrecisionFailure
+    firstValid [] = Left PrecisionFailure
     firstValid (attempt : rest) = case attempt >>= validateResult of
         Right result -> Right result
         Left failure -> if null rest then Left failure else firstValid rest
@@ -106,7 +116,7 @@ robustOperation emptyDimension padding operation a b = case operation a b >>= va
 
 -- | Reject invalid rounded output without raising an exception from pure code.
 validateResult :: Geometry -> Either TopologyException Geometry
-validateResult geometry = if isValid geometry then Right geometry else Left OverlayPrecisionFailure
+validateResult geometry = if isValid geometry then Right geometry else Left PrecisionFailure
 
 -- | Group atomic inputs with overlapping bounds before a precision retry.
 overlayGroups :: Rational -> Planar -> Planar -> [(Planar, Planar)]

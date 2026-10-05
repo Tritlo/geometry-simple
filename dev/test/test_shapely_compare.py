@@ -40,7 +40,7 @@ class PlanarResultTests(unittest.TestCase):
                 self.assertFalse(matches("encodeWKB", native.hex(), expected, True))
 
     def test_explicit_topology_errors_are_not_successful_geometries(self) -> None:
-        error = "!error: OverlayPrecisionFailure"
+        error = "!error: PrecisionFailure"
         self.assertTrue(operation_matches("intersection", error, OperationError("precision failure")))
         self.assertFalse(operation_matches("intersection", error, sh.Point(1, 2)))
 

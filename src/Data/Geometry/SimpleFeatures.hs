@@ -23,7 +23,7 @@ The first tolerance is the largest absolute ordinate in each group divided by
 10^12, with a floor of the smallest positive Double. Later attempts multiply
 that tolerance by ten. Groups have overlapping input bounds. Each attempt
 starts from the original inputs. Thin regions can collapse. If every attempt
-fails, the result is 'Left' 'OverlayPrecisionFailure'. Overlays and buffers return
+fails, the result is 'Left' 'PrecisionFailure'. Overlays and buffers return
 @Either TopologyException Geometry@. Buffers approximate circular arcs with
 straight segments.
 

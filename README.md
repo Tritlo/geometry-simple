@@ -109,7 +109,7 @@ For large indexed workloads, use a native library such as
 Overlays and buffers return `Either SF.TopologyException Geometry` and validate
 rounded output. If rounding changes topology, they retry with bounded snapping;
 thin regions can collapse. Exhausted precision retries return
-`Left SF.OverlayPrecisionFailure`. See the
+`Left SF.PrecisionFailure`. See the
 [precision policy](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md#overlay-precision).
 
 ```haskell

@@ -12,7 +12,7 @@ Initial release.
 - Pure Haskell topology checks, spatial predicates, DE-9IM relations, distance,
   overlays, and round buffers. Overlays and buffers return
   `Either TopologyException Geometry`. They use bounded snapping when output
-  rounding changes topology; exhausted retries return `Left OverlayPrecisionFailure`.
+  rounding changes topology; exhausted retries return `Left PrecisionFailure`.
   Unrepresentable buffer offsets return `Left CoordinateOverflow`.
   The retry schedule follows GEOS 3.13.1. Its additional self-union and
   precision-grid attempts are omitted, so results and precision failures can

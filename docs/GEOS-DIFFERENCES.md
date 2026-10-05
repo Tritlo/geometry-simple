@@ -119,8 +119,9 @@ tolerance tenfold, each starting from the original inputs. Nearby vertices and
 intersection nodes share coordinates. Edges also snap to nearby vertices.
 Narrow regions can collapse. These functions return
 `Either TopologyException Geometry`. If all precision attempts fail, they return
-`Left OverlayPrecisionFailure`. Ring assembly failures return `Left OpenBoundary`
-or `Left UncontainedHole`. `Data.Geometry.SimpleFeatures` exports these
+`Left PrecisionFailure`. Offsets beyond the finite `Double` range return
+`Left CoordinateOverflow`. `Left OpenBoundary` and `Left UncontainedHole` indicate
+a library defect. `Data.Geometry.SimpleFeatures` exports these
 constructors. Applications can handle failures without catching exceptions.
 The combined output is checked again after separate groups are processed.
 
