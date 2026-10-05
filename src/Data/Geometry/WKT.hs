@@ -45,9 +45,10 @@ decodeWKT input = do
     ((geometry, _), remaining) <- runStateT (geometryParser <* spaces) input
     if Text.null remaining then Right geometry else Left "Geometry WKT has trailing input"
 
-{- | Write native dimension tags and shortest scientific decimal ordinates.
+{- | Write dimension tags and shortest scientific decimal ordinates.
 Multi-geometries and polygon rings pad absent Z or M ordinates with NaN.
-Geometry collections retain each child's own tags and ordinates.
+Geometry collections have no parent dimension tag. Each child retains its
+own tag and ordinates, so mixed collections can be decoded again.
 Return 'Left' for invalid line lengths, ring closure, or polygon emptiness.
 -}
 encodeWKT :: Geometry -> Either String Text
@@ -355,16 +356,18 @@ digitsValue digits
     half = size `div` 2
     (high, low) = Text.splitAt half digits
 
--- | Render each family with its native aggregate flags.
+-- | Tag atomic and multi-geometries. Collection children have their own tags.
 geometryWKT :: Geometry -> Builder
 geometryWKT geometry = name <> suffix <> " " <> body
   where
     dimensions = geometryDimensions geometry
-    suffix = case dimensions of
-        DimXY -> ""
-        DimXYZ -> " Z"
-        DimXYM -> " M"
-        DimXYZM -> " ZM"
+    suffix = case geometry of
+        GeometryCollection _ -> ""
+        _ -> case dimensions of
+            DimXY -> ""
+            DimXYZ -> " Z"
+            DimXYM -> " M"
+            DimXYZM -> " ZM"
     (name, body) = case geometry of
         PointGeometry value -> ("POINT", pointWKT dimensions value)
         LineString points -> ("LINESTRING", coordinatesWKT dimensions points)

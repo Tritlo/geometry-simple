@@ -12,6 +12,8 @@ Initial release.
 - WKT encoding and decoding for all families and coordinate types, including
   empty geometries. Finite coordinates decode to the same bits. The decoder
   rejects malformed tokens, missing separators, and trailing input.
+  Geometry collections retain child dimension tags and omit parent tags, so
+  mixed collections can be read after encoding.
 - The codecs follow GEOS construction rules for line lengths and closed rings.
   They accept non-finite ordinates and mixed-layout WKB children.
   They do not check polygon topology or limit nesting depth.

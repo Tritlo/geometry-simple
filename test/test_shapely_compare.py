@@ -3,13 +3,13 @@
 # dependencies = ["shapely==2.1.2", "types-shapely==2.1.0.20260728"]
 # ///
 # pyright: strict
-"""Check that the native ambiguity diagnostic rejects unrelated regressions."""
+"""Check that comparison rules reject unrelated geometry and codec changes."""
 
 from dataclasses import replace
 import unittest
 
 import shapely as sh
-from shapely_compare import COINCIDENT_SHELLS, PairCase, Shape, coincident_ordinate_difference, restore_closing_m, signature
+from shapely_compare import COINCIDENT_SHELLS, PairCase, Shape, coincident_ordinate_difference, matches, restore_closing_m, signature
 
 
 ACTUAL = signature(sh.from_wkt("POLYGON ZM ((5 4 45 24,6 4 47 25,7 2 47 32,6 2 45 31,5 4 45 24))"))
@@ -57,6 +57,22 @@ class CoincidentOrdinateTests(unittest.TestCase):
         other = PairCase(COINCIDENT_SHELLS.name, "POLYGON EMPTY", COINCIDENT_SHELLS.second)
         self.assertFalse(coincident_ordinate_difference(other, "union", ACTUAL, EXPECTED))
         self.assertFalse(coincident_ordinate_difference(COINCIDENT_SHELLS, "difference", ACTUAL, EXPECTED))
+
+
+class CollectionWKTTests(unittest.TestCase):
+    """Permit omitted collection tags while checking all member data."""
+
+    def test_readable_mixed_collection_is_accepted(self) -> None:
+        text = "GEOMETRYCOLLECTION (POINT (1 2), GEOMETRYCOLLECTION (POINT Z (3 4 5), POINT M EMPTY))"
+        expected = sh.from_wkt(text)
+        self.assertTrue(matches("encodeWKT", text, expected, True))
+
+    def test_member_changes_are_rejected(self) -> None:
+        text = "GEOMETRYCOLLECTION (POINT (1 2), POINT Z (3 4 5))"
+        expected = sh.from_wkt(text)
+        for changed in [text.replace("POINT Z", "POINT M"), text.replace("3 4 5", "3 4 6"), text.replace("POINT (1 2)", "POINT EMPTY")]:
+            with self.subTest(changed=changed):
+                self.assertFalse(matches("encodeWKT", changed, expected, True))
 
 
 if __name__ == "__main__":

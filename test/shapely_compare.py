@@ -12,8 +12,9 @@ inputs use the supplied seed. Unexpected mismatches give a nonzero exit status.
 
 Raw structure comparisons check every member and ring layout, including
 empty values. Selectors use zero-based indices. The tests compare hull
-coordinates and order directly. WKT checks use native writer structure and
-original coordinate bits, with NaN padding where GEOS requires it. WKB checks
+coordinates and order directly. WKT checks omit GEOS's collection dimension
+tags, which can make its output unreadable. They retain child tags, structure,
+and original coordinate bits, with NaN padding where required. WKB checks
 include every type tag. Codec-only requests omit measurements on nonfinite inputs.
 
 Topology requests compare exact predicates, DE-9IM matrices, and output
@@ -124,7 +125,7 @@ METHODS: dict[str, str] = {
     "perimeter": "sum length of polygon components",
     "centroid": "centroid",
     "convexHull": "convex_hull, including layout and vertex order",
-    "encodeWKT": "native writer tokens and exact source ordinates with NaN padding",
+    "encodeWKT": "native writer tokens without collection dimension tags, and exact source ordinates",
     "encodeWKB": "native writer ISO tags, structure, and coordinate bits",
     "decodeWKT": "from_wkt versus raw Haskell structure",
     "decodeWKB": "from_wkb versus raw Haskell structure",
@@ -555,6 +556,7 @@ def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
         return actual == expected
     if method == "encodeWKT":
         expected_text = sh.to_wkt(expected, rounding_precision=-1, output_dimension=4)
+        expected_text = re.sub(r"\bGEOMETRYCOLLECTION (?:ZM|Z|M)\b", "GEOMETRYCOLLECTION", expected_text)
         tokens, numbers = wkt_tokens(actual)
         return tokens == wkt_tokens(expected_text)[0] and numbers == written_ordinates(expected)
     if method == "encodeWKB":

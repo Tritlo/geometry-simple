@@ -75,6 +75,16 @@ tests =
         , testCase "mixed multipoint writers pad absent Z and M ordinates" $ do
             let shape = MultiPoint (U.fromList [PointXY (XY 1 2), PointXYZ (XYZ 3 4 5), PointXYM (XYM 6 7 8)])
             encodeWKT shape @?= Right "MULTIPOINT ZM ((1.0e0 2.0e0 NaN NaN), (3.0e0 4.0e0 5.0e0 NaN), (6.0e0 7.0e0 NaN 8.0e0))"
+        , testCase "mixed collection output preserves member layouts when decoded" $ do
+            let shape = GeometryCollection (V.fromList [PointGeometry (PointXY (XY 1 2)), PointGeometry (PointXYZ (XYZ 3 4 5))])
+            encodeWKT shape @?= Right "GEOMETRYCOLLECTION (POINT (1.0e0 2.0e0), POINT Z (3.0e0 4.0e0 5.0e0))"
+            (encodeWKT shape >>= decodeWKT) @?= Right shape
+        , testCase "nested collection output preserves empty and measured layouts" $ do
+            let members =
+                    [PointGeometry (EmptyPoint dimensions) | dimensions <- [DimXY, DimXYZ, DimXYM, DimXYZM]]
+                        ++ [PointGeometry (PointXYM (XYM 1 2 3)), PointGeometry (PointXYZM (XYZM 4 5 6 7)), LineString (CoordinatesXYZ U.empty)]
+                shape = nestGeometry 3 (GeometryCollection (V.fromList members))
+            (encodeWKT shape >>= decodeWKT) @?= Right shape
         , testCase "polygon writers pad each ring independently" $ do
             let shell = CoordinatesXY (U.fromList [XY 0 0, XY 4 0, XY 0 0])
                 hole = CoordinatesXYZ (U.fromList [XYZ 1 1 2, XYZ 2 1 3, XYZ 1 1 2])

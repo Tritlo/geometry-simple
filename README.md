@@ -180,9 +180,11 @@ interpolation along segments. They return `Nothing` for empty input and an
 empty point for no match. Polygon queries select boundary positions.
 The OGC specification leaves the surface interpretation to the implementation.
 
-The package targets the Simple Features core on GEOS's seven geometry
+The package targets the Simple Features core on the seven geometry
 families. Its scope excludes Triangle, TIN, PolyhedralSurface, MultiSurface,
 and spatial-reference metadata, so it does not claim full OGC SFA conformance.
+GEOS is a comparison reference. Consistent geometry and codec behavior takes
+priority over reproducing every GEOS output convention.
 
 The comparison report lists known GEOS data-loss and relation differences
 separately. Overlay noding uses a deterministic order. When coincident input
@@ -223,9 +225,10 @@ WKB collection members retain their own dimension tags. Collection metadata
 comes from the members. Writers pad missing Z and M ordinates with NaN when
 the format requires one layout, such as polygon rings in WKB and multi-geometry
 bodies in WKT. These conversions can change layouts when the output is read.
-GEOS writes mixed-layout geometry collections with an aggregate WKT tag and
-separate child tags. Its reader can reject this output. This library follows
-that behavior; use WKB to exchange mixed-layout collections.
+WKT geometry collections omit the parent dimension tag and retain each child's
+own tag. This preserves mixed member layouts when the output is decoded.
+GEOS can write a conflicting parent tag that causes its own reader to reject
+the collection. This library writes readable collections instead.
 EWKT `SRID=...;` prefixes are not supported.
 
 All codecs return `Either String`. The WKB decoder accepts both byte orders,

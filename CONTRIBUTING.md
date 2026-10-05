@@ -54,7 +54,9 @@ hull layouts and vertex order, envelopes, empty metadata, and total geometry
 length directly. Curve lengths and polygon perimeters have separate checks.
 Raw geometry results include every point and ring layout. This prevents writer
 normalization from hiding decoder differences. WKT comparisons check structural
-tokens and exact source ordinates separately from numeric formatting. Codec
+tokens and exact source ordinates separately from numeric formatting.
+Expected WKT omits GEOS's collection dimension tags, while retaining all child
+tags and ordinates. This checks that mixed collections remain readable. Codec
 fixtures check accepted and rejected inputs without running planar operations
 on non-finite coordinates. Numeric measurements use a tolerance; finite
 coordinate round trips retain exact bits.
