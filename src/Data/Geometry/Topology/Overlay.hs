@@ -114,11 +114,12 @@ polygonize edges = [shell : Map.findWithDefault [] shell groupedHoles | shell <-
     shells = filter ((> 0) . ringArea) rings
     holes = filter ((< 0) . ringArea) rings
     groupedHoles = Map.fromListWith (++) [(containingShell hole, [hole]) | hole <- holes]
-    containingShell [] = []
-    containingShell (p : _) = case filter ((/= Exterior) . ringLocation p) shells of
-        -- Every hole bounds a finite selected region inside an exterior ring.
-        [] -> error "Uncontained hole in planar overlay"
-        candidates -> minimumBy (comparing (abs . ringArea)) candidates
+    containingShell hole = case ringSegments hole of
+        [] -> []
+        edge : _ -> case filter ((== Interior) . ringLocation (midpoint edge)) shells of
+            -- Every hole bounds a finite selected region inside an exterior ring.
+            [] -> error "Uncontained hole in planar overlay"
+            candidates -> minimumBy (comparing (abs . ringArea)) candidates
 
 -- | Join edges through degree-two vertices. Stop at endpoints and branches.
 linePaths :: [Segment] -> [[Position]]

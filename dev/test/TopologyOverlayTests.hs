@@ -80,6 +80,16 @@ tests =
             assertBool "valid touching rings" (S.isValid result)
             S.numInteriorRings result @?= Just 1
             S.area result @?= 34
+        , testCase "hole-assignment excludes an island touching a hole vertex" $ do
+            let donut = geometry "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2))"
+                island = geometry "POLYGON ((2 2,5 4,4 5,2 2))"
+                collection = geometry "MULTIPOLYGON (((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2)),((2 2,5 4,4 5,2 2)))"
+            assertBool "valid input" (S.isValid collection)
+            forM_ [S.union donut island, S.union island donut, S.buffer 0 collection] $ \result -> do
+                assertBool "valid output" (S.isValid result)
+                S.area result @?= 66.5
+                assertBool "hole remains empty" (not (S.contains result (geometry "POINT (5 5)")))
+                assertBool "island remains filled" (S.contains result (geometry "POINT (3 3)"))
         , testCase "point intersection projects stored Z and M onto XY" $
             S.intersection (geometry "POINT M (1 1 9)") (geometry "LINESTRING Z (0 0 2,2 2 4)") @?= geometry "POINT (1 1)"
         , testCase "empty results use XY" $ do
