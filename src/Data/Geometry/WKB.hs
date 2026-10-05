@@ -10,9 +10,7 @@ ordinates and do not validate polygon topology. EWKB and SRIDs are not supported
 module Data.Geometry.WKB (decodeWKB, encodeWKB) where
 
 import Control.Monad (unless, when)
-import Control.Monad.ST (runST)
-import Data.Binary.Get (Get, bytesRead, getByteString, getWord32be, getWord32le, getWord64be, getWord64le, getWord8, lookAhead, runGetOrFail, skip)
-import Data.Bits (shiftL, (.|.))
+import Data.Binary.Get (Get, bytesRead, getDoublebe, getDoublele, getWord32be, getWord32le, getWord8, runGetOrFail)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.ByteString.Builder (Builder)
@@ -26,8 +24,7 @@ import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import qualified Data.Vector.Unboxed.Mutable as UM
-import Data.Word (Word32, Word64)
+import Data.Word (Word32)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 
 {- | Decode one complete ISO WKB geometry. Each child uses its own header.
@@ -127,10 +124,10 @@ getGeometry total expectedFamily = do
             count <- getCount total little 9
             GeometryCollection <$> V.replicateM count (getGeometry total Nothing)
 
--- | Read point ordinates before applying WKB's XY-NaN empty convention.
-getPoint :: Bool -> Dimensions -> Get Point
-getPoint little dimensions = do
-    let number = castWord64ToDouble <$> (if little then getWord64le else getWord64be)
+-- | Read the ordinates present in a coordinate layout.
+getComponents :: Bool -> Dimensions -> Get (Double, Double, Double, Double)
+getComponents little dimensions = do
+    let number = if little then getDoublele else getDoublebe
     x <- number
     y <- number
     (z, m) <- case dimensions of
@@ -138,7 +135,13 @@ getPoint little dimensions = do
         DimXYZ -> do z <- number; pure (z, 0)
         DimXYM -> do m <- number; pure (0, m)
         DimXYZM -> (,) <$> number <*> number
-    pure (if isNaN x && isNaN y then EmptyPoint dimensions else pointFromComponents dimensions (x, y, z, m))
+    pure (x, y, z, m)
+
+-- | Read point ordinates before applying WKB's XY-NaN empty convention.
+getPoint :: Bool -> Dimensions -> Get Point
+getPoint little dimensions = do
+    components@(x, y, _, _) <- getComponents little dimensions
+    pure (if isNaN x && isNaN y then EmptyPoint dimensions else pointFromComponents dimensions components)
 
 -- | Select the typed unboxed buffer for one line or ring.
 getCoordinates :: Int64 -> Bool -> Dimensions -> Get Coordinates
@@ -151,100 +154,19 @@ getCoordinates total little dimensions = case dimensions of
 -- | Read a complete coordinate buffer after checking its byte length.
 getLineCoordinates :: forall c. (Coordinate c) => Int64 -> Bool -> Get (U.Vector c)
 getLineCoordinates total little = do
-    let stride = 8 * dimensionCount (coordinateDimensions (Proxy :: Proxy c))
-    count <- getCount total little (fromIntegral stride)
+    let dimensions = coordinateDimensions (Proxy :: Proxy c)
+    count <- getCount total little (fromIntegral (8 * dimensionCount dimensions))
     when (count == 1) (fail "Geometry line must have zero or at least two coordinates")
-    bytes <- getByteString (count * stride)
-    pure (U.generate count (\i -> coordinateAt little bytes (i * stride)))
+    U.replicateM count (coordinateFromComponents <$> getComponents little dimensions)
 
--- | Read point children without a separate Get action for each child.
+-- | Read each point with its own byte order and coordinate layout.
 getMultiPoints :: Int64 -> Bool -> Get (U.Vector Point)
 getMultiPoints total little = do
     count <- getCount total little 21
-    if count == 0
-        then pure U.empty
-        else do
-            consumed <- bytesRead
-            bytes <- lookAhead (getByteString (fromIntegral (total - consumed)))
-            (points, size) <- either fail pure (multiPointsAt count bytes)
-            skip size
-            pure points
-
--- | Read checked variable-width point records into one unboxed vector.
-multiPointsAt :: Int -> ByteString -> Either String (U.Vector Point, Int)
-multiPointsAt count bytes = runST $ do
-    target <- UM.new count
-    let go index offset
-            | index == count = do
-                points <- U.unsafeFreeze target
-                pure (Right (points, offset))
-            | BS.length bytes - offset < 5 = pure (Left "Geometry WKB point header exceeds the remaining bytes")
-            | otherwise = case BS.index bytes offset of
-                0 -> child index offset False
-                1 -> child index offset True
-                _ -> pure (Left "Geometry WKB has an invalid byte order")
-        child index offset little
-            | dimensionTag > 3 || family < 1 || family > 7 = pure (Left "Geometry WKB has an unsupported type")
-            | family /= 1 = pure (Left "Geometry WKB multi child has the wrong family")
-            | stride > BS.length bytes - offset = pure (Left "Geometry WKB point exceeds the remaining bytes")
-            | otherwise = UM.write target index value >> go (index + 1) (offset + stride)
-          where
-            (dimensionTag, family) = word32At little bytes (offset + 1) `quotRem` 1000
-            dimensions = toEnum (fromIntegral dimensionTag)
-            stride = 5 + 8 * dimensionCount dimensions
-            value =
-                let (x, y, z, m) = componentsAt dimensions little bytes (offset + 5)
-                 in if isNaN x && isNaN y then EmptyPoint dimensions else pointFromComponents dimensions (x, y, z, m)
-    go 0 0
-
--- | Read the ordinates present in a checked coordinate record.
-{-# INLINE componentsAt #-}
-componentsAt :: Dimensions -> Bool -> ByteString -> Int -> (Double, Double, Double, Double)
-componentsAt dimensions little bytes offset =
-    let number i = castWord64ToDouble (word64At little bytes (offset + i))
-        x = number 0
-        y = number 8
-     in case dimensions of
-            DimXY -> (x, y, 0, 0)
-            DimXYZ -> (x, y, number 16, 0)
-            DimXYM -> (x, y, 0, number 16)
-            DimXYZM -> (x, y, number 16, number 24)
-
--- | Read a typed coordinate from a block with a checked byte length.
-coordinateAt :: forall c. (Coordinate c) => Bool -> ByteString -> Int -> c
-coordinateAt little bytes offset = coordinateFromComponents (componentsAt (coordinateDimensions (Proxy :: Proxy c)) little bytes offset)
-
--- | Read four checked bytes in either byte order without alignment assumptions.
-word32At :: Bool -> ByteString -> Int -> Word32
-word32At little bytes offset =
-    let byte i = fromIntegral (BS.index bytes (offset + i))
-     in if little
-            then byte 0 .|. shiftL (byte 1) 8 .|. shiftL (byte 2) 16 .|. shiftL (byte 3) 24
-            else shiftL (byte 0) 24 .|. shiftL (byte 1) 16 .|. shiftL (byte 2) 8 .|. byte 3
-
--- | Read eight checked bytes and preserve the exact IEEE-754 representation.
-word64At :: Bool -> ByteString -> Int -> Word64
-word64At little bytes offset =
-    let byte i = fromIntegral (BS.index bytes (offset + i))
-     in if little
-            then
-                byte 0
-                    .|. shiftL (byte 1) 8
-                    .|. shiftL (byte 2) 16
-                    .|. shiftL (byte 3) 24
-                    .|. shiftL (byte 4) 32
-                    .|. shiftL (byte 5) 40
-                    .|. shiftL (byte 6) 48
-                    .|. shiftL (byte 7) 56
-            else
-                shiftL (byte 0) 56
-                    .|. shiftL (byte 1) 48
-                    .|. shiftL (byte 2) 40
-                    .|. shiftL (byte 3) 32
-                    .|. shiftL (byte 4) 24
-                    .|. shiftL (byte 5) 16
-                    .|. shiftL (byte 6) 8
-                    .|. byte 7
+    U.replicateM count $ do
+        (childLittle, dimensions, family) <- getHeader
+        unless (family == 1) (fail "Geometry WKB multi child has the wrong family")
+        getPoint childLittle dimensions
 
 -- | Check that a vector length fits the WKB unsigned 32-bit count.
 checkedLength :: Int -> Either String ()

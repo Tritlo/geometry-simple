@@ -1,5 +1,8 @@
 # Performance audit results
 
+These results precede the codec simplification. See the
+[codec measurements](CONTAINERS.md#simpler-codec-primitives) for current decoding costs.
+
 Coverage: **64 stable public functions**, **304 workloads**, at sizes 100, 400, and 1,600. The harness baseline is separate.
 
 See [CONTRIBUTING](../../CONTRIBUTING.md#full-api-audit) for the machine, source revision, commands, workload definitions, and measurement limits.

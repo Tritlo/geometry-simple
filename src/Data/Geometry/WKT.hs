@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -14,7 +13,6 @@ NaN and infinity are accepted. EWKT and SRIDs are not supported.
 module Data.Geometry.WKT (decodeWKT, encodeWKT) where
 
 import Control.Monad (unless, when)
-import Control.Monad.ST (runST)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT (..), get, modify', put)
 import Data.ByteString.Builder (Builder)
@@ -30,7 +28,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Vector.Generic as V
-import qualified Data.Vector.Generic.Mutable as M
 import qualified Data.Vector.Unboxed as U
 
 -- | The remaining text and a controlled parse error.
@@ -258,21 +255,15 @@ vectorState initialState element = do
         then pure (V.empty, initialState)
         else do
             symbol '('
-            StateT $ \input -> runST $ do
-                initial <- M.new 16
-                let go !count buffer current remaining = case runStateT (element current) remaining of
-                        Left message -> pure (Left message)
-                        Right ((value, next), afterElement) -> case runStateT delimiter afterElement of
-                            Left message -> pure (Left message)
-                            Right (finished, rest) -> do
-                                target <- if count == M.length buffer then M.grow buffer (M.length buffer) else pure buffer
-                                M.write target count value
-                                if finished
-                                    then do
-                                        result <- V.freeze (M.slice 0 (count + 1) target)
-                                        pure (Right ((result, next), rest))
-                                    else go (count + 1) target next rest
-                go 0 initial initialState input
+            runStateT (V.unfoldrM next False) initialState
+  where
+    next True = pure Nothing
+    next False = do
+        current <- get
+        (value, inferred) <- lift (element current)
+        put inferred
+        finished <- lift delimiter
+        pure (Just (value, finished))
 
 -- | Consume a comma or a closing parenthesis.
 delimiter :: Parser Bool

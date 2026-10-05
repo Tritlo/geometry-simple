@@ -135,9 +135,58 @@ Additional interleaved checks put buffer, polygon validity, and polygon union
 costs within about 3% of their baselines. Early larger timing differences did
 not persist in those checks.
 
-The codec builders stayed unchanged. At 100,000 elements, replacing their loops
-with pure `unfoldrM` or `replicateM` roughly doubled WKT time and increased WKB
-multipoint time about fivefold. A mutable `replicateM` variant still added
-40–60% to WKB time and several times the allocation. Those replacements removed
-loop code but had a substantial cost. The original decimal rounding and exact
-geometric predicates also remain.
+## Simpler codec primitives
+
+The codec review now favors standard readers and vector builders. WKB uses
+`Data.Binary.Get.getDoublele` and `getDoublebe` for ordinates, and `U.replicateM`
+for coordinate buffers and multipoints. This removes 78 lines from the module:
+manual byte shifts, a separate multipoint reader, and its mutable buffer loop.
+Point and line decoding share one ordinate reader. Child headers use the same
+validation as other geometries.
+
+WKT uses `V.unfoldrM` to build vectors. `StateT` carries the inferred layout.
+This removes 9 lines, including the custom buffer allocation, growth, writes,
+and freeze. The two changes remove 87 library lines and add no dependencies.
+
+Measurements against `9fca2d3`, on the same machine and Nix toolchain:
+
+| Decode input | 1,000 coordinates, before → after | 100,000 coordinates, before → after | Allocation at 100,000, before → after |
+| --- | ---: | ---: | ---: |
+| WKB XY line | 9.4 → 19.3 µs | 1.33 → 26.7 ms | 1.60 → 36.8 MB |
+| WKB XY multipoint | 23.4 → 49.4 µs | 3.03 → 35.9 ms | 8.90 → 68.1 MB |
+| WKT XY line | 611 → 653 µs | 70.2 → 139 ms | 324 → 343 MB |
+| WKT XY multipoint | 723 → 670 µs | 83.0 → 148 ms | 375 → 386 MB |
+
+At 10,000 coordinates, WKB lines took 0.090 → 0.890 ms and multipoints took
+0.252 → 1.98 ms. Small-input timing differences include machine noise. These
+changes reduce implementation complexity but have a substantial cost for bulk
+decoding. Allocation is cumulative per call, not retained memory.
+
+The runs used 100, 1,000, 10,000, and 100,000 coordinates. Each process forced
+the encoded input before timing. It read that input through an `IORef` and
+forced each decoded result. A pilot preceded five measured calls. Two runs
+reversed candidate order; the table reports medians of ten samples. Builds
+finished before measurements started. There was no CPU isolation.
+
+XY fixtures use `(i, sin (i / 10))`. Multipoints use the same coordinates as
+lines. A mixed multipoint fixture alternates XY, XYZM, and empty XYM points.
+At 100,000 mixed points, WKB decoding changed from 3.35 ms to 42.1 ms and
+allocation changed from 15.6 MB to 76.4 MB. The existing API audit can repeat
+the line measurements:
+
+```sh
+nix-shell -A env
+cabal build -O1 bench:geometry-simple-bench
+geometry_bench=$(cabal list-bin bench:geometry-simple-bench)
+"$geometry_bench" --audit codecs/decodeWKB/line-XY 100000 +RTS -T -RTS
+"$geometry_bench" --audit codecs/decodeWKT/line-XY 100000 +RTS -T -RTS
+```
+
+Smaller replacements were less useful. Retaining manual byte parsing and
+changing only the multipoint loop to pure or mutable `replicateM` saved 6 or
+2 lines. Running a standard reader separately at each byte offset saved
+30 lines, but retained the custom buffer loop and allocated 169 MB for the
+100,000-point fixture. The complete WKB replacement is simpler.
+
+The exact WKT decimal conversion remains. It preserves signed zero and
+subnormals and accepts WKT's decimal syntax.
