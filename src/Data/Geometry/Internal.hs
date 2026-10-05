@@ -166,15 +166,10 @@ instance NFData XYM where rnf = rwhnf
 instance NFData XYZM where rnf = rwhnf
 
 instance NFData Dimensions where rnf = rwhnf
-instance NFData Point where
-    rnf (EmptyPoint dimensions) = rnf dimensions
-    rnf (PointXY value) = rnf value
-    rnf (PointXYZ value) = rnf value
-    rnf (PointXYM value) = rnf value
-    rnf (PointXYZM value) = rnf value
 
-instance NFData Coordinates where
-    rnf = withCoordinates rnf
+-- Points and unboxed sequences have strict fields with no lazy parts.
+instance NFData Point where rnf = rwhnf
+instance NFData Coordinates where rnf = rwhnf
 
 instance NFData PolygonRings where
     rnf (PolygonRings shell holes) = rnf shell `seq` rnf holes
@@ -336,7 +331,7 @@ validatePolygon :: PolygonRings -> Either String ()
 validatePolygon (PolygonRings shell holes) = do
     validateRing shell
     V.mapM_ validateRing holes
-    unless (not (coordinatesEmpty shell) || V.all coordinatesEmpty holes) $
+    when (coordinatesEmpty shell && not (V.all coordinatesEmpty holes)) $
         Left "Geometry polygon has an empty shell and nonempty holes"
   where
     validateRing = withCoordinates $ \points -> case U.length points of
