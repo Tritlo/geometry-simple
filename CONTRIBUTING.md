@@ -151,8 +151,12 @@ settings before attributing a timing change to an implementation change.
 
 The audit covers all 64 functions exported by the four stable public modules.
 It excludes derived instances and the unstable `Internal` module. The
-[complete results](dev/bench/RESULTS.md) include 304 workloads at sizes 100,
+[earlier complete results](dev/bench/RESULTS.md) include 304 workloads at sizes 100,
 400, and 1,600. Selected groups also run at 10,000 and 100,000.
+
+The [container review](dev/bench/CONTAINERS.md) compares lists, vectors, arrays,
+sequences, and integer graph keys. The audit now also includes an equal-multipoint
+relation case, for a total of 305 workloads.
 
 Build once, then run the executable so build output does not enter the CSV:
 

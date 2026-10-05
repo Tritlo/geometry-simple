@@ -19,6 +19,7 @@ extra-source-files:
   test/test_shapely_compare.py
 
 extra-doc-files:
+  bench/CONTAINERS.md
   bench/RESULTS.md
   test/SFA-TESTS.md
 

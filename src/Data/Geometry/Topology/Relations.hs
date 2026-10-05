@@ -19,6 +19,7 @@ import Data.Geometry.Internal (Geometry (..), TopologicalDimension (..), withPoi
 import Data.Geometry.Topology.Planar
 import qualified Data.List as List
 import qualified Data.Set as Set
+import qualified Data.Vector.Unboxed as U
 
 {- | Return the nine-character DE-9IM intersection matrix in row-major order.
 Rows and columns denote interior, boundary, and exterior. Each character is
@@ -26,7 +27,7 @@ Rows and columns denote interior, boundary, and exterior. Each character is
 Z and M ordinates do not affect the result. Line boundaries use the mod-2 rule.
 -}
 relate :: Geometry -> Geometry -> String
-relate first second = map symbol (List.foldl' record (replicate 8 (-1) ++ [2]) samples)
+relate first second = map symbol (U.toList matrix)
   where
     a = planar first
     b = planar second
@@ -45,9 +46,8 @@ relate first second = map symbol (List.foldl' record (replicate 8 (-1) ++ [2]) s
                , p <- [left, right]
                ]
     areaLocation containsPoint p = if containsPoint p then Interior else Exterior
-    record :: [Int] -> (Location, Location, Int) -> [Int]
-    record matrix (row, column, dimension) =
-        zipWith (\index old -> if index == locationIndex row * 3 + locationIndex column then max old dimension else old) [0 ..] matrix
+    matrix :: U.Vector Int
+    matrix = U.accum max (U.fromList (replicate 8 (-1) ++ [2])) [(locationIndex row * 3 + locationIndex column, dimension) | (row, column, dimension) <- samples]
     symbol dimension = case dimension of
         0 -> '0'
         1 -> '1'

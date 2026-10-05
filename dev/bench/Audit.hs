@@ -231,7 +231,8 @@ cases size = do
             , workload "measures" "locateBetween" "multipoint" (S.locateBetween (n / 3) (2 * n / 3)) measuredMultiPoint
             ]
     codecs <- mapM codecCases [("line-XY", line), ("line-XYZM", measuredLine), ("polygon-hole", holed), ("mixed-collection", flat), ("nested", nested)]
-    pure (accessors ++ concat properties ++ concat measurements ++ concat topology ++ rings ++ concat relations ++ concat overlays ++ buffers ++ measures ++ concat codecs)
+    pointRelation <- workload "relations" "relate" "multipoint-equal" (uncurry S.relate) (multiPoint, multiPoint)
+    pure (accessors ++ concat properties ++ concat measurements ++ concat topology ++ rings ++ concat relations ++ [pointRelation] ++ concat overlays ++ buffers ++ measures ++ concat codecs)
 
 -- | Measure codecs using encoded input prepared outside the timed section.
 codecCases :: (String, Geometry) -> IO [Workload]
