@@ -46,6 +46,10 @@ planar geometry = case geometry of
   where
     combine parts = Planar (concatMap planarPoints parts) (concatMap planarLines parts) (concatMap planarPolygons parts)
 
+-- | Round an exact planar position to an XY point.
+planarPoint :: Position -> Point
+planarPoint (x, y) = PointXY (XY (fromRational x) (fromRational y))
+
 -- | Remove duplicates and return values in ascending order.
 unique :: (Ord a) => [a] -> [a]
 unique = Set.toAscList . Set.fromList
@@ -110,15 +114,15 @@ segmentsIntersect first second = go [] [] events
         remainingSecond = filter ((>= left edge) . right) activeSecond
         candidates = if fromFirst then remainingSecond else remainingFirst
 
--- | Subtract two vectors.
+-- | The displacement from the second position to the first.
 subtractPosition :: Position -> Position -> Position
 subtractPosition (x, y) (u, v) = (x - u, y - v)
 
--- | Add two vectors.
+-- | Translate a position by an XY displacement.
 addPosition :: Position -> Position -> Position
 addPosition (x, y) (u, v) = (x + u, y + v)
 
--- | Multiply a vector by a scalar.
+-- | Scale both XY components by an exact factor.
 scalePosition :: Rational -> Position -> Position
 scalePosition t (x, y) = (t * x, t * y)
 

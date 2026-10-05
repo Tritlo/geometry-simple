@@ -4,53 +4,32 @@
 # dependencies = ["shapely==2.1.2", "types-shapely==2.1.0.20260728"]
 # ///
 # pyright: strict
-"""Compare the GEOS-compatible operations and both codecs with Shapely.
+"""Compare the Simple Features core and both codecs with Shapely.
 
-Run with uv and --probe pointing to geometry-simple-shapely-probe. The optional
---report writes method counts and complete reproductions as JSON. All random
-inputs use the supplied seed. Unexpected mismatches give a nonzero exit status.
+Run with uv and --probe pointing to geometry-simple-shapely-probe. --report
+writes method counts and complete reproductions as JSON. Random inputs use
+the supplied seed. Unexpected differences give a nonzero exit status.
 
-Raw structure comparisons check every member and ring layout, including
-empty values. Selectors use zero-based indices. The tests compare hull
-coordinates and order directly. WKT checks omit GEOS's collection dimension
-tags, which can make its output unreadable. They retain child tags, structure,
-and original coordinate bits, with NaN padding where required. WKB checks
-include every type tag. Codec-only requests omit measurements on nonfinite inputs.
+Codecs retain strict member layouts, type tags, empty values, and coordinate
+bits. WKT ignores numeric spelling and omits parent collection dimension tags.
+Point observers compare stored native rows, including NaN Z/M. Constructed
+planar results must be XY. Hulls compare exact XY geometry and must run
+counterclockwise. Other polygon results compare geometry independently of
+ring starts, winding, and equivalent collinear subdivisions.
 
-Topology requests compare exact predicates, DE-9IM matrices, and output
-metadata. Constructed XY coordinates allow at most 1e-9 absolute error after
-ordering normalization. The tests do not snap or repair geometry. Z/M checks
-use native output vertices or linear interpolation along native output edges.
-Additional nearly-collinear vertices require discrete Hausdorff distance below
-1e-9 with each segment split into quarters, plus bounded length and area
-differences. Output validity must also agree.
-Distance uses relative tolerance only, so a small positive distance cannot
-match zero through an absolute error allowance.
+Topology checks predicates, DE-9IM matrices, family, layout, and validity.
+Constructed XY coordinates allow at most 1e-9 absolute error. Extra nearly
+collinear vertices also require bounded area and length differences and a
+Hausdorff check with each segment split into quarters. Inputs are never
+snapped or repaired. Distance uses a relative tolerance without an absolute
+allowance. Nonfinite XY inputs run codec checks only.
+
 GeometryCollection simplicity calls GEOSisSimple_r because Shapely overrides
-that native result. --phase selects explicit groups during development; the
-default and CI run every group. The report lists operation exceptions and
-decode failures separately. The tests continue to check the other methods.
-Binary operations require valid input topology. Invalid binary inputs remain
-in the report as out_of_contract outcomes, outside the pass/failure counts.
-
-Only hull-duplicate-z-51 permits a different input Z at duplicate XY. GEOS
-can select another duplicate when sorting. Both hulls must remain XYZ lines
-with two vertices and identical XY coordinates and order. The report retains
-both results under known_differences. Every other hull comparison is strict.
-Named native relation and symmetric-difference fixtures retain known GEOS
-defects as diagnostics. They require the specified corrected matrix or an
-independent result from atomic set operations. Exact fixture operands guard
-these exceptions. Native assertions on specified valid empty operations
-require the exact expected empty family and layout. Other collection
-differences remain failures.
-Native loss of M at a polygon's repeated closing vertex is reported separately.
-Only that ordinate may differ; all other geometry checks must still pass.
-Specified uniform-M case/method pairs also retain source M=4 when native output
-replaces it with NaN. These require exact operands and exact actual M values.
-One fixed case with coincident shells permits source Z/M tuples at shared
-vertices. GEOS chooses among these tuples with an unstable sort. The test
-checks every other ordinate, the output metadata, and XY geometry. The report
-retains the raw results.
+that result. Binary operations require valid topology; invalid binary cases
+remain in the report outside pass/failure counts. Named native relation and
+symmetric-difference defects require exact operands and independent expected
+results. Named native empty-operation errors require an exact empty family.
+--phase selects groups during development; CI and the default run all groups.
 """
 
 from __future__ import annotations
@@ -58,7 +37,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import ctypes
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
@@ -87,13 +66,10 @@ area = cast(Callable[[BaseGeometry], float], getattr(sh, "area"))
 get_x = cast(Callable[[BaseGeometry], float], getattr(sh, "get_x"))
 get_y = cast(Callable[[BaseGeometry], float], getattr(sh, "get_y"))
 get_geometry = cast(Callable[[BaseGeometry, int], BaseGeometry | None], getattr(sh, "get_geometry"))
-get_point = cast(Callable[[BaseGeometry, int], BaseGeometry | None], getattr(sh, "get_point"))
 get_interior_ring = cast(Callable[[BaseGeometry, int], BaseGeometry | None], getattr(sh, "get_interior_ring"))
 get_exterior_ring = cast(Callable[[BaseGeometry], BaseGeometry | None], getattr(sh, "get_exterior_ring"))
 hausdorff_distance = cast(Callable[[BaseGeometry, BaseGeometry, float], float], getattr(sh, "hausdorff_distance"))
 force_2d = cast(Callable[[BaseGeometry], BaseGeometry], getattr(sh, "force_2d"))
-
-Value: TypeAlias = str | int | float | bool | BaseGeometry | None
 
 # Each entry names the independent Shapely operation or the explicit adapter.
 METHODS: dict[str, str] = {
@@ -108,12 +84,16 @@ METHODS: dict[str, str] = {
     "y": "get_coordinates(include_z=True, include_m=True): Y",
     "z": "get_coordinates(include_z=True, include_m=True): Z or None",
     "m": "get_coordinates(include_z=True, include_m=True): M or None",
+    "pointX": "stored point X or None for empty and non-point inputs",
+    "pointY": "stored point Y or None for empty and non-point inputs",
+    "pointZ": "stored point Z or None when absent",
+    "pointM": "stored point M or None when absent",
     "numGeometries": "get_num_geometries",
     "geometryN": "get_geometry(index), reject negative indices",
     "numPoints": "get_num_points for LineString, otherwise None",
-    "pointN": "get_point(index) for LineString, reject negative indices",
-    "startPoint": "get_point(0) for nonempty LineString",
-    "endPoint": "get_point(-1) for nonempty LineString",
+    "pointN": "stored LineString row and layout, reject negative indices",
+    "startPoint": "first stored LineString row and layout",
+    "endPoint": "last stored LineString row and layout",
     "isClosed": "is_closed",
     "exteriorRing": "get_exterior_ring for Polygon, otherwise None",
     "numInteriorRings": "get_num_interior_rings for Polygon, otherwise None",
@@ -124,7 +104,7 @@ METHODS: dict[str, str] = {
     "curveLength": "sum length of linear components",
     "perimeter": "sum length of polygon components",
     "centroid": "centroid",
-    "convexHull": "convex_hull, including layout and vertex order",
+    "convexHull": "convex_hull XY geometry, plus counterclockwise output rings",
     "encodeWKT": "native writer tokens without collection dimension tags, and exact source ordinates",
     "encodeWKB": "native writer ISO tags, structure, and coordinate bits",
     "decodeWKT": "from_wkt versus raw Haskell structure",
@@ -164,6 +144,9 @@ class Shape:
     layout: str
     coordinates: tuple[tuple[str, ...], ...] = ()
     children: tuple[Shape, ...] = ()
+
+
+Value: TypeAlias = str | int | float | bool | BaseGeometry | Shape | None
 
 
 def lift_layout(wkt: str, layout: str) -> str:
@@ -393,23 +376,37 @@ def expected_results(geometry: BaseGeometry) -> dict[str, Value]:
         "coordinateDimension": int(get_coordinate_dimension(geometry)), "spatialDimension": 3 if sh.has_z(geometry) else 2,
         "is3D": bool(sh.has_z(geometry)), "isMeasured": bool(sh.has_m(geometry)), "isEmpty": bool(sh.is_empty(geometry)),
         "numGeometries": member_count, "numPoints": point_count,
-        "startPoint": get_point(geometry, 0) if kind == 1 else None,
-        "endPoint": get_point(geometry, -1) if kind == 1 else None,
+        "startPoint": stored_point(geometry, 0),
+        "endPoint": stored_point(geometry, (point_count or 0) - 1),
         "isClosed": bool(sh.is_closed(geometry)), "exteriorRing": get_exterior_ring(geometry) if kind == 3 else None,
         "numInteriorRings": ring_count, "envelope": sh.envelope(geometry),
         "area": float(area(geometry)), "geometryLength": float(length(geometry)), "curveLength": component_length(geometry, False),
-        "perimeter": component_length(geometry, True), "centroid": sh.centroid(geometry), "convexHull": sh.convex_hull(geometry),
+        "perimeter": component_length(geometry, True), "centroid": force_2d(sh.centroid(geometry)), "convexHull": force_2d(sh.convex_hull(geometry)),
     }
     for i in range(-1, member_count + 2):
         values[f"geometryN.{i}"] = get_geometry(geometry, i) if 0 <= i < member_count else None
     for i in range(-1, (point_count or 0) + 2):
-        values[f"pointN.{i}"] = get_point(geometry, i) if kind == 1 and 0 <= i < (point_count or 0) else None
+        values[f"pointN.{i}"] = stored_point(geometry, i)
     for i in range(-1, (ring_count or 0) + 2):
         values[f"interiorRingN.{i}"] = get_interior_ring(geometry, i) if kind == 3 and 0 <= i < (ring_count or 0) else None
     for i, row in enumerate(coordinate_rows(geometry)):
         for method, value in zip(("x", "y", "z", "m"), row, strict=True):
             values[f"{method}.{i}"] = value
+    point_rows = coordinate_rows(geometry) if kind == 0 else []
+    for method, value in zip(("pointX", "pointY", "pointZ", "pointM"), point_rows[0] if point_rows else (None, None, None, None), strict=True):
+        values[method] = value
     return values
+
+
+def stored_point(geometry: BaseGeometry, index: int) -> Shape | None:
+    """Extract the native coordinate row without GEOS's point-layout conversion."""
+    if int(get_type_id(geometry)) != 1 or index < 0:
+        return None
+    rows = coordinate_rows(geometry)
+    if index >= len(rows):
+        return None
+    row = tuple(value.hex() for value in rows[index] if value is not None)
+    return Shape(0, coordinate_layout(geometry), coordinates=(row,))
 
 
 def signature(geometry: BaseGeometry) -> Shape:
@@ -549,11 +546,13 @@ def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
         return actual == str(expected)
     if isinstance(expected, float):
         value = float(actual)
-        if method in ("x", "y", "z", "m"):
+        if method in ("x", "y", "z", "m", "pointX", "pointY", "pointZ", "pointM"):
             return value.hex() == expected.hex()
         return value == expected or math.isclose(value, expected, rel_tol=1e-10, abs_tol=0.0 if strict else 1e-12)
     if isinstance(expected, str):
         return actual == expected
+    if isinstance(expected, Shape):
+        return read_structure(actual) == expected
     if method == "encodeWKT":
         expected_text = sh.to_wkt(expected, rounding_precision=-1, output_dimension=4)
         expected_text = re.sub(r"\bGEOMETRYCOLLECTION (?:ZM|Z|M)\b", "GEOMETRYCOLLECTION", expected_text)
@@ -563,6 +562,13 @@ def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
         native = sh.to_wkb(expected, byte_order=1, output_dimension=4, flavor="iso")
         return binary_signature(bytes.fromhex(actual)) == binary_signature(native)
     actual_shape, expected_shape = read_structure(actual), signature(expected)
+    if method == "convexHull":
+        if result_metadata(actual_shape) != result_metadata(expected_shape):
+            return False
+        actual_geometry = shape_geometry(actual_shape)
+        if actual_shape.kind == 3 and not bool(sh.is_ccw(get_exterior_ring(actual_geometry))):
+            return False
+        return bool(sh.equals_exact(sh.normalize(actual_geometry), sh.normalize(expected), tolerance=0.0))
     if method == "centroid":
         if (actual_shape.kind, actual_shape.layout) != (expected_shape.kind, expected_shape.layout):
             return False
@@ -577,22 +583,6 @@ def codec_results(geometry: BaseGeometry) -> dict[str, Value]:
     return {"encodeWKT": geometry, "encodeWKB": geometry}
 
 
-def duplicate_z_difference(request: Request, method: str, actual: str, expected: Value) -> bool:
-    """Recognize only the named duplicate selection diagnostic; keep XY strict."""
-    if request.case.name != "hull-duplicate-z-51" or method != "convexHull" or request.geometry is None or not isinstance(expected, BaseGeometry):
-        return False
-    try:
-        actual_shape = read_structure(actual)
-    except ValueError:
-        return False
-    expected_shape = signature(expected)
-    for shape in (actual_shape, expected_shape):
-        if shape.kind != 1 or shape.layout != "XYZ" or len(shape.coordinates) != 2 or shape.children:
-            return False
-    if tuple(row[:2] for row in actual_shape.coordinates) != tuple(row[:2] for row in expected_shape.coordinates):
-        return False
-    input_coordinates = {tuple(value.hex() for value in row if value is not None) for row in coordinate_rows(request.geometry)}
-    return all(row in input_coordinates for row in actual_shape.coordinates + expected_shape.coordinates)
 
 
 def describe(value: Value) -> str:
@@ -944,48 +934,10 @@ def geometry_result_matches(shape: Shape, expected_shape: Shape, expected: BaseG
     return True
 
 
-def restore_closing_m(shape: Shape) -> Shape:
-    """Restore only a missing closing M from the same ring's opening vertex."""
-    if shape.kind == 3:
-        rings: list[Shape] = []
-        for ring in shape.children:
-            rows = ring.coordinates
-            if "M" in ring.layout and len(rows) >= 2 and rows[0][:2] == rows[-1][:2] and math.isfinite(float.fromhex(rows[0][-1])) and math.isnan(float.fromhex(rows[-1][-1])):
-                closing = rows[-1][:-1] + (rows[0][-1],)
-                ring = replace(ring, coordinates=rows[:-1] + (closing,))
-            rings.append(ring)
-        return replace(shape, children=tuple(rings))
-    return replace(shape, children=tuple(restore_closing_m(child) for child in shape.children))
 
 
-def closing_m_difference(actual: str, expected: BaseGeometry) -> bool:
-    """Permit only native loss of M at a ring's repeated closing coordinate."""
-    original = signature(expected)
-    repaired = restore_closing_m(original)
-    return repaired != original and geometry_result_matches(read_structure(actual), repaired, expected)
 
 
-def coincident_ordinate_difference(case: PairCase | None, method: str, actual: Shape, expected: BaseGeometry) -> bool:
-    """Recognize the fixed unstable-sort diagnostic without accepting invented values."""
-    if case is None or (case.first, case.second) != (COINCIDENT_SHELLS.first, COINCIDENT_SHELLS.second) or method not in ("intersection", "union"):
-        return False
-    def samples(shape: Shape) -> dict[tuple[str, ...], set[tuple[str, ...]]]:
-        result: dict[tuple[str, ...], set[tuple[str, ...]]] = {}
-        for row in shape.coordinates:
-            result.setdefault((shape.layout,) + row[:2], set()).add(row)
-        for child in shape.children:
-            for key, values in samples(child).items():
-                result.setdefault(key, set()).update(values)
-        return result
-    first, second = samples(signature(sh.from_wkt(case.first))), samples(signature(sh.from_wkt(case.second)))
-    choices = {key: first[key] | second[key] for key in first.keys() & second.keys() if len(first[key] | second[key]) > 1}
-    def normalized(shape: Shape) -> Shape:
-        rows: list[tuple[str, ...]] = []
-        for row in shape.coordinates:
-            candidates = choices.get((shape.layout,) + row[:2], set())
-            rows.append(min(candidates) if row in candidates else row)
-        return replace(shape, coordinates=tuple(rows), children=tuple(normalized(child) for child in shape.children))
-    return geometry_result_matches(normalized(actual), normalized(restore_closing_m(signature(expected))), expected)
 
 
 def geometry_mismatch_reason(actual: str, expected: BaseGeometry) -> str:
@@ -1077,36 +1029,8 @@ def known_symdiff_reference(case: PairCase, first: BaseGeometry, second: BaseGeo
     return result
 
 
-def uniform_m_reference(case: PairCase | None, method: str, expected: BaseGeometry) -> Shape | None:
-    """Restore only proven constant M loss in named, unchanged overlay fixtures."""
-    if case is None:
-        return None
-    key, _, layout = case.name.rpartition("-")
-    methods = {
-        "family-5-6": {"intersection", "union", "difference"},
-        "family-6-5": {"union"},
-        "overlap-members": {"union", "difference"},
-        "overlap-members-reverse": {"union", "symmetricDifference"},
-    }
-    if layout not in ("XYM", "XYZM") or method not in methods.get(key, set()):
-        return None
-    fixture = NATIVE_SYMDIFF_FIXTURES["overlap-members"][::-1] if key == "overlap-members-reverse" else NATIVE_SYMDIFF_FIXTURES[key]
-    if (case.first, case.second) != tuple(lift_layout(text, layout) for text in fixture):
-        return None
-    measures = [row[3] for row in coordinate_rows(expected)]
-    if not measures or any(value is None or (value != 4 and not math.isnan(value)) for value in measures):
-        return None
-    if not any(value is not None and math.isnan(value) for value in measures):
-        return None
-    def restored(shape: Shape) -> Shape:
-        rows = tuple(row[:-1] + (float(4).hex(),) for row in shape.coordinates) if "M" in shape.layout else shape.coordinates
-        return replace(shape, coordinates=rows, children=tuple(restored(child) for child in shape.children))
-    return restored(signature(expected))
 
 
-def constant_measure(shape: Shape, value: float) -> bool:
-    """Require exact present M values, including repeated closing vertices."""
-    return ("M" not in shape.layout or all(float.fromhex(row[-1]) == value for row in shape.coordinates)) and all(constant_measure(child, value) for child in shape.children)
 
 
 def known_empty_reference(case: PairCase, method: str, first: BaseGeometry, second: BaseGeometry) -> BaseGeometry | None:
@@ -1240,51 +1164,23 @@ def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_
                 elif actual != str(expected):
                     known_differences.append(difference | {"reason": "Named GEOS 3.13.1 collection relation defect; exact corrected result required"})
                 continue
-            uniform_m: Shape | None = None
-            coincident = False
+            if method in {"intersection", "union", "difference", "symmetricDifference", "buffer", "bufferWithSegments", "pointOnSurface"} and isinstance(expected, BaseGeometry):
+                expected = force_2d(expected)
             try:
-                uniform_m = uniform_m_reference(pair_inputs.get(name), key, expected) if isinstance(expected, BaseGeometry) else None
-                if uniform_m is not None and isinstance(expected, BaseGeometry):
-                    actual_shape = read_structure(actual)
-                    matched = constant_measure(actual_shape, 4) and geometry_result_matches(actual_shape, uniform_m, expected)
-                    closing_m = False
-                else:
-                    matched = operation_matches(method, actual, expected)
-                    closing_m = isinstance(expected, BaseGeometry) and not matched and not actual.startswith("!") and actual != "~" and closing_m_difference(actual, expected)
-                    if isinstance(expected, BaseGeometry) and not matched and not closing_m and not actual.startswith("!") and actual != "~":
-                        coincident = coincident_ordinate_difference(pair_inputs.get(name), method, read_structure(actual), expected)
+                matched = operation_matches(method, actual, expected)
             except (ValueError, IndexError, struct.error, GEOSException) as failure:
                 matched = False
-                closing_m = False
                 actual += " [invalid result: " + str(failure) + "]"
-            if coincident or closing_m or ((uniform_m is not None or (name, key) in overlay_corrections) and matched):
-                reason = "Native polygon closing M is NaN; require its finite opening M and retain all other values"
-                if uniform_m is not None:
-                    reason = "Named uniform-M fixture: native loses nonclosing M values; require exact M=4 and retain XY, Z, and metadata"
-                if (name, key) in overlay_corrections:
-                    reason = correction_reasons[name, key]
-                if coincident:
-                    reason = "Named coincident-shell fixture: GEOS uses an unstable node sort; require complete source Z/M tuples and retain all other ordinates, XY, and metadata"
+            if (name, key) in overlay_corrections and matched:
                 native_text = original_expected.message if isinstance(original_expected, OperationError) else describe(original_expected)
                 expected_text = expected.message if isinstance(expected, OperationError) else describe(expected)
-                difference = context | {"method": key, "expected": expected_text, "native_expected": native_text, "actual": actual, "reason": reason}
-                if uniform_m is not None:
-                    difference["expected"] = "Exact M=4; see expected_structure"
-                    difference["expected_structure"] = json.dumps(asdict(uniform_m))
-                if isinstance(original_expected, BaseGeometry):
-                    difference["native_structure"] = json.dumps(asdict(signature(original_expected)))
-                known_differences.append(difference)
-                continue
+                known_differences.append(context | {"method": key, "native_expected": native_text, "expected": expected_text, "actual": actual, "reason": correction_reasons[name, key]})
             if not matched:
                 expected_text = "operation exception: " + expected.message if isinstance(expected, OperationError) else describe(expected)
                 difference = context | {"method": key, "expected": expected_text, "actual": actual}
                 if isinstance(expected, BaseGeometry):
-                    difference["expected_structure"] = json.dumps(asdict(uniform_m if uniform_m is not None else signature(expected)))
+                    difference["expected_structure"] = json.dumps(asdict(signature(expected)))
                     difference["reason"] = geometry_mismatch_reason(actual, expected)
-                    if uniform_m is not None:
-                        difference["native_expected"] = expected_text
-                        difference["expected"] = "Exact M=4; see expected_structure"
-                        difference["reason"] = "Named constant-M fixture requires exact M=4; other geometry checks also apply"
                 failures.append(difference)
     family_pairs = sorted({(sh.from_wkt(case.first).geom_type, sh.from_wkt(case.second).geom_type) for case in pairs}) if phases & {"relations", "overlay"} else []
     return {"requests": len(inputs), "native_operation_errors": native_errors, "family_pairs": family_pairs, "constructed_xy_absolute_tolerance": CONSTRUCTED_TOLERANCE, "out_of_contract": out_of_contract, "out_of_contract_count": len(out_of_contract)}
@@ -1371,11 +1267,7 @@ def main() -> int:
                 if matched:
                     continue
                 difference = {"case": case.name, "method": key, "format": format_name, "input": payload, "expected": describe(expected), "actual": actual}
-                if duplicate_z_difference(request, method, actual, expected):
-                    difference["reason"] = "GEOS selected another input Z at duplicate XY; XYZ line type, vertex count, XY coordinates, and order match"
-                    known_differences.append(difference)
-                else:
-                    failures.append(difference)
+                failures.append(difference)
     topology_summary = run_operations(probe, phases, seed, case_count, buffer_count, checked, failures, known_differences)
     selected_methods: set[str] = set()
     groups = {"unary": UNARY_METHODS, "relations": RELATION_METHODS, "overlay": OVERLAY_METHODS, "buffer": BUFFER_METHODS}

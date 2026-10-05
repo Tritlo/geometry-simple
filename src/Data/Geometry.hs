@@ -32,6 +32,8 @@ module Data.Geometry (
     Coordinates (..),
     PolygonRings (..),
     Geometry (..),
+    withPoint,
+    withCoordinates,
 ) where
 
 import Data.Geometry.Internal

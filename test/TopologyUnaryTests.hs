@@ -98,9 +98,9 @@ boundaryCases =
 surfaceCases :: [(String, Text, Text)]
 surfaceCases =
     [ ("points discard Z and M", "POINT ZM (1 2 3 4)", "POINT (1 2)")
-    , ("empty M uses coordinate count", "POINT M EMPTY", "POINT Z EMPTY")
-    , ("empty ZM retains coordinate count", "LINESTRING ZM EMPTY", "POINT ZM EMPTY")
-    , ("line selects interior vertex", "LINESTRING Z (0 0 1,1 1 2,10 0 3)", "POINT Z (1 1 2)")
+    , ("empty M projects to XY", "POINT M EMPTY", "POINT EMPTY")
+    , ("empty ZM projects to XY", "LINESTRING ZM EMPTY", "POINT EMPTY")
+    , ("line selects interior XY vertex", "LINESTRING Z (0 0 1,1 1 2,10 0 3)", "POINT (1 1)")
     , ("line discards M", "LINESTRING M (0 0 1,1 1 2,10 0 3)", "POINT (1 1)")
     , ("native rounding chooses first endpoint", "LINESTRING (1 4,3 1)", "POINT (1 4)")
     , ("native rounding chooses second endpoint", "LINESTRING (5 0,2 6)", "POINT (2 6)")

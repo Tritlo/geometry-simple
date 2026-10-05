@@ -33,8 +33,8 @@ tests =
             S.buffer 0 (geometry "POLYGON ZM EMPTY") @?= geometry "POLYGON EMPTY"
         , testCase "zero buffer drops M" $
             S.coordinateDimension (S.buffer 0 (geometry "POLYGON M ((0 0 1,3 0 2,0 3 3,0 0 1))")) @?= 2
-        , testCase "zero buffer retains Z" $
-            S.coordinateDimension (S.buffer 0 (geometry "POLYGON ZM ((0 0 1 4,3 0 2 5,0 3 3 6,0 0 1 4))")) @?= 3
+        , testCase "zero buffer projects Z and M onto XY" $
+            S.coordinateDimension (S.buffer 0 (geometry "POLYGON ZM ((0 0 1 4,3 0 2 5,0 3 3 6,0 0 1 4))")) @?= 2
         , testCase "zero buffer repairs the bowtie by winding" $
             sameXY (S.buffer 0 (geometry "POLYGON ((0 0,10 10,0 10,10 0,0 0))")) "POLYGON ((0 0,5 5,10 0,0 0))"
         , testCase "empty polygon remains empty" $

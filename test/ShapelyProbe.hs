@@ -10,7 +10,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (digitToInt, isHexDigit)
 import Data.Geometry
-import Data.Geometry.Internal (coordinateComponents, coordinateDimensions, geometryDimensions, withCoordinates, withPoint)
+import Data.Geometry.Internal (coordinateComponents, coordinateDimensions, geometryDimensions)
 import qualified Data.Geometry.SimpleFeatures as S
 import qualified Data.Geometry.WKB as WKB
 import qualified Data.Geometry.WKT as WKT
@@ -127,6 +127,10 @@ fields shape =
     , ("is3D", shown (S.is3D shape))
     , ("isMeasured", shown (S.isMeasured shape))
     , ("isEmpty", shown (S.isEmpty shape))
+    , ("pointX", optional shown (pointOrdinate S.pointX))
+    , ("pointY", optional shown (pointOrdinate S.pointY))
+    , ("pointZ", optional shown (pointOrdinate S.pointZ))
+    , ("pointM", optional shown (pointOrdinate S.pointM))
     , ("numGeometries", shown (S.numGeometries shape))
     , ("numPoints", optional shown (S.numPoints shape))
     , ("startPoint", optional (structure . PointGeometry) (S.startPoint shape))
@@ -149,6 +153,10 @@ fields shape =
             [ [(method <> "." <> shown i, value) | (method, value) <- zip ["x", "y", "z", "m"] row]
             | (i, row) <- zip [0 :: Int ..] (ordinateResults shape)
             ]
+  where
+    pointOrdinate accessor = case shape of
+        PointGeometry point -> accessor point
+        _ -> Nothing
 
 -- | Retain each stored layout and coordinate. Do not call either codec.
 structure :: Geometry -> Text

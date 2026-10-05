@@ -17,7 +17,6 @@ module Data.Geometry.Internal where
 
 import Control.DeepSeq (NFData (..), rwhnf)
 import Control.Monad (unless, when)
-import Data.Bits ((.|.))
 import qualified Data.Vector as V
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as M
@@ -59,6 +58,18 @@ data Dimensions
     | -- | X, Y, Z, and M.
       DimXYZM
     deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | The dimension of a point set, ordered from empty collections to surfaces.
+data TopologicalDimension
+    = -- | A collection with no atomic members.
+      NoDimension
+    | -- | A point or multipoint, including an empty value.
+      PointDimension
+    | -- | A line or multiline, including an empty value.
+      CurveDimension
+    | -- | A polygon or multipolygon, including an empty value.
+      SurfaceDimension
+    deriving (Eq, Ord, Show, Read)
 
 {- | The coordinate types t'XY', t'XYZ', t'XYM', and t'XYZM'. Other instances
 are not supported.
@@ -224,7 +235,11 @@ pointFromComponents dimensions values = case dimensions of
 
 -- | Combine Z and M flags independently.
 unionDimensions :: Dimensions -> Dimensions -> Dimensions
-unionDimensions a b = toEnum (fromEnum a .|. fromEnum b)
+unionDimensions DimXY b = b
+unionDimensions a DimXY = a
+unionDimensions a b
+    | a == b = a
+    | otherwise = DimXYZM
 
 -- | The number of ordinates stored by a layout.
 dimensionCount :: Dimensions -> Int
@@ -247,19 +262,19 @@ geometryDimensions geometry = case geometry of
     MultiPolygon polygons -> V.foldl' (\acc rings -> unionDimensions acc (polygonDimensions rings)) DimXY polygons
     GeometryCollection children -> V.foldl' (\acc child -> unionDimensions acc (geometryDimensions child)) DimXY children
 
-{- | The topological dimension: 0 for points, 1 for lines, and 2 for polygons.
+{- | The topological dimension of the geometry family.
 Empty values keep their family's dimension. Collections use the greatest
-member dimension, or -1 when they have no members.
+member dimension, or 'NoDimension' when they have no atomic members.
 -}
-topologicalDimension :: Geometry -> Int
+topologicalDimension :: Geometry -> TopologicalDimension
 topologicalDimension geometry = case geometry of
-    PointGeometry _ -> 0
-    MultiPoint _ -> 0
-    LineString _ -> 1
-    MultiLineString _ -> 1
-    Polygon _ -> 2
-    MultiPolygon _ -> 2
-    GeometryCollection children -> V.foldl' (\n child -> max n (topologicalDimension child)) (-1) children
+    PointGeometry _ -> PointDimension
+    MultiPoint _ -> PointDimension
+    LineString _ -> CurveDimension
+    MultiLineString _ -> CurveDimension
+    Polygon _ -> SurfaceDimension
+    MultiPolygon _ -> SurfaceDimension
+    GeometryCollection children -> V.foldl' (\n child -> max n (topologicalDimension child)) NoDimension children
 
 -- | The greatest coordinate count among members. XYZ and XYM together give 3.
 geometryCoordinateDimension :: Geometry -> Int
@@ -358,12 +373,12 @@ instance U.IsoUnbox XY (Double, Double) where
 
 -- | Mutable unboxed storage for XY values.
 newtype instance U.MVector s XY
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X and Y.
       MVXY (U.MVector s (Double, Double))
 
 -- | Immutable unboxed storage for XY values.
 newtype instance U.Vector XY
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X and Y.
       VXY (U.Vector (Double, Double))
 
 deriving via (U.As XY (Double, Double)) instance M.MVector U.MVector XY
@@ -378,12 +393,12 @@ instance U.IsoUnbox XYZ (Double, Double, Double) where
 
 -- | Mutable unboxed storage for XYZ values.
 newtype instance U.MVector s XYZ
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X, Y, and Z.
       MVXYZ (U.MVector s (Double, Double, Double))
 
 -- | Immutable unboxed storage for XYZ values.
 newtype instance U.Vector XYZ
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X, Y, and Z.
       VXYZ (U.Vector (Double, Double, Double))
 
 deriving via (U.As XYZ (Double, Double, Double)) instance M.MVector U.MVector XYZ
@@ -398,12 +413,12 @@ instance U.IsoUnbox XYM (Double, Double, Double) where
 
 -- | Mutable unboxed storage for XYM values.
 newtype instance U.MVector s XYM
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X, Y, and M.
       MVXYM (U.MVector s (Double, Double, Double))
 
 -- | Immutable unboxed storage for XYM values.
 newtype instance U.Vector XYM
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X, Y, and M.
       VXYM (U.Vector (Double, Double, Double))
 
 deriving via (U.As XYM (Double, Double, Double)) instance M.MVector U.MVector XYM
@@ -418,12 +433,12 @@ instance U.IsoUnbox XYZM (Double, Double, Double, Double) where
 
 -- | Mutable unboxed storage for XYZM values.
 newtype instance U.MVector s XYZM
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X, Y, Z, and M.
       MVXYZM (U.MVector s (Double, Double, Double, Double))
 
 -- | Immutable unboxed storage for XYZM values.
 newtype instance U.Vector XYZM
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for X, Y, Z, and M.
       VXYZM (U.Vector (Double, Double, Double, Double))
 
 deriving via (U.As XYZM (Double, Double, Double, Double)) instance M.MVector U.MVector XYZM
@@ -451,12 +466,12 @@ instance U.IsoUnbox Point (Word8, Double, Double, Double, Double) where
 
 -- | Mutable unboxed storage for Point values.
 newtype instance U.MVector s Point
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for point tags and X, Y, Z, and M.
       MVPoint (U.MVector s (Word8, Double, Double, Double, Double))
 
 -- | Immutable unboxed storage for Point values.
 newtype instance U.Vector Point
-    = -- | Internal wrapper around the ordinate buffers.
+    = -- | Wrap the unboxed buffers for point tags and X, Y, Z, and M.
       VPoint (U.Vector (Word8, Double, Double, Double, Double))
 
 deriving via (U.As Point (Word8, Double, Double, Double, Double)) instance M.MVector U.MVector Point

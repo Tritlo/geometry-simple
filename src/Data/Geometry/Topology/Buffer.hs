@@ -7,16 +7,14 @@ The relative distance thresholds below match that implementation.
 module Data.Geometry.Topology.Buffer (buffer, bufferWithSegments) where
 
 import Data.Geometry.Internal
-import Data.Geometry.Topology.Ordinates (interpolatedCoordinateSequence)
 import Data.Geometry.Topology.Overlay
 import Data.Geometry.Topology.Planar
-import Data.List (group, sortOn)
+import Data.List (group)
 import qualified Data.Vector as V
-import qualified Data.Vector.Unboxed as U
 
 {- | Buffer by a distance in coordinate units, with eight segments per quadrant.
 Positive distances expand geometry. Negative distances erode polygons and give
-empty polygons for points and lines. Nonzero buffers discard Z and M.
+empty polygons for points and lines. All results use XY coordinates.
 A zero distance returns polygon components and repairs their topology.
 The distance and XY coordinates must be finite.
 -}
@@ -28,16 +26,12 @@ Values below one use one segment. The distance and XY coordinates must be finite
 The distance and coordinate-layout rules are the same as for 'buffer'.
 -}
 bufferWithSegments :: Int -> Double -> Geometry -> Geometry
-bufferWithSegments quadrants radius geometry
-    | radius == 0 = assembleComponents DimXY 2 [] [] (zeroBufferPolygons polygonal resultPolygons)
-    | otherwise = assemble DimXY 2 xyPoint (polygonize boundary) [] []
+bufferWithSegments quadrants radius geometry = assemble SurfaceDimension (polygonize boundary) [] []
   where
     count = max 1 quadrants
     width = abs radius
     source = planar geometry
     surfaces = Planar [] [] (planarPolygons source)
-    polygonal = polygonGeometry geometry
-    resultPolygons = polygonize boundary
     rings = (if radius > 0 then concatMap (lineBuffer count width) (planarLines source) else []) ++ [circle count width (toDouble p) | radius > 0, p <- planarPoints source]
     bands = Planar [] [] [[map toExact ring] | ring <- rings]
     offsetRings = concatMap (offsetPolygon count radius) (planarPolygons source)
@@ -52,82 +46,6 @@ bufferWithSegments quadrants radius geometry
         , let leftInside = selected left
         , leftInside /= selected right
         ]
-    xyPoint (x, y) = PointXY (XY (fromRational x) (fromRational y))
-
-{- | Preserve the coordinate layouts produced by native zero-buffer ring assembly.
-GEOS copies M only from the first forward edge of each ring. Appending later
-edges or reversing an edge uses XYZ coordinates. See
-<https://github.com/libgeos/geos/blob/3.13.1/src/geomgraph/EdgeRing.cpp#L311 EdgeRing.addPoints>.
--}
-zeroBufferPolygons :: Geometry -> [[[Position]]] -> [PolygonRings]
-zeroBufferPolygons source polygons = [PolygonRings (coordinates shell) (V.fromList (map coordinates holes)) | shell : holes <- polygons]
-  where
-    sources = [ring | Polygon (PolygonRings shell holes) <- atomicGeometries source, ring <- shell : V.toList holes, not (coordinatesEmpty ring)]
-    chunks = zeroBufferChunks sources
-    coordinates ring = case sortOn (\(_, path, forward) -> if forward then firstOf path else last path) candidates of
-        (original, path, forward) : _ ->
-            let start = if forward then firstOf path else last path
-                output = rotateRing start directed
-                full = interpolatedCoordinateSequence source source output
-                components = withCoordinates (map coordinateComponents . U.toList) full
-                sourceLayout = dimensionsOf original
-                keepM = forward && sourceLayout `elem` [DimXYM, DimXYZM]
-                keepZ = dimensionsOf full `elem` [DimXYZ, DimXYZM]
-                layout = if keepZ then (if keepM then DimXYZM else DimXYZ) else (if keepM then DimXYM else DimXY)
-                copied = if forward then length path else 0
-                sourcePoints = positions original
-                closing = withCoordinates (coordinateComponents . U.last) original
-                value index point row =
-                    let (x, y, z, m) = if point == firstOf sourcePoints then closing else row
-                     in pointFromComponents layout (x, y, z, if index < copied then m else 0 / 0)
-             in pointsCoordinates layout (zipWith3 value [0 :: Int ..] output components)
-        [] -> interpolatedCoordinateSequence source source directed
-      where
-        directed = reverse ring
-        outputEdges = lineSegments directed
-        candidates =
-            [ (original, path, edge `elem` outputEdges)
-            | (original, path) <- chunks
-            , edge@(a, b) <- take 1 (lineSegments path)
-            , edge `elem` outputEdges || (b, a) `elem` outputEdges
-            ]
-    firstOf (point : _) = point
-    firstOf [] = error "Empty ring in zero-buffer assembly"
-
--- | Start a closed ring at the first source edge selected by native assembly.
-rotateRing :: Position -> [Position] -> [Position]
-rotateRing _ [] = []
-rotateRing start ring = case break (== start) (init ring) of
-    (_, []) -> ring
-    (before, after) -> after ++ before ++ [start]
-
--- | Split input rings at nontrivial intersections while preserving source order.
-zeroBufferChunks :: [Coordinates] -> [(Coordinates, [Position])]
-zeroBufferChunks sources =
-    [ (source, path)
-    | (index, source) <- zip [0 :: Int ..] sources
-    , let input = positions source
-          nodes = unique (take 1 input ++ concat [intersections first second | first@(i, _, _, _) <- indexedEdges, i == index, second <- indexedEdges])
-          enriched = case input of [] -> []; first : _ -> first : concatMap (drop 1 . splitSegment nodes) (lineSegments input)
-    , path <- splitPath nodes enriched
-    ]
-  where
-    indexedEdges = [(ringIndex, edgeIndex, length edges - 1, edge) | (ringIndex, source) <- zip [0 :: Int ..] sources, let edges = lineSegments (positions source), (edgeIndex, edge) <- zip [0 :: Int ..] edges]
-    intersections (i, j, lastIndex, first) (k, l, _, second)
-        | i == k && j == l = []
-        | otherwise = case segmentIntersection first second of
-            [_] | i == k && (abs (j - l) == 1 || abs (j - l) == lastIndex) -> []
-            points -> points
-    splitSegment nodes edge@(a, b) =
-        let points = unique (a : b : filter (`pointOnSegment` edge) nodes)
-         in if a < b then points else reverse points
-    splitPath _ [] = []
-    splitPath nodes (first : rest) = go [first] rest
-      where
-        go _ [] = []
-        go before (point : after)
-            | point `elem` nodes = reverse (point : before) : go [point] after
-            | otherwise = go (point : before) after
 
 -- | Count directed boundary crossings around a point.
 winding :: Position -> [Position] -> Int
@@ -276,16 +194,6 @@ simplify direction tolerance points = map (input V.!) (repeatPass [0 .. V.length
         | otherwise = a : scan (b : c : rest)
     scan rest = rest
     repeatPass indexes = let next = pass indexes in if next == indexes then indexes else repeatPass next
-
--- | Retain only polygon components for a zero-distance buffer.
-polygonGeometry :: Geometry -> Geometry
-polygonGeometry geometry = GeometryCollection (V.fromList (collect geometry))
-  where
-    collect shape = case shape of
-        Polygon _ -> [shape]
-        MultiPolygon polygons -> map Polygon (V.toList polygons)
-        GeometryCollection children -> concatMap collect (V.toList children)
-        _ -> []
 
 -- | A floating-point position used to approximate circular arcs.
 type FloatingPosition = (Double, Double)

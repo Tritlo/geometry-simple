@@ -62,7 +62,6 @@ library
   other-modules:
     Data.Geometry.Topology.Buffer
     Data.Geometry.Topology.Measures
-    Data.Geometry.Topology.Ordinates
     Data.Geometry.Topology.Overlay
     Data.Geometry.Topology.Planar
     Data.Geometry.Topology.Relations

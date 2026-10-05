@@ -3,60 +3,46 @@
 # dependencies = ["shapely==2.1.2", "types-shapely==2.1.0.20260728"]
 # ///
 # pyright: strict
-"""Check that comparison rules reject unrelated geometry and codec changes."""
+"""Check that comparison adapters reject coordinate and layout regressions."""
 
-from dataclasses import replace
+import json
 import unittest
 
 import shapely as sh
-from shapely_compare import COINCIDENT_SHELLS, PairCase, Shape, coincident_ordinate_difference, matches, restore_closing_m, signature
+from shapely_compare import Shape, matches, operation_matches, signature, stored_point
 
 
-ACTUAL = signature(sh.from_wkt("POLYGON ZM ((5 4 45 24,6 4 47 25,7 2 47 32,6 2 45 31,5 4 45 24))"))
-EXPECTED = sh.union(sh.from_wkt(COINCIDENT_SHELLS.first), sh.from_wkt(COINCIDENT_SHELLS.second))
+def raw_geometry(wkt: str) -> str:
+    """Encode an independent fixture in the Haskell probe's JSON format."""
+    def node(shape: Shape) -> list[object]:
+        body: object = [[str(float.fromhex(value)) for value in row] for row in shape.coordinates] if shape.kind in (0, 1) else [node(child) for child in shape.children]
+        return [shape.kind, shape.layout, body]
+    return json.dumps(node(signature(sh.from_wkt(wkt))))
 
 
-def changed_ordinate(index: int, ordinate: int, value: float) -> Shape:
-    """Change one output ordinate without changing the diagnostic inputs."""
-    ring = ACTUAL.children[0]
-    rows = list(ring.coordinates)
-    row = list(rows[index])
-    row[ordinate] = value.hex()
-    rows[index] = tuple(row)
-    return replace(ACTUAL, children=(replace(ring, coordinates=tuple(rows)),))
+class PlanarResultTests(unittest.TestCase):
+    """Keep XY geometry and output layout checks independent of native Z/M."""
 
-
-class CoincidentOrdinateTests(unittest.TestCase):
-    """Keep the documented exception smaller than the geometry contract."""
-
-    def test_complete_source_tuples_are_accepted(self) -> None:
-        self.assertTrue(coincident_ordinate_difference(COINCIDENT_SHELLS, "union", ACTUAL, EXPECTED))
-
-    def test_invented_z_is_rejected(self) -> None:
-        self.assertFalse(coincident_ordinate_difference(COINCIDENT_SHELLS, "union", changed_ordinate(1, 2, 999.0), EXPECTED))
-
-    def test_mixing_two_source_tuples_is_rejected(self) -> None:
-        self.assertFalse(coincident_ordinate_difference(COINCIDENT_SHELLS, "union", changed_ordinate(1, 3, 1.0), EXPECTED))
+    def test_extra_ordinates_are_rejected(self) -> None:
+        self.assertFalse(operation_matches("intersection", raw_geometry("POINT Z (1 2 3)"), sh.from_wkt("POINT (1 2)")))
 
     def test_changed_xy_is_rejected(self) -> None:
-        self.assertFalse(coincident_ordinate_difference(COINCIDENT_SHELLS, "union", changed_ordinate(1, 0, 6.01), EXPECTED))
+        self.assertFalse(operation_matches("intersection", raw_geometry("POINT (1.01 2)"), sh.from_wkt("POINT (1 2)")))
 
     def test_changed_family_is_rejected(self) -> None:
-        self.assertFalse(coincident_ordinate_difference(COINCIDENT_SHELLS, "union", replace(ACTUAL, kind=6), EXPECTED))
+        self.assertFalse(operation_matches("intersection", raw_geometry("MULTIPOINT ((1 2))"), sh.from_wkt("POINT (1 2)")))
 
-    def test_changed_nonshared_ordinate_is_rejected(self) -> None:
-        expected = sh.intersection(sh.from_wkt(COINCIDENT_SHELLS.first), sh.from_wkt(COINCIDENT_SHELLS.second))
-        actual = restore_closing_m(signature(expected))
-        shell, hole = actual.children
-        rows = list(hole.coordinates)
-        rows[1] = rows[1][:2] + (float(999).hex(),) + rows[1][3:]
-        actual = replace(actual, children=(shell, replace(hole, coordinates=tuple(rows))))
-        self.assertFalse(coincident_ordinate_difference(COINCIDENT_SHELLS, "intersection", actual, expected))
+    def test_hull_winding_and_vertices_are_checked(self) -> None:
+        expected = sh.from_wkt("POLYGON ((0 0,0 1,1 0,0 0))")
+        self.assertTrue(matches("convexHull", raw_geometry("POLYGON ((1 0,0 1,0 0,1 0))"), expected, True))
+        self.assertFalse(matches("convexHull", raw_geometry("POLYGON ((0 0,0 1,1 0,0 0))"), expected, True))
+        self.assertFalse(matches("convexHull", raw_geometry("POLYGON ((0 0,2 0,0 1,0 0))"), expected, True))
 
-    def test_different_inputs_or_methods_are_rejected(self) -> None:
-        other = PairCase(COINCIDENT_SHELLS.name, "POLYGON EMPTY", COINCIDENT_SHELLS.second)
-        self.assertFalse(coincident_ordinate_difference(other, "union", ACTUAL, EXPECTED))
-        self.assertFalse(coincident_ordinate_difference(COINCIDENT_SHELLS, "difference", ACTUAL, EXPECTED))
+    def test_point_observers_retain_unknown_ordinates(self) -> None:
+        line = sh.from_wkt("LINESTRING ZM (1 2 NaN 7,3 4 6 NaN)")
+        expected = stored_point(line, 0)
+        self.assertTrue(matches("pointN", '[0,"XYZM",[["1","2","NaN","7"]]]', expected, True))
+        self.assertFalse(matches("pointN", raw_geometry("POINT M (1 2 7)"), expected, True))
 
 
 class CollectionWKTTests(unittest.TestCase):
@@ -64,8 +50,7 @@ class CollectionWKTTests(unittest.TestCase):
 
     def test_readable_mixed_collection_is_accepted(self) -> None:
         text = "GEOMETRYCOLLECTION (POINT (1 2), GEOMETRYCOLLECTION (POINT Z (3 4 5), POINT M EMPTY))"
-        expected = sh.from_wkt(text)
-        self.assertTrue(matches("encodeWKT", text, expected, True))
+        self.assertTrue(matches("encodeWKT", text, sh.from_wkt(text), True))
 
     def test_member_changes_are_rejected(self) -> None:
         text = "GEOMETRYCOLLECTION (POINT (1 2), POINT Z (3 4 5))"

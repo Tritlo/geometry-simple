@@ -5,7 +5,7 @@ module SimpleFeaturesTests (tests) where
 
 import Control.Monad (forM_)
 import Data.Geometry
-import Data.Geometry.Internal (Coordinate (..), emptyCoordinates, pointFromComponents, withCoordinates, withPoint)
+import Data.Geometry.Internal (Coordinate (..), emptyCoordinates, pointFromComponents, unionDimensions)
 import qualified Data.Geometry.SimpleFeatures as S
 import Data.List (inits, permutations, tails)
 import Data.Maybe (fromMaybe)
@@ -104,13 +104,37 @@ tests =
                 S.pointN 0 point @?= Nothing
                 S.startPoint point @?= Nothing
                 S.endPoint point @?= Nothing
-            , testCase "extracted points omit NaN Z and M ordinates" $ do
+            , testCase "extracted points retain NaN Z and M ordinates" $ do
                 let nan = 0 / 0
                     shape = LineString (CoordinatesXYZM (U.fromList [XYZM 1 2 nan 7, XYZM 3 4 6 nan, XYZM 5 6 nan nan]))
-                S.pointN 0 shape @?= Just (PointXYM (XYM 1 2 7))
-                S.pointN 1 shape @?= Just (PointXYZ (XYZ 3 4 6))
-                S.startPoint shape @?= Just (PointXYM (XYM 1 2 7))
-                S.endPoint shape @?= Just (PointXY (XY 5 6))
+                forM_ [S.pointN 0 shape, S.startPoint shape] $ \result -> case result of
+                    Just (PointXYZM (XYZM a b elevation measure)) -> do
+                        (a, b, measure) @?= (1, 2, 7)
+                        assertBool "Z stays NaN" (isNaN elevation)
+                    _ -> assertFailure "expected the stored XYZM layout"
+                case S.pointN 1 shape of
+                    Just (PointXYZM (XYZM a b elevation measure)) -> do
+                        (a, b, elevation) @?= (3, 4, 6)
+                        assertBool "M stays NaN" (isNaN measure)
+                    _ -> assertFailure "expected the stored XYZM layout"
+                case S.endPoint shape of
+                    Just (PointXYZM (XYZM a b elevation measure)) -> do
+                        (a, b) @?= (5, 6)
+                        assertBool "Z and M stay NaN" (isNaN elevation && isNaN measure)
+                    _ -> assertFailure "expected the stored XYZM layout"
+            , testCase "point ordinates distinguish absent fields from NaN" $ do
+                forM_ [EmptyPoint DimXY, EmptyPoint DimXYZ, EmptyPoint DimXYM, EmptyPoint DimXYZM] $ \point ->
+                    map ($ point) [S.pointX, S.pointY, S.pointZ, S.pointM] @?= replicate 4 Nothing
+                map ($ PointXY (XY 1 2)) [S.pointX, S.pointY, S.pointZ, S.pointM] @?= [Just 1, Just 2, Nothing, Nothing]
+                map ($ PointXYZM (XYZM 1 2 3 4)) [S.pointX, S.pointY, S.pointZ, S.pointM] @?= map Just [1, 2, 3, 4]
+                S.pointZ (PointXYM (XYM 1 2 3)) @?= Nothing
+                assertBool "stored NaN is present" (maybe False isNaN (S.pointM (PointXYM (XYM 1 2 (0 / 0)))))
+            , testCase "coordinate layout union is independent of constructor tags" $
+                forM_ [DimXY, DimXYZ, DimXYM, DimXYZM] $ \a ->
+                    forM_ [DimXY, DimXYZ, DimXYM, DimXYZM] $ \b -> do
+                        let result = PointGeometry (EmptyPoint (unionDimensions a b))
+                        S.is3D result @?= any (`elem` [DimXYZ, DimXYZM]) [a, b]
+                        S.isMeasured result @?= any (`elem` [DimXYM, DimXYZM]) [a, b]
             , testCase "extracted NaN XY coordinates remain nonempty points" $ do
                 let shape = lineXY (U.fromList [XY (0 / 0) (0 / 0), XY 1 2])
                 case S.pointN 0 shape of
@@ -216,12 +240,12 @@ tests =
             ]
         , testGroup
             "centroids"
-            [ testCase "empty centroids use the greatest coordinate count" $ do
-                forM_ [(DimXY, DimXY), (DimXYZ, DimXYZ), (DimXYM, DimXYZ), (DimXYZM, DimXYZM)] $ \(input, output) -> do
+            [ testCase "empty centroids use XY coordinates" $ do
+                forM_ [(layout, DimXY) | layout <- [DimXY, DimXYZ, DimXYM, DimXYZM]] $ \(input, output) -> do
                     S.centroid (PointGeometry (EmptyPoint input)) @?= EmptyPoint output
                     S.centroid (LineString (emptyCoordinates input)) @?= EmptyPoint output
                     S.centroid (Polygon (PolygonRings (emptyCoordinates input) V.empty)) @?= EmptyPoint output
-                S.centroid (GeometryCollection (V.fromList [PointGeometry (EmptyPoint DimXYZ), PointGeometry (EmptyPoint DimXYM)])) @?= EmptyPoint DimXYZ
+                S.centroid (GeometryCollection (V.fromList [PointGeometry (EmptyPoint DimXYZ), PointGeometry (EmptyPoint DimXYM)])) @?= EmptyPoint DimXY
             , testCase "mixed point layouts share one planar centroid" $
                 S.centroid (MultiPoint (U.fromList [PointXY (XY 0 0), PointXYZ (XYZ 3 3 99), PointXYM (XYM 6 6 77), EmptyPoint DimXYZM])) @?= PointXY (XY 3 3)
             , testCase "mixed line layouts share length weights" $ do
@@ -308,7 +332,7 @@ tests =
             , testCase "one XY location produces a point" $ do
                 let shape = MultiPoint (U.fromList [PointXYZM (XYZM 1 2 3 4), (EmptyPoint DimXY), PointXYZM (XYZM 1 2 5 6)])
                 S.envelope shape @?= PointGeometry (PointXY (XY 1 2))
-                S.convexHull shape @?= PointGeometry (PointXYZ (XYZ 1 2 3))
+                S.convexHull shape @?= PointGeometry (PointXY (XY 1 2))
             , testCase "vertical envelopes retain repeated polygon corners" $
                 S.envelope (lineXY (U.fromList [XY 2 4, XY 2 (-1), XY 2 0]))
                     @?= polygonXY (V.singleton (U.fromList [XY 2 (-1), XY 2 (-1), XY 2 4, XY 2 4, XY 2 (-1)]))
@@ -325,35 +349,23 @@ tests =
                 assertLineEndpoints (XY 0 0) (XY 4 4) (S.convexHull (MultiPoint (U.fromList (map PointXY [XY 2 2, XY 4 4, XY 0 0, XY 2 2, XY 1 1]))))
             , testCase "hulls remove interior, duplicate, and collinear edge points" $ do
                 let shape = MultiPoint (U.fromList (map PointXY [XY 0 0, XY 2 0, XY 2 2, XY 0 2, XY 1 1, XY 1 0, XY 2 2]))
-                assertPolygonVertices [XY 0 0, XY 0 2, XY 2 2, XY 2 0] (S.convexHull shape)
+                assertPolygonVertices [XY 0 0, XY 2 0, XY 2 2, XY 0 2] (S.convexHull shape)
             , testCase "hulls retain nearly collinear extreme vertices" $
-                assertPolygonVertices (reverse slenderTriangle) (S.convexHull (MultiPoint (U.fromList (map PointXY slenderTriangle))))
-            , testCase "hull rings start at the lowest Y then X and run clockwise" $
+                assertPolygonVertices slenderTriangle (S.convexHull (MultiPoint (U.fromList (map PointXY slenderTriangle))))
+            , testCase "hull rings are counterclockwise and start at the smallest XY" $
                 S.convexHull (MultiPoint (U.fromList (map PointXY [XY 0 10, XY 2 0, XY 4 5])))
-                    @?= polygonXY (V.singleton (U.fromList [XY 2 0, XY 0 10, XY 4 5, XY 2 0]))
-            , testCase "two unique hull locations retain input order" $ do
+                    @?= polygonXY (V.singleton (U.fromList [XY 0 10, XY 2 0, XY 4 5, XY 0 10]))
+            , testCase "two hull locations use XY order regardless of input order" $ do
                 let first = PointXYZ (XYZ 0 4 7)
                     second = PointXY (XY 0 0)
-                case S.convexHull (MultiPoint (U.fromList [first, second])) of
-                    LineString (CoordinatesXYZ points) -> do
-                        points U.! 0 @?= XYZ 0 4 7
-                        let XYZ a b elevation = points U.! 1
-                        (a, b) @?= (0, 0)
-                        assertBool "missing Z becomes NaN" (isNaN elevation)
-                    _ -> assertFailure "expected an XYZ line"
-                S.convexHull (MultiPoint (U.fromList [second, first])) @?= lineXY (U.fromList [XY 0 0, XY 0 4])
-            , testCase "three collinear locations start at the lowest Y" $
-                S.convexHull (MultiPoint (U.fromList (map PointXY [XY 0 2, XY 1 1, XY 2 0]))) @?= lineXY (U.fromList [XY 2 0, XY 0 2])
-            , testCase "only the first hull vertex selects the Z layout" $ do
+                forM_ [[first, second], [second, first]] $ \points ->
+                    S.convexHull (MultiPoint (U.fromList points)) @?= lineXY (U.fromList [XY 0 0, XY 0 4])
+            , testCase "collinear hull locations use XY order" $
+                S.convexHull (MultiPoint (U.fromList (map PointXY [XY 0 2, XY 1 1, XY 2 0]))) @?= lineXY (U.fromList [XY 0 2, XY 2 0])
+            , testCase "hulls ignore source Z and M" $ do
                 let make first = MultiPoint (U.fromList [first, PointXY (XY 4 0), PointXY (XY 0 4), PointXYZ (XYZ 1 1 9), EmptyPoint DimXYZM])
-                S.convexHull (make (PointXY (XY 0 0))) @?= polygonXY (V.singleton (U.fromList [XY 0 0, XY 0 4, XY 4 0, XY 0 0]))
-                case S.convexHull (make (PointXYZ (XYZ 0 0 7))) of
-                    Polygon (PolygonRings (CoordinatesXYZ points) holes) -> do
-                        V.null holes @?= True
-                        U.map (\(XYZ a b _) -> XY a b) points @?= U.fromList [XY 0 0, XY 0 4, XY 4 0, XY 0 0]
-                        let XYZ _ _ elevation = points U.! 1
-                        assertBool "missing vertex Z is NaN" (isNaN elevation)
-                    _ -> assertFailure "expected an XYZ polygon"
+                forM_ [PointXY (XY 0 0), PointXYZ (XYZ 0 0 7)] $ \first ->
+                    S.convexHull (make first) @?= polygonXY (V.singleton (U.fromList [XY 0 0, XY 4 0, XY 0 4, XY 0 0]))
                 S.convexHull (PointGeometry (PointXYZM (XYZM 1 2 (0 / 0) 7))) @?= PointGeometry (PointXY (XY 1 2))
                 S.convexHull (PointGeometry (EmptyPoint DimXYZM)) @?= GeometryCollection V.empty
             ]

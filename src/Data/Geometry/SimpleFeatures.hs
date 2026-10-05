@@ -11,7 +11,7 @@ qualified:
 > import qualified Data.Geometry.SimpleFeatures as SF
 
 Measurements use only X and Y. Z and M stay available through the accessors.
-Envelopes and nonempty centroids use t'XY' coordinates. Convex hulls discard M.
+Constructed planar results use t'XY' coordinates. Observers retain stored layouts.
 
 Planar operations require finite X and Y. Measurements use 'Double'
 arithmetic and can overflow or underflow. Polygon measurements and binary
@@ -38,6 +38,10 @@ module Data.Geometry.SimpleFeatures (
     y,
     z,
     m,
+    pointX,
+    pointY,
+    pointZ,
+    pointM,
 
     -- * Members, points, and rings
     numGeometries,
@@ -96,6 +100,7 @@ module Data.Geometry.SimpleFeatures (
 ) where
 
 import Control.Applicative ((<|>))
+import Control.Monad (join)
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Buffer (buffer, bufferWithSegments)
 import Data.Geometry.Topology.Measures (locateAlong, locateBetween)
@@ -124,7 +129,11 @@ Empty values keep their family's dimension. A collection has the largest
 dimension of its members, or -1 when it has no members.
 -}
 dimension :: Geometry -> Int
-dimension = topologicalDimension
+dimension geometry = case topologicalDimension geometry of
+    NoDimension -> -1
+    PointDimension -> 0
+    CurveDimension -> 1
+    SurfaceDimension -> 2
 
 {- | The largest number of ordinates in any stored point or sequence: 2, 3,
 or 4. XYZ and XYM members together give 3, even though both
@@ -176,6 +185,22 @@ m coordinate = case coordinateDimensions (Proxy :: Proxy c) of
   where
     (_, _, _, value) = coordinateComponents coordinate
 
+-- | The X ordinate of a point, or 'Nothing' for an empty point.
+pointX :: Point -> Maybe Double
+pointX = withPoint x
+
+-- | The Y ordinate of a point, or 'Nothing' for an empty point.
+pointY :: Point -> Maybe Double
+pointY = withPoint y
+
+-- | The Z ordinate, or 'Nothing' for an empty point or a layout without Z.
+pointZ :: Point -> Maybe Double
+pointZ = join . withPoint z
+
+-- | The M ordinate, or 'Nothing' for an empty point or a layout without M.
+pointM :: Point -> Maybe Double
+pointM = join . withPoint m
+
 {- | The number of direct members of a multi-geometry or collection, including
 empty members. Other geometries count as one member, also when empty.
 -}
@@ -204,22 +229,16 @@ numPoints (LineString points) = Just (withCoordinates U.length points)
 numPoints _ = Nothing
 
 {- | The 'LineString' point at a zero-based index. Return 'Nothing' for an
-index out of range or another geometry family. Omit NaN Z and M ordinates
-from the returned point's layout.
+index out of range or another geometry family. Preserve the stored layout
+and all ordinates, including NaN Z or M values.
 -}
 pointN :: Int -> Geometry -> Maybe Point
 pointN index (LineString points) = withCoordinates (\values -> coordinatePoint <$> values U.!? index) points
 pointN _ _ = Nothing
 
--- | Construct a point with the non-NaN Z and M ordinates of a coordinate.
-coordinatePoint :: (Coordinate c) => c -> Point
-coordinatePoint coordinate = case (z coordinate, m coordinate) of
-    (Just elevation, Just measure) | not (isNaN elevation || isNaN measure) -> PointXYZM (XYZM a b elevation measure)
-    (Just elevation, _) | not (isNaN elevation) -> PointXYZ (XYZ a b elevation)
-    (_, Just measure) | not (isNaN measure) -> PointXYM (XYM a b measure)
-    _ -> PointXY (XY a b)
-  where
-    (a, b) = xy coordinate
+-- | Copy a coordinate into a point with the same layout and ordinates.
+coordinatePoint :: forall c. (Coordinate c) => c -> Point
+coordinatePoint coordinate = pointFromComponents (coordinateDimensions (Proxy :: Proxy c)) (coordinateComponents coordinate)
 
 -- | The first point of a 'LineString', or 'Nothing' for an empty line or another family.
 startPoint :: Geometry -> Maybe Point
@@ -305,9 +324,8 @@ perimeter geometry = case geometry of
     GeometryCollection children -> V.foldl' (\total child -> total + perimeter child) 0 children
     _ -> 0
 
-{- | The XY centroid, or 'EmptyPoint' for empty input. An empty result uses XY,
-XYZ, or XYZM when 'coordinateDimension' is 2, 3, or 4. Polygons are weighted by
-area. If the total area is zero, segments are weighted by length. If all
+{- | The XY centroid, or an empty XY point for empty input. Polygons are
+weighted by area. If the total area is zero, segments are weighted by length. If all
 segments have zero length, the result is the mean of the points, and each
 line or ring counts as one point at its first coordinate, as in GEOS.
 Lower-dimensional parts do not affect a higher-dimensional centroid.
@@ -321,12 +339,8 @@ or 1e-150 units for lines. Products still round to 'Double'. Strong cancellation
 between products can reduce accuracy even when all intermediate values are finite.
 -}
 centroid :: Geometry -> Point
-centroid geometry = fromMaybe (EmptyPoint emptyDimensions) (weightedMean 2 <|> weightedMean 1 <|> weightedMean 0)
+centroid geometry = fromMaybe (EmptyPoint DimXY) (weightedMean SurfaceDimension <|> weightedMean CurveDimension <|> weightedMean PointDimension)
   where
-    emptyDimensions = case coordinateDimension geometry of
-        3 -> DimXYZ
-        4 -> DimXYZM
-        _ -> DimXY
     weightedMean dimensionToMeasure =
         let (weight, mx, my) = moments dimensionToMeasure 1
          in if weight == 0
@@ -342,51 +356,35 @@ centroid geometry = fromMaybe (EmptyPoint emptyDimensions) (weightedMean 2 <|> w
         let CentroidMoments w wc mx mxc my myc = foldCentroidMoments dimensionToMeasure divisor (CentroidMoments 0 0 0 0 0 0) geometry
          in (compensatedValue (w, wc), compensatedValue (mx, mxc), compensatedValue (my, myc))
 
-{- | The convex hull, from Andrew's monotone chain algorithm. The result is
-an empty XY collection, a point, a line, or a clockwise polygon. M is discarded.
-The first output vertex determines the layout: XYZ when its Z is not NaN, or
-XY otherwise. Missing Z values become NaN in an XYZ hull. Polygon rings start
-at the lowest Y, then X. Two unique positions retain their input order.
-For duplicate XY positions, keep the first coordinate. GEOS can select another
-duplicate in large collinear inputs. The orientation tests are exact.
+{- | The XY convex hull, using Andrew's monotone chain algorithm.
+Return an empty collection, a point, a line, or a counterclockwise polygon.
+Line endpoints and the first polygon vertex use lexicographic XY order.
+Ignore Z and M. The orientation tests are exact.
 -}
 convexHull :: Geometry -> Geometry
 convexHull geometry = hullGeometry hull
   where
-    coordinates = reverse (foldCoordinates (\rest coordinate -> XYZ (x coordinate) (y coordinate) (fromMaybe (0 / 0) (z coordinate)) : rest) [] geometry)
-    points = [point | point : _ <- List.groupBy sameXY (List.sortBy compareXY coordinates)]
-    sameXY a b = xy a == xy b
-    compareXY a b = compare (xy a) (xy b)
-    compareYX a b = compare (y a, x a) (y b, x b)
+    coordinates = foldCoordinates (\rest coordinate -> xy coordinate : rest) [] geometry
+    points = [point | point : _ <- List.group (List.sort coordinates)]
     hull = case points of
         [] -> []
-        [point] -> [point]
-        [a, b] -> case coordinates of
-            first : _ | sameXY first b -> [b, a]
-            _ -> [a, b]
-        _ -> rotate (reverse (init (chain points) ++ init (chain (reverse points))))
+        [_] -> points
+        [_, _] -> points
+        _ -> init (chain points) ++ init (chain (reverse points))
     chain = reverse . List.foldl' push []
     push (b : a : rest) point
-        | orientation (xy a) (xy b) (xy point) /= GT = push (a : rest) point
+        | orientation a b point /= GT = push (a : rest) point
     push rest point = point : rest
-    rotate [] = []
-    rotate vertices =
-        let first = List.minimumBy compareYX vertices
-            (before, after) = break (sameXY first) vertices
-         in after ++ before
 
--- | Construct a hull with the layout selected by its first vertex.
-hullGeometry :: [XYZ] -> Geometry
+-- | Construct an XY hull from its extreme vertices.
+hullGeometry :: [(Double, Double)] -> Geometry
 hullGeometry [] = GeometryCollection V.empty
-hullGeometry points@(first@(XYZ a b elevation) : _) = case points of
-    [_] -> PointGeometry (if hasZ then PointXYZ first else PointXY (XY a b))
+hullGeometry points@(first : _) = case points of
+    [(a, b)] -> PointGeometry (PointXY (XY a b))
     [_, _] -> LineString (coordinates points)
-    _ -> Polygon (PolygonRings (coordinates (points ++ take 1 points)) V.empty)
+    _ -> Polygon (PolygonRings (coordinates (points ++ [first])) V.empty)
   where
-    hasZ = not (isNaN elevation)
-    coordinates values
-        | hasZ = CoordinatesXYZ (U.fromList values)
-        | otherwise = CoordinatesXY (U.fromList [XY u v | XYZ u v _ <- values])
+    coordinates = CoordinatesXY . U.fromList . map (uncurry XY)
 
 -- | Extract the planar coordinate pair.
 xy :: (Coordinate c) => c -> (Double, Double)
@@ -500,26 +498,25 @@ Keep polygon bases separate from local moments, and keep segment endpoints
 separate. Rounding their absolute centroids first would discard small offsets.
 The divisor scales moments on the overflow retry. Weights stay unscaled.
 -}
-foldCentroidMoments :: Int -> Double -> CentroidMoments -> Geometry -> CentroidMoments
+foldCentroidMoments :: TopologicalDimension -> Double -> CentroidMoments -> Geometry -> CentroidMoments
 {-# INLINE foldCentroidMoments #-}
 foldCentroidMoments dimensionToMeasure divisor = go
   where
     go initial geometry = case geometry of
-        PointGeometry point | dimensionToMeasure == 0 -> fromMaybe initial (withPoint (single initial) point)
+        PointGeometry point | dimensionToMeasure == PointDimension -> fromMaybe initial (withPoint (single initial) point)
         LineString points -> case dimensionToMeasure of
-            1 -> withCoordinates (foldSegments False segment initial) points
-            0 -> first initial points
+            CurveDimension -> withCoordinates (foldSegments False segment initial) points
+            PointDimension -> first initial points
             _ -> initial
         Polygon rings@(PolygonRings shell holes) -> case dimensionToMeasure of
-            2 -> surface initial rings
-            1 -> V.foldl' path (path initial shell) holes
+            SurfaceDimension -> surface initial rings
+            CurveDimension -> V.foldl' path (path initial shell) holes
             _ -> V.foldl' first (first initial shell) holes
-        MultiPoint points | dimensionToMeasure == 0 -> U.foldl' (\total point -> fromMaybe total (withPoint (single total) point)) initial points
-        MultiLineString lineStrings -> V.foldl' (\total points -> recurse total (LineString points)) initial lineStrings
-        MultiPolygon polygons -> V.foldl' (\total rings -> recurse total (Polygon rings)) initial polygons
-        GeometryCollection children -> V.foldl' recurse initial children
+        MultiPoint points | dimensionToMeasure == PointDimension -> U.foldl' (\total point -> fromMaybe total (withPoint (single total) point)) initial points
+        MultiLineString lineStrings -> V.foldl' (\total points -> go total (LineString points)) initial lineStrings
+        MultiPolygon polygons -> V.foldl' (\total rings -> go total (Polygon rings)) initial polygons
+        GeometryCollection children -> V.foldl' go initial children
         _ -> initial
-    recurse = go
     step (CentroidMoments w wc mx mxc my myc) a b c =
         let (w', wc') = addCompensated (w, wc) a
             (mx', mxc') = addCompensated (mx, mxc) b

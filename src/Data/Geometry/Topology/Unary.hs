@@ -224,24 +224,23 @@ disjointPolygons (a, b) =
 For polygons, use a horizontal scan line through the interior. For lines,
 choose the interior vertex nearest the centroid, or an endpoint when there
 are no interior vertices. Point collections use the point nearest their
-centroid. Line results retain Z and discard M.
+centroid. Results use XY coordinates.
 
-Empty input gives an empty point. Its layout is XY, XYZ, or XYZM for a source
-coordinate count of 2, 3, or 4, respectively.
+Empty input gives an empty XY point.
 -}
 pointOnSurface :: Geometry -> Point
 pointOnSurface geometry = case topologicalDimension geometry of
-    0 -> choose False (mapMaybe pointCoordinate (pointMembers geometry))
-    1 -> choose True (if null interiors then concatMap endpoints lines' else interiors)
+    PointDimension -> choose (mapMaybe pointCoordinate (pointMembers geometry))
+    CurveDimension -> choose (if null interiors then concatMap endpoints lines' else interiors)
     _ -> case polygonCandidates of
         [] -> emptyResult
         first : rest -> snd (List.foldl' (\best candidate -> if fst candidate > fst best then candidate else best) first rest)
   where
-    emptyResult = EmptyPoint (case geometryCoordinateDimension geometry of 3 -> DimXYZ; 4 -> DimXYZM; _ -> DimXY)
+    emptyResult = EmptyPoint DimXY
     center = selectionCenter geometry
-    choose withZ points = case points of
+    choose points = case points of
         [] -> emptyResult
-        first : rest -> let selected = List.foldl' (\best candidate -> if distance candidate < distance best then candidate else best) first rest in boundaryPoint (withZ && not (isNaN (pointZ selected))) selected
+        first : rest -> let selected = List.foldl' (\best candidate -> if distance candidate < distance best then candidate else best) first rest in boundaryPoint False selected
     distance point = let (x, y) = pointXY point; (cx, cy) = center in sqrt ((x - cx) * (x - cx) + (y - cy) * (y - cy))
     lines' = map coordinatePoints (lineMembers geometry)
     interiors = concatMap (drop 1 . takeInterior) lines'
