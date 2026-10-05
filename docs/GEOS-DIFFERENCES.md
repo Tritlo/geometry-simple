@@ -109,6 +109,8 @@ or bounds before constructing a full relation matrix.
 
 Overlays and buffers first compute an exact arrangement and round its result
 to `Double`. Buffer offsets approximate circular arcs with floating-point coordinates.
+Rounding can move all vertices of a small ring onto one line. The operation
+removes such a ring and does not retry because of it.
 A valid result keeps its coordinates. If rounding makes it invalid, the operation
 retries with vertex and segment snapping. Separate groups of overlapping input
 bounds use separate tolerances. A distant component therefore does not set the
@@ -135,7 +137,7 @@ from GEOS buffer-specific precision reduction.
 It does not reproduce GEOS's additional self-union and precision-grid attempts.
 It can therefore report a precision failure before GEOS exhausts its retry
 strategies. The two implementations do not have the same failure behavior.
-Valid results can retain tiny regions that GEOS discards. At subnormal scales,
+Valid results can retain tiny and thin regions that GEOS discards. At subnormal scales,
 GEOS's floating-point validity checks can also disagree with exact orientation.
 The precision tests include an independent rational check for such a region.
 
