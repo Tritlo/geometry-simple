@@ -2,7 +2,7 @@
 module Data.Geometry.Topology.Planar where
 
 import Data.Geometry.Internal
-import Data.List (sortBy)
+import Data.List (sortBy, sortOn)
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
@@ -66,6 +66,49 @@ segments shape = concatMap lineSegments (planarLines shape) ++ concatMap ringSeg
 -- | List distinct input coordinates, including collapsed lines.
 vertices :: Planar -> [Position]
 vertices shape = unique (planarPoints shape ++ concat (planarLines shape) ++ concat (concat (planarPolygons shape)))
+
+-- | Test strict separation of the input envelopes. Empty inputs are disjoint.
+disjointBounds :: [Position] -> [Position] -> Bool
+disjointBounds [] _ = True
+disjointBounds _ [] = True
+disjointBounds a b = not (overlapsBounds (bounds a) (bounds b))
+  where
+    bounds points = ((minimum (map fst points), minimum (map snd points)), (maximum (map fst points), maximum (map snd points)))
+
+-- | Test membership in the point set without classifying its boundary.
+coversPosition :: Planar -> Position -> Bool
+coversPosition shape point =
+    any ((/= Exterior) . polygonLocation point) (planarPolygons shape)
+        || any (point `elem`) (planarLines shape)
+        || any (any (pointOnSegment point) . lineSegments) (planarLines shape)
+        || point `elem` planarPoints shape
+
+-- | Choose one point from each connected component before testing its edges.
+componentPoints :: Planar -> [Position]
+componentPoints shape =
+    planarPoints shape
+        ++ [point | point : _ <- planarLines shape]
+        ++ [point | (point : _) : _ <- planarPolygons shape]
+
+{- | Test whether two sets of segments meet. Sweep from left to right and
+discard segments whose X intervals have ended. Check remaining candidates
+with exact segment intersections, and stop at the first contact.
+-}
+segmentsIntersect :: [Segment] -> [Segment] -> Bool
+segmentsIntersect first second = go [] [] events
+  where
+    events = sortOn (left . snd) (map ((,) True) first ++ map ((,) False) second)
+    left ((x, _), (u, _)) = min x u
+    right ((x, _), (u, _)) = max x u
+    go _ _ [] = False
+    go activeFirst activeSecond ((fromFirst, edge) : rest)
+        | any (not . null . segmentIntersection edge) candidates = True
+        | fromFirst = go (edge : remainingFirst) remainingSecond rest
+        | otherwise = go remainingFirst (edge : remainingSecond) rest
+      where
+        remainingFirst = filter ((>= left edge) . right) activeFirst
+        remainingSecond = filter ((>= left edge) . right) activeSecond
+        candidates = if fromFirst then remainingSecond else remainingFirst
 
 -- | Subtract two vectors.
 subtractPosition :: Position -> Position -> Position

@@ -15,7 +15,7 @@ module Data.Geometry.Topology.Relations (
     distance,
 ) where
 
-import Data.Geometry (Geometry)
+import Data.Geometry.Internal (Geometry (..), withPoint)
 import Data.Geometry.Topology.Planar
 import Data.List (minimumBy)
 import qualified Data.List as List
@@ -83,11 +83,22 @@ equals first second = matrix == "FFFFFFFF2" || matches "T*F**FFF*" matrix
 
 -- | Test whether the geometries have no point in common.
 disjoint :: Geometry -> Geometry -> Bool
-disjoint = relatePattern "FF*FF****"
+disjoint first second = not (intersects first second)
 
--- | Test whether the geometries have at least one point in common.
+{- | Test whether the geometries have at least one point in common.
+Reject disjoint envelopes, then test component points and segment contacts.
+Stop when an intersection is found without constructing a relation matrix.
+-}
 intersects :: Geometry -> Geometry -> Bool
-intersects first second = not (disjoint first second)
+intersects first second =
+    not (disjointBounds (vertices a) (vertices b))
+        && ( any (coversPosition b) (componentPoints a)
+                || any (coversPosition a) (componentPoints b)
+                || segmentsIntersect (segments a) (segments b)
+           )
+  where
+    a = planar first
+    b = planar second
 
 -- | Test whether the geometries meet but their interiors do not intersect.
 touches :: Geometry -> Geometry -> Bool
@@ -114,13 +125,14 @@ crosses first second
 interiors intersect. A geometry on only the second boundary is not within it.
 -}
 within :: Geometry -> Geometry -> Bool
-within = relatePattern "T*F**F***"
+within first second = contains second first
 
 {- | Whether the second geometry lies in the first and their interiors intersect.
 Contact confined to the boundary does not count. Use 'covers' to include it.
 -}
 contains :: Geometry -> Geometry -> Bool
-contains = relatePattern "T*****FF*"
+contains first (PointGeometry point) = maybe False ((== Interior) . locate (planar first)) (withPoint position point)
+contains first second = relatePattern "T*****FF*" first second
 
 {- | Test whether geometries of the same dimension share an interior part
 of that dimension and each has a part outside the other.
@@ -139,6 +151,7 @@ overlaps first second
 Return 'False' if either geometry is empty. Boundary points are included.
 -}
 covers :: Geometry -> Geometry -> Bool
+covers first (PointGeometry point) = maybe False (coversPosition (planar first)) (withPoint position point)
 covers first second = matches "******FF*" matrix && not (matches "FF*FF****" matrix)
   where
     matrix = relate first second

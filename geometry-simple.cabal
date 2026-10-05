@@ -114,6 +114,7 @@ benchmark geometry-simple-bench
   build-depends:
     base >=4.18 && <5,
     bytestring >=0.11.2 && <0.13,
+    deepseq >=1.4.8 && <1.6,
     geometry-simple,
     text >=2.0 && <2.2,
     vector >=0.13 && <0.14,

@@ -4,8 +4,8 @@
 
 `src/Data/Geometry` has the geometry types, the WKB and WKT codecs, and the
 Simple Features operations. `test` has format fixtures and property tests.
-`bench` has the codec and vector benchmarks. The package has no database or
-native library dependency.
+`bench` has codec, vector, and spatial predicate benchmarks. The package has no
+database or native library dependency.
 
 ## Tests and documentation
 
@@ -113,6 +113,16 @@ cabal run -O1 geometry-simple-bench -- 1000000 +RTS -T -RTS
 ```
 
 The first argument is the number of XY coordinates.
+
+Measure predicates on polygons with 100, 200, 400, and 1,000 vertices:
+
+```sh
+cabal run -O1 geometry-simple-bench -- --topology +RTS -T -RTS
+```
+
+Add a vertex count after `--topology` to measure one size. These cases include
+disjoint polygons with overlapping envelopes, boundary points, and crossing
+lines. Input construction is outside the measured operation.
 
 ## Pull requests
 

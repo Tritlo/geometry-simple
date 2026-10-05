@@ -23,6 +23,8 @@ Initial release.
   local polygon offsets and point contributions when large moments cancel.
 - Pure Haskell boundary, simplicity, validity, representative points, DE-9IM
   relations, spatial predicates, and distance.
+  Intersection tests stop at the first contact. Point containment uses direct
+  point-location tests.
 - Planar intersection, union, difference, symmetric difference, and round
   buffers. Buffer quadrant resolution is configurable.
 - Queries for measured locations, with linear M interpolation and OGC example tests.

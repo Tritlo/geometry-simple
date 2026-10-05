@@ -1,10 +1,12 @@
--- | Compare checked codec operations and coordinate containers.
+-- | Measure codecs, coordinate containers, and common spatial predicates.
 module Main (main) where
 
+import Control.DeepSeq (force)
 import Control.Exception (evaluate)
 import Control.Monad (forM_, unless)
 import qualified Data.ByteString as BS
-import Data.Geometry (Coordinates (..), Geometry (..), XY (..))
+import Data.Geometry (Coordinates (..), Geometry (..), Point (..), PolygonRings (..), XY (..))
+import qualified Data.Geometry.SimpleFeatures as S
 import Data.Geometry.WKB (decodeWKB, encodeWKB)
 import Data.Geometry.WKT (decodeWKT, encodeWKT)
 import Data.IORef (newIORef, readIORef)
@@ -25,10 +27,17 @@ main = do
     enabled <- getRTSStatsEnabled
     unless enabled (fail "Enable allocation statistics with +RTS -T -RTS")
     args <- getArgs
-    count <- case args of
-        [] -> pure 1000000
-        [arg] | Just n <- readMaybe arg, n >= 2 -> pure n
-        _ -> fail "Usage: geometry-simple-bench [point count >= 2] +RTS -T -RTS"
+    putStrLn "workload,points,run,milliseconds,allocated_bytes,checksum"
+    case args of
+        [] -> codecBenchmarks 1000000
+        [arg] | Just n <- readMaybe arg, n >= 2 -> codecBenchmarks n
+        ["--topology"] -> forM_ [100, 200, 400, 1000] topologyBenchmarks
+        ["--topology", arg] | Just n <- readMaybe arg, n >= 4 -> topologyBenchmarks n
+        _ -> fail "Usage: geometry-simple-bench [point count >= 2 | --topology [vertices >= 4]] +RTS -T -RTS"
+
+-- | Compare codec and vector costs with the same prepared coordinate sequence.
+codecBenchmarks :: Int -> IO ()
+codecBenchmarks count = do
     let coordinate i = let x = fromIntegral i in XY x (2 * x)
         unboxed = U.generate count coordinate
         boxed = V.generate count coordinate
@@ -47,7 +56,6 @@ main = do
     geometryRef <- newIORef (LineString (CoordinatesXY unboxed))
     unboxedRef <- newIORef unboxed
     boxedRef <- newIORef boxed
-    putStrLn "workload,points,run,milliseconds,allocated_bytes,checksum"
     benchmark "decode-wkb" count expected $ do
         input <- readIORef bytesRef
         geometry <- checked (decodeWKB input)
@@ -74,6 +82,34 @@ main = do
     benchmark "boxed-map-fold" count (expected + 2 * n) $ do
         input <- readIORef boxedRef
         evaluate (V.foldl' checksum 0 (V.map translate input))
+
+-- | Compare early contact, disjoint envelopes, overlapping envelopes, and point queries.
+topologyBenchmarks :: Int -> IO ()
+topologyBenchmarks count = do
+    let circle cx cy =
+            let points = [XY (cx + cos angle) (cy + sin angle) | i <- [0 .. count - 1], let angle = 2 * pi * fromIntegral i / fromIntegral count]
+             in Polygon (PolygonRings (CoordinatesXY (U.fromList (points ++ take 1 points))) V.empty)
+        origin = circle 0 0
+        inside = PointGeometry (PointXY (XY 0 0))
+        boundary = PointGeometry (PointXY (XY 1 0))
+        crossingA = LineString (CoordinatesXY (U.fromList [XY (-2) (-2), XY 2 2]))
+        crossingB = LineString (CoordinatesXY (U.fromList [XY (-2) 2, XY 2 (-2)]))
+        cases =
+            [ ("intersects-overlap", S.intersects, origin, circle 0.5 0, True)
+            , ("intersects-disjoint-bounds", S.intersects, origin, circle 3 0, False)
+            , ("intersects-overlapping-bounds", S.intersects, origin, circle 1.5 1.5, False)
+            , ("disjoint-overlapping-bounds", S.disjoint, origin, circle 1.5 1.5, True)
+            , ("contains-point", S.contains, origin, inside, True)
+            , ("within-point", S.within, inside, origin, True)
+            , ("contains-boundary-point", S.contains, origin, boundary, False)
+            , ("covers-boundary-point", S.covers, origin, boundary, True)
+            , ("intersects-crossing-lines", S.intersects, crossingA, crossingB, True)
+            ]
+    forM_ cases $ \(name, predicate, first, second, expected) -> do
+        inputs <- evaluate (force (first, second)) >>= newIORef
+        benchmark name (if name == "intersects-crossing-lines" then 2 else count) (if expected then 1 else 0) $ do
+            (a, b) <- readIORef inputs
+            evaluate (if predicate a b then 1 else 0)
 
 -- | Measure seven trials. Input reads stay inside each action.
 benchmark :: String -> Int -> Double -> IO Double -> IO ()

@@ -97,14 +97,6 @@ overlay select emptyDimension first second
         GeometryCollection children -> GeometryCollection (V.map restorePoints children)
         _ -> geometry
 
--- | Test strict separation of the input envelopes.
-disjointBounds :: [Position] -> [Position] -> Bool
-disjointBounds [] _ = True
-disjointBounds _ [] = True
-disjointBounds a b = not (overlapsBounds (bounds a) (bounds b))
-  where
-    bounds points = ((minimum (map fst points), minimum (map snd points)), (maximum (map fst points), maximum (map snd points)))
-
 -- | Collect point atoms, including empty points, from a zero-dimensional input.
 storedPoints :: Geometry -> [Point]
 storedPoints geometry = case geometry of

@@ -162,9 +162,12 @@ Simple Features rules. Line boundaries use the mod-2 endpoint rule.
 characters `T`, `F`, `*`, `0`, `1`, and `2`; an invalid pattern returns `False`.
 `distance` returns NaN when either geometry is empty.
 
-Topology uses rational segment intersections to classify points, edges, and
-faces. Output coordinates round to `Double`. The implementation checks
-segment pairs directly and is intended for modest geometries. Use
+`intersects` and `disjoint` first check envelopes and component points. They
+then scan segments in X order and stop at the first contact. Point containment
+uses point-location tests. General relation matrices and constructed results
+use rational segment intersections to classify points, edges, and faces.
+Output coordinates round to `Double`. These operations can check segment
+pairs directly and are intended for modest geometries. Use
 [`geos`](https://hackage.haskell.org/package/geos) for large indexed workloads.
 
 `buffer` uses round joins and caps, with eight segments per quadrant.

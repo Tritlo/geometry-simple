@@ -72,6 +72,42 @@ tests =
             forM_ ["0FFFFF102", "T*F**F***", "*********"] $ \pattern -> S.relatePattern pattern a b @?= True
             forM_ ["", "********", "**********", "X********", "t********", "1********", "FF*FF****"] $ \pattern -> S.relatePattern pattern a b @?= False
         , testGroup
+            "direct intersection queries"
+            [ testCase "crossing polygons have no contained input vertices" $ do
+                let a = geometry "POLYGON ((-3 -1,3 -1,3 1,-3 1,-3 -1))"
+                    b = geometry "POLYGON ((-1 -3,1 -3,1 3,-1 3,-1 -3))"
+                S.intersects a b @?= True
+            , testCase "overlapping envelopes do not imply intersection" $ do
+                let a = geometry "POLYGON ((0 0,4 0,0 4,0 0))"
+                    b = geometry "POLYGON ((4 4,4 1,1 4,4 4))"
+                S.intersects a b @?= False
+            , testCase "a polygon wholly inside a hole is disjoint" $ do
+                let a = geometry "POLYGON ((0 0,8 0,8 8,0 8,0 0),(2 2,6 2,6 6,2 6,2 2))"
+                    b = geometry "POLYGON ((3 3,5 3,5 5,3 5,3 3))"
+                S.disjoint a b @?= True
+            , testCase "the segment sweep includes equal X endpoints" $ do
+                let a = geometry "MULTILINESTRING ((0 0,0 4),(2 0,2 4))"
+                    b = geometry "LINESTRING (-1 2,0 2)"
+                S.intersects a b @?= True
+                S.intersects b a @?= True
+            , testCase "each collection component contributes to intersection" $ do
+                let a = geometry "GEOMETRYCOLLECTION (POINT EMPTY,LINESTRING (10 0,11 0),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"
+                S.intersects a (point 1 1) @?= True
+                S.intersects a (point 10.5 0) @?= True
+                S.intersects a (point 5 0) @?= False
+            , testCase "all families agree with their relation matrices" $
+                forM_ familyExamples $ \a -> forM_ familyExamples $ \b -> do
+                    let expected = not (S.relatePattern "FF*FF****" a b)
+                    S.intersects a b @?= expected
+                    S.disjoint a b @?= not expected
+            , testCase "point queries agree with relation matrices" $
+                forM_ familyExamples $ \a ->
+                    forM_ (geometry "POINT EMPTY" : [point x y | x <- [0, 1, 2, 3], y <- [0, 1, 2, 3]]) $ \b -> do
+                        S.contains a b @?= S.relatePattern "T*****FF*" a b
+                        S.within b a @?= S.relatePattern "T*F**F***" b a
+                        S.covers a b @?= (S.relatePattern "******FF*" a b && not (S.relatePattern "FF*FF****" a b))
+            ]
+        , testGroup
             "distance"
             [ testCase "point distance" $ S.distance (point 0 0) (point 3 4) @?= 5
             , testCase "nearest point is in a segment interior" $
@@ -107,6 +143,7 @@ tests =
                     [ S.contains a b === S.within b a
                     , S.covers a b === S.coveredBy b a
                     , S.intersects a b === not (S.disjoint a b)
+                    , S.intersects a b === not (S.relatePattern "FF*FF****" a b)
                     , S.touches a b === S.touches b a
                     , S.crosses a b === S.crosses b a
                     , S.overlaps a b === S.overlaps b a
@@ -120,6 +157,21 @@ tests =
         u <- chooseInt (-8, 8)
         v <- chooseInt (-8, 8)
         pure (LineString (CoordinatesXY (U.fromList [XY (fromIntegral x) (fromIntegral y), XY (fromIntegral u) (fromIntegral v)])))
+
+-- | All seven families, with holes, disconnected parts, and empty components.
+familyExamples :: [Geometry]
+familyExamples =
+    map
+        geometry
+        [ "POINT (1 1)"
+        , "LINESTRING (0 1,3 1)"
+        , "POLYGON ((0 0,3 0,3 3,0 3,0 0),(1 1,2 1,2 2,1 2,1 1))"
+        , "MULTIPOINT (EMPTY,(0 0),(3 3))"
+        , "MULTILINESTRING ((0 0,2 0),(1 0,1 3),EMPTY)"
+        , "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((2 2,3 2,3 3,2 3,2 2)))"
+        , "GEOMETRYCOLLECTION (POINT (4 4),POLYGON ((0 0,1 0,1 1,0 1,0 0)),POLYGON ((1 0,2 0,2 1,1 1,1 0)))"
+        , "GEOMETRYCOLLECTION (POINT EMPTY,LINESTRING EMPTY,POLYGON EMPTY)"
+        ]
 
 -- | Read a fixed, valid test fixture.
 geometry :: String -> Geometry
