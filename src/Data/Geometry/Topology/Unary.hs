@@ -125,8 +125,9 @@ Polygon holes must lie inside the shell. Ring contacts must leave the
 polygon interior connected. Multi-polygon interiors must be disjoint.
 -}
 isValid :: Geometry -> Bool
-isValid geometry =
-    finiteGeometry geometry && case geometry of
+isValid geometry = finiteGeometry geometry && valid geometry
+  where
+    valid shape = case shape of
         PointGeometry _ -> True
         MultiPoint _ -> True
         LineString line -> validLine (positions line)
@@ -135,7 +136,7 @@ isValid geometry =
         MultiPolygon polygons -> all validPolygon rings && all disjointPolygons (overlappingPairs [(bounds, polygon) | polygon <- rings, Just bounds <- [pointBounds (concat polygon)]])
           where
             rings = map polygonPositions (V.toList polygons)
-        GeometryCollection children -> V.all isValid children
+        GeometryCollection children -> V.all valid children
 
 -- | Check XY only. Elevations and measures do not affect topology.
 finiteGeometry :: Geometry -> Bool
@@ -246,7 +247,7 @@ The selected point can differ from other implementations.
 pointOnSurface :: Geometry -> Point
 pointOnSurface geometry = fromMaybe (EmptyPoint DimXY) (surfacePoint <|> storedPoint)
   where
-    surfacePoint = snd <$> listToMaybe (mapMaybe polygonInterior (polygonMembers geometry))
+    surfacePoint = listToMaybe (mapMaybe polygonInterior (polygonMembers geometry))
     storedPoint = boundaryPoint False <$> listToMaybe (interiors ++ concatMap endpoints lines' ++ mapMaybe pointCoordinate (pointMembers geometry))
     lines' = map coordinatePoints (lineMembers geometry)
     interiors = concatMap (drop 1 . takeInterior) lines'
@@ -278,23 +279,27 @@ polygonMembers (MultiPolygon polygons) = V.toList polygons
 polygonMembers (GeometryCollection children) = foldMap polygonMembers children
 polygonMembers _ = []
 
--- | Select the midpoint of the widest horizontal interior interval.
-polygonInterior :: PolygonRings -> Maybe (Double, Point)
+{- | Select the widest horizontal interval with a representable point.
+Compute crossings exactly and check that rounding stays within the interval.
+Use a shell vertex if no interval contains a representable coordinate.
+-}
+polygonInterior :: PolygonRings -> Maybe Point
 polygonInterior (PolygonRings shell holes) = case map pointXY (coordinatePoints shell) of
     [] -> Nothing
-    shellPoints@((x, y) : _) -> Just (List.maximumBy (comparing fst) ((0, PointXY (XY x y)) : intervals))
+    shellPoints@((x, y) : _) -> Just (snd (List.maximumBy (comparing fst) ((0, PointXY (XY x y)) : intervals)))
       where
         rings = shellPoints : map (map pointXY . coordinatePoints) (V.toList holes)
         ys = map snd (concat rings)
         lo = minimum (map snd shellPoints)
         hi = maximum (map snd shellPoints)
-        center = (lo + hi) / 2
+        center = mean lo hi
         below = maximum (lo : filter (<= center) ys)
         above = minimum (hi : filter (> center) ys)
-        scanY = (below + above) / 2
+        scanY = mean below above
         crossings = sort [crossing a b | ring <- rings, (a@(_, ay), b@(_, by)) <- zip ring (drop 1 ring), ay /= by, min ay by <= scanY, max ay by >= scanY, not (ay == scanY && by < scanY), not (by == scanY && ay < scanY)]
-        crossing (ax, ay) (bx, by) = if ax == bx then ax else ax + (scanY - ay) / ((by - ay) / (bx - ax))
-        intervals = [(b - a, PointXY (XY ((a + b) / 2) scanY)) | (a, b) <- adjacentPairs crossings, a < b]
+        mean a b = fromRational ((toRational a + toRational b) / 2)
+        crossing (ax, ay) (bx, by) = toRational ax + (toRational scanY - toRational ay) * (toRational bx - toRational ax) / (toRational by - toRational ay)
+        intervals = [(b - a, PointXY (XY midpointX scanY)) | (a, b) <- adjacentPairs crossings, a < b, let midpointX = fromRational ((a + b) / 2), toRational midpointX >= a, toRational midpointX <= b]
 
 -- | Pair sorted crossings into interior intervals.
 adjacentPairs :: [a] -> [(a, a)]

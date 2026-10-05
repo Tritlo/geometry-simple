@@ -7,7 +7,6 @@ import Data.Geometry.Internal
 import Data.List (sortBy, sortOn)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -123,14 +122,18 @@ position coordinate = let (x, y, _, _) = coordinateComponents coordinate in (toR
 
 -- | Flatten collections while retaining polygon and line boundaries.
 planar :: Geometry -> Planar
-planar geometry = case geometry of
-    PointGeometry point -> Planar (fromMaybe [] (withPoint ((: []) . position) point)) [] []
-    LineString line -> Planar [] [positions line] []
-    Polygon (PolygonRings shell holes) -> Planar [] [] [map positions (shell : V.toList holes)]
-    MultiPoint points -> combinePlanar (map (planar . PointGeometry) (U.toList points))
-    MultiLineString lines' -> combinePlanar (map (planar . LineString) (V.toList lines'))
-    MultiPolygon polygons -> combinePlanar (map (planar . Polygon) (V.toList polygons))
-    GeometryCollection children -> combinePlanar (map planar (V.toList children))
+planar geometry =
+    let Planar points lines' polygons = collect (Planar [] [] []) geometry
+     in Planar (reverse points) (reverse lines') (reverse polygons)
+  where
+    collect rest@(Planar points lines' polygons) shape = case shape of
+        PointGeometry point -> maybe rest (\p -> Planar (p : points) lines' polygons) (withPoint position point)
+        LineString line -> Planar points (positions line : lines') polygons
+        Polygon (PolygonRings shell holes) -> Planar points lines' (map positions (shell : V.toList holes) : polygons)
+        MultiPoint values -> U.foldl' (\acc point -> collect acc (PointGeometry point)) rest values
+        MultiLineString values -> V.foldl' (\acc line -> collect acc (LineString line)) rest values
+        MultiPolygon values -> V.foldl' (\acc rings -> collect acc (Polygon rings)) rest values
+        GeometryCollection children -> V.foldl' collect rest children
 
 -- | Concatenate atomic components without changing their coordinates.
 combinePlanar :: [Planar] -> Planar
@@ -403,3 +406,18 @@ dot (x, y) (u, v) = x * u + y * v
 -- | The exact squared length of a vector.
 squaredLength :: Position -> Rational
 squaredLength vector = dot vector vector
+
+{- | Scale before the square root, then round the complete length to Double.
+Keep the scale exact so subnormal projections do not round to zero too early.
+-}
+vectorLength :: Position -> Double
+vectorLength = fromRational . vectorMagnitude
+
+-- | Approximate a norm with exact scaling and a Double square root.
+vectorMagnitude :: Position -> Rational
+vectorMagnitude (x, y)
+    | scale == 0 = 0
+    | otherwise = scale * toRational (sqrt (1 + fromRational (ratio * ratio)) :: Double)
+  where
+    scale = max (abs x) (abs y)
+    ratio = min (abs x) (abs y) / scale

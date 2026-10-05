@@ -10,7 +10,7 @@ import qualified Data.Geometry.WKT as WKT
 import Data.Text (Text)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 import Test.Tasty.QuickCheck (chooseInt, forAll, testProperty, (===))
 
@@ -21,6 +21,17 @@ tests =
         "unary topology"
         [ testGroup "predicates" [testCase name $ (S.isSimple shape, S.isRing shape, S.isValid shape) @?= expected | (name, text, expected) <- predicateCases, let shape = geometry text]
         , testGroup "boundary" [testCase name $ S.boundary (geometry input) @?= fmap geometry expected | (name, input, expected) <- boundaryCases]
+        , localOption (mkTimeout 2000000) $ testCase "nested validity checks visit coordinates once" $ do
+            let nested leaf = iterate (GeometryCollection . V.singleton) leaf !! 65536
+            S.isValid (nested (PointGeometry (PointXY (XY 1 2)))) @?= True
+            S.isValid (nested (PointGeometry (PointXY (XY (0 / 0) 2)))) @?= False
+        , testCase "representative points stay within large finite bounds" $ do
+            let shape = geometry "POLYGON ((1e308 0,1.1e308 0,1.1e308 1,1e308 1,1e308 0))"
+            S.pointOnSurface shape @?= PointXY (XY 1.05e308 0.5)
+        , testCase "rounded representative points belong to thin triangles" $ do
+            let shape = geometry "POLYGON ((2.3525087157967493 3.528763073695124,-1.0303684704452483 -1.5455527056678724,-1.1259179142808984 -1.6888768714213473,2.3525087157967493 3.528763073695124))"
+            assertBool "input is valid" (S.isValid shape)
+            assertBool "point belongs to triangle" (S.covers shape (PointGeometry (S.pointOnSurface shape)))
         , testGroup
             "point on surface"
             [ testCase name $ do

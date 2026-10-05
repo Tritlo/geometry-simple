@@ -258,12 +258,3 @@ boxesDistanceSquared :: Segment -> Segment -> Rational
 boxesDistanceSquared ((ax, ay), (bx, by)) ((cx, cy), (dx, dy)) = squaredLength (gap ax bx cx dx, gap ay by cy dy)
   where
     gap a b c d = max 0 (max (min a b - max c d) (min c d - max a b))
-
--- | Scale a vector before conversion to avoid squared-coordinate overflow.
-vectorLength :: Position -> Double
-vectorLength (x, y)
-    | scale == 0 = 0
-    | otherwise = fromRational scale * sqrt (1 + fromRational (ratio * ratio))
-  where
-    scale = max (abs x) (abs y)
-    ratio = min (abs x) (abs y) / scale

@@ -8,7 +8,7 @@ import Data.Geometry.WKT (decodeWKT)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase, (@?=))
 import Test.Tasty.QuickCheck (chooseInt, conjoin, counterexample, forAll, testProperty, vectorOf, (===))
 
@@ -18,6 +18,10 @@ tests =
     testGroup
         "spatial relations"
         [ testGroup "native intersection matrices" [checkFixture name a b matrix predicates | (name, a, b, matrix, predicates) <- fixtures]
+        , localOption (mkTimeout 2000000) $ testCase "nested point collections flatten in one traversal" $ do
+            let points = MultiPoint (U.generate 8192 (\i -> PointXY (XY (fromIntegral i) 0)))
+                nested = iterate (GeometryCollection . V.singleton) points !! 8192
+            S.intersects nested (point (-1) 2) @?= False
         , testGroup
             "collection union semantics"
             [ testCase "an outside point cannot remove coverage by a polygon" $ do
@@ -148,6 +152,12 @@ tests =
                 S.distance (point 0 0) (point 3e-200 4e-200) @?= 5e-200
             , testCase "projection survives a segment whose length overflows Double" $
                 S.distance (point 0 0) (geometry "MULTILINESTRING ((-1e308 1,1e308 1),(-1e308 2,1e308 2))") @?= 1
+            , testCase "round a subnormal projected distance only once" $ do
+                let tiny = encodeFloat 1 (-1074)
+                    line = LineString (CoordinatesXY (U.fromList [XY tiny 0, XY 0 tiny]))
+                assertBool "disjoint input" (S.disjoint (point 0 0) line)
+                S.distance (point 0 0) line @?= tiny
+                S.distance line (point 0 0) @?= tiny
             , testCase "distance search retains points beside unrelated segments" $
                 S.distance
                     (geometry "GEOMETRYCOLLECTION (LINESTRING (1000 1000,1100 1000),POINT (0 0),LINESTRING (-100 -100,-100 -100))")

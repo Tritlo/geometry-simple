@@ -252,8 +252,10 @@ cases size = do
             , workload "relations" "distance" "surrounding-points" (uncurry S.distance) (surroundingPoints, polygon)
             , workload "unary" "isValid" "holed-circle" S.isValid holedCircle
             ]
+    nestedPoints <- workload "relations" "intersects" "nested-points" (uncurry S.intersects) (iterate (GeometryCollection . V.singleton) multiPoint !! size, PointGeometry (PointXY (XY (-1) 2)))
+    nestedValidity <- workload "unary" "isValid" "nested" S.isValid nested
     pointRelation <- workload "relations" "relate" "multipoint-equal" (uncurry S.relate) (multiPoint, multiPoint)
-    pure (accessors ++ concat properties ++ concat measurements ++ concat topology ++ rings ++ concat relations ++ [pointRelation] ++ concat overlays ++ buffers ++ measures ++ concat codecs ++ difficult)
+    pure (accessors ++ concat properties ++ concat measurements ++ concat topology ++ rings ++ concat relations ++ [pointRelation, nestedPoints, nestedValidity] ++ concat overlays ++ buffers ++ measures ++ concat codecs ++ difficult)
 
 -- | Measure codecs using encoded input prepared outside the timed section.
 codecCases :: (String, Geometry) -> IO [Workload]
