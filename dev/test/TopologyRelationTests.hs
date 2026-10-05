@@ -97,13 +97,24 @@ tests =
                 S.intersects a (point 5 0) @?= False
             , testCase "all families agree with their relation matrices" $
                 forM_ familyExamples $ \a -> forM_ familyExamples $ \b -> do
-                    let expected = not (S.relatePattern "FF*FF****" a b)
+                    let matrix = S.relate a b
+                        dimension indexes = maximum [if matrix !! i == 'F' then -1 else fromEnum (matrix !! i) - fromEnum '0' | i <- indexes]
+                        dimensionA = dimension [0, 1, 2, 3, 4, 5]
+                        dimensionB = dimension [0, 1, 3, 4, 6, 7]
+                        expected = not (S.relatePattern "FF*FF****" a b)
+                        crossing = case compare dimensionA dimensionB of
+                            LT -> S.relatePattern "T*T******" a b
+                            GT -> S.relatePattern "T*****T**" a b
+                            EQ -> dimensionA == 1 && S.relatePattern "0********" a b
+                        overlapping = dimensionA == dimensionB && S.relatePattern (if dimensionA == 1 then "1*T***T**" else "T*T***T**") a b
                     S.intersects a b @?= expected
                     S.disjoint a b @?= not expected
                     S.contains a b @?= S.relatePattern "T*****FF*" a b
                     S.covers a b @?= (S.relatePattern "******FF*" a b && expected)
                     S.equals a b @?= (S.relate a b == "FFFFFFFF2" || S.relatePattern "T*F**FFF*" a b)
                     S.touches a b @?= any (\pattern -> S.relatePattern pattern a b) ["FT*******", "F**T*****", "F***T****"]
+                    S.crosses a b @?= crossing
+                    S.overlaps a b @?= overlapping
             , testCase "point queries agree with relation matrices" $
                 forM_ familyExamples $ \a ->
                     forM_ (geometry "POINT EMPTY" : [point x y | x <- [0, 1, 2, 3], y <- [0, 1, 2, 3]]) $ \b -> do
@@ -153,6 +164,18 @@ tests =
         , testProperty "transposing the inputs transposes the matrix" $
             forAll generatedLine $ \a -> forAll generatedLine $ \b ->
                 S.relate b a === [S.relate a b !! index | index <- [0, 3, 6, 1, 4, 7, 2, 5, 8]]
+        , testProperty "indexed ring locations agree with rectangle and hole bounds" $
+            forAll ((,,,) <$> chooseInt (-8, 8) <*> chooseInt (-8, 8) <*> chooseInt (-8, 48) <*> chooseInt (-8, 48)) $ \(shift, skew, px, py) ->
+                let transform x y = XY (x + fromIntegral skew * y + fromIntegral shift) y
+                    ring points = CoordinatesXY (U.fromList [transform x y | (x, y) <- points])
+                    shape = Polygon (PolygonRings (ring [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]) (V.singleton (ring [(2, 2), (8, 2), (8, 8), (2, 8), (2, 2)])))
+                    query = PointGeometry (PointXY (transform (fromIntegral px / 4) (fromIntegral py / 4)))
+                    inside lo hi = lo < px && px < hi && lo < py && py < hi
+                    closed lo hi = lo <= px && px <= hi && lo <= py && py <= hi
+                 in conjoin
+                        [ S.relatePattern "T*****FF*" shape query === (inside 0 40 && not (closed 8 32))
+                        , S.relatePattern "******FF*" shape query === (closed 0 40 && not (inside 8 32))
+                        ]
         , testProperty "binary predicates obey their set identities" $
             forAll generatedLine $ \a -> forAll generatedLine $ \b ->
                 conjoin
@@ -188,6 +211,9 @@ familyExamples =
         , "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((2 2,3 2,3 3,2 3,2 2)))"
         , "GEOMETRYCOLLECTION (POINT (4 4),POLYGON ((0 0,1 0,1 1,0 1,0 0)),POLYGON ((1 0,2 0,2 1,1 1,1 0)))"
         , "GEOMETRYCOLLECTION (POINT EMPTY,LINESTRING EMPTY,POLYGON EMPTY)"
+        , "GEOMETRYCOLLECTION (POLYGON EMPTY,LINESTRING EMPTY,MULTIPOINT ((0 0),(4 4)))"
+        , "GEOMETRYCOLLECTION (POLYGON EMPTY,LINESTRING (0 0,4 4))"
+        , "LINESTRING (1 1,1 1)"
         ]
 
 -- | Read a fixed, valid test fixture.

@@ -60,6 +60,9 @@ predicateCases =
     , ("simple closed line", "LINESTRING (0 0,2 0,0 2,0 0)", (True, True, True))
     , ("backtracking line", "LINESTRING (0 0,2 0,1 0)", (False, False, True))
     , ("endpoint joins", "MULTILINESTRING ((0 0,1 1),(1 1,2 0))", (True, False, True))
+    , ("equal segment bounds retain both lines", "MULTILINESTRING ((0 0,2 2),(0 0,2 2))", (False, False, True))
+    , ("opposite diagonals have equal bounds", "MULTILINESTRING ((0 0,2 2),(0 2,2 0))", (False, False, True))
+    , ("vertical segments have disjoint Y bounds", "MULTILINESTRING ((0 0,0 1),(0 2,0 3),(0 4,0 5))", (True, False, True))
     , ("interior vertex joins", "MULTILINESTRING ((0 0,1 1,2 0),(1 1,3 1))", (False, False, True))
     , ("closed line endpoint is interior", "MULTILINESTRING ((0 0,2 0,0 2,0 0),(0 0,-1 -1))", (False, False, True))
     , ("polygon crossings", "POLYGON ((0 0,2 2,0 2,2 0,0 0))", (False, False, False))
@@ -74,6 +77,7 @@ predicateCases =
     , ("multipolygon point contact", "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 2,4 2,4 4,2 4,2 2)))", (True, False, True))
     , ("multipolygon edge contact", "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 0,4 0,4 2,2 2,2 0)))", (True, False, False))
     , ("multipolygon overlap", "MULTIPOLYGON (((0 0,3 0,3 3,0 3,0 0)),((2 2,4 2,4 4,2 4,2 2)))", (True, False, False))
+    , ("equal polygon bounds retain both members", "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((0 0,2 0,2 2,0 2,0 0)))", (True, False, False))
     , ("polygon inside another component hole", "MULTIPOLYGON (((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2)),((3 3,7 3,7 7,3 7,3 3)))", (True, False, True))
     ]
 

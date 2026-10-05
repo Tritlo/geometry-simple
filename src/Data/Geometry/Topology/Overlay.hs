@@ -34,7 +34,7 @@ overlay select emptyDimension first second
         assemble emptyDimension (concatMap planarPolygons retained) (concatMap planarLines retained) (concatMap planarPoints retained)
     | otherwise = assemble emptyDimension polygons paths points
   where
-    separate = disjointBounds (vertices a) (vertices b)
+    separate = disjointBounds (allPositions a) (allPositions b)
     retained = [shape | (keep, shape) <- [(select True False, a), (select False True, b)], keep]
     singleComponent shape = length (componentPoints shape) <= 1
     firstEmpty = geometryEmpty first
@@ -44,8 +44,10 @@ overlay select emptyDimension first second
     b = planar second
     edges = nodeSegments (segments a ++ segments b) (vertices a ++ vertices b)
     queryEdges = segmentQuery edges
-    selected p = select (locate a p /= Exterior) (locate b p /= Exterior)
-    selectedFace p = select (polygonContains a p) (polygonContains b p)
+    (locateA, insideA) = prepareLocations a
+    (locateB, insideB) = prepareLocations b
+    selected p = select (locateA p /= Exterior) (locateB p /= Exterior)
+    selectedFace p = select (insideA p) (insideB p)
     boundaryEdges =
         [ if leftInside then (u, v) else (v, u)
         | edge@(u, v) <- edges
@@ -55,17 +57,20 @@ overlay select emptyDimension first second
         ]
     polygons = polygonize boundaryEdges
     surfaces = Planar [] [] polygons
-    lineEdges = [edge | edge <- edges, selected (midpoint edge), locate surfaces (midpoint edge) == Exterior]
+    (locateSurfaces, _) = prepareLocations surfaces
+    lineEdges = [edge | edge <- edges, selected (midpoint edge), locateSurfaces (midpoint edge) == Exterior]
     inputLines = planarLines a ++ planarLines b
     inputLineEdges = concatMap lineSegments inputLines
     allDegrees = degrees (nodeSegments inputLineEdges [])
     endpoints = [p | line@(start : _) <- inputLines, p <- [start, last line]]
-    overlaps = [p | p <- unique (concat inputLines), any (\edge@(u, v) -> p /= u && p /= v && pointOnSegment p edge) inputLineEdges]
+    queryLines = segmentQuery inputLineEdges
+    overlaps = [p | p <- unique (concat inputLines), any (\edge@(u, v) -> p /= u && p /= v && pointOnSegment p edge) (queryLines (p, p))]
     stops = Set.fromList (endpoints ++ overlaps ++ [p | (p, degree) <- Map.toList allDegrees, degree /= 2])
     paths = linePaths stops lineEdges
     curves = Planar [] paths polygons
+    (locateCurves, _) = prepareLocations curves
     nodes = unique (vertices a ++ vertices b ++ concatMap (\(u, v) -> [u, v]) edges)
-    points = [p | p <- nodes, selected p, locate curves p == Exterior]
+    points = [p | p <- nodes, selected p, locateCurves p == Exterior]
 
 -- | Collect directed cycles with their selected region on the left.
 boundaryRings :: [Segment] -> [[Position]]
@@ -93,12 +98,14 @@ boundaryRings edges = concatMap splitRing (collect (Set.fromList edges))
 
 -- | Separate rings that touch at one vertex without joining their interiors.
 splitRing :: [Position] -> [[Position]]
-splitRing = walk []
+splitRing = walk Set.empty []
   where
-    walk _ [] = []
-    walk path (point : rest) = case break (== point) path of
-        (_, []) -> walk (point : path) rest
-        (before, _ : after) -> (point : reverse before ++ [point]) : walk (point : after) rest
+    walk _ _ [] = []
+    walk seen path (point : rest)
+        | Set.notMember point seen = walk (Set.insert point seen) (point : path) rest
+        | otherwise = case break (== point) path of
+            (_, []) -> walk (Set.insert point seen) (point : path) rest
+            (before, _ : after) -> (point : reverse before ++ [point]) : walk (seen `Set.difference` Set.fromList before) (point : after) rest
 
 -- | Twice the signed area of a closed ring.
 ringArea :: [Position] -> Rational

@@ -15,7 +15,7 @@ module Data.Geometry.Topology.Relations (
     distance,
 ) where
 
-import Data.Geometry.Internal (Geometry (..), withPoint)
+import Data.Geometry.Internal (Geometry (..), TopologicalDimension (..), withPoint)
 import Data.Geometry.Topology.Planar
 import qualified Data.List as List
 import qualified Data.Set as Set
@@ -34,15 +34,17 @@ relate first second = map symbol (List.foldl' record (replicate 8 (-1) ++ [2]) s
     edges = nodeSegments (segments a ++ segments b) inputVertices
     queryEdges = segmentQuery edges
     nodes = unique (inputVertices ++ concatMap (\(p, q) -> [p, q]) edges)
+    (locateA, insideA) = prepareLocations a
+    (locateB, insideB) = prepareLocations b
     samples =
-        [(locate a p, locate b p, 0) | p <- nodes]
-            ++ [(locate a p, locate b p, 1) | edge <- edges, let p = midpoint edge]
-            ++ [ (areaLocation a p, areaLocation b p, 2)
+        [(locateA p, locateB p, 0) | p <- nodes]
+            ++ [(locateA p, locateB p, 1) | edge <- edges, let p = midpoint edge]
+            ++ [ (areaLocation insideA p, areaLocation insideB p, 2)
                | edge <- edges
                , let (left, right) = sidePoints queryEdges edge
                , p <- [left, right]
                ]
-    areaLocation shape p = if polygonContains shape p then Interior else Exterior
+    areaLocation containsPoint p = if containsPoint p then Interior else Exterior
     record :: [Int] -> (Location, Location, Int) -> [Int]
     record matrix (row, column, dimension) =
         zipWith (\index old -> if index == locationIndex row * 3 + locationIndex column then max old dimension else old) [0 ..] matrix
@@ -78,9 +80,12 @@ All empty geometries are spatially equal, regardless of their family.
 -}
 equals :: Geometry -> Geometry -> Bool
 equals first second =
-    pointBounds (vertices (planar first)) == pointBounds (vertices (planar second))
+    planarDimension a == planarDimension b
+        && pointBounds (allPositions a) == pointBounds (allPositions b)
         && (matrix == "FFFFFFFF2" || matches "T*F**FFF*" matrix)
   where
+    a = planar first
+    b = planar second
     matrix = relate first second
 
 -- | Test whether the geometries have no point in common.
@@ -97,7 +102,7 @@ intersects first second = planarIntersects (planar first) (planar second)
 -- | Reuse projected components when testing contact before a distance search.
 planarIntersects :: Planar -> Planar -> Bool
 planarIntersects a b =
-    not (disjointBounds (vertices a) (vertices b))
+    not (disjointBounds (allPositions a) (allPositions b))
         && ( any (coversPosition b) (componentPoints a)
                 || any (coversPosition a) (componentPoints b)
                 || segmentsIntersect (segments a) (segments b)
@@ -121,13 +126,18 @@ their interiors meet at points. Other equal-dimension pairs return 'False'.
 -}
 crosses :: Geometry -> Geometry -> Bool
 crosses first second
+    | dimensionA == dimensionB && dimensionA /= CurveDimension = False
+    | disjointBounds (allPositions a) (allPositions b) = False
     | dimensionA < dimensionB = matches "T*T******" matrix
     | dimensionA > dimensionB = matches "T*****T**" matrix
-    | dimensionA == 1 = matches "0********" matrix
+    | dimensionA == CurveDimension = matches "0********" matrix
     | otherwise = False
   where
     matrix = relate first second
-    (dimensionA, dimensionB) = matrixDimensions matrix
+    a = planar first
+    b = planar second
+    dimensionA = planarDimension a
+    dimensionB = planarDimension b
 
 {- | Test whether the first geometry lies in the second geometry and their
 interiors intersect. A geometry on only the second boundary is not within it.
@@ -141,8 +151,12 @@ Contact confined to the boundary does not count. Use 'covers' to include it.
 contains :: Geometry -> Geometry -> Bool
 contains first (PointGeometry point) = maybe False ((== Interior) . locate (planar first)) (withPoint position point)
 contains first second =
-    enclosesBounds (vertices (planar first)) (vertices (planar second))
+    planarDimension a >= planarDimension b
+        && enclosesBounds (allPositions a) (allPositions b)
         && relatePattern "T*****FF*" first second
+  where
+    a = planar first
+    b = planar second
 
 {- | Test whether geometries of the same dimension share an interior part
 of that dimension and each has a part outside the other.
@@ -150,12 +164,16 @@ of that dimension and each has a part outside the other.
 overlaps :: Geometry -> Geometry -> Bool
 overlaps first second
     | dimensionA /= dimensionB = False
-    | dimensionA == 1 = matches "1*T***T**" matrix
-    | dimensionA == 0 || dimensionA == 2 = matches "T*T***T**" matrix
+    | disjointBounds (allPositions a) (allPositions b) = False
+    | dimensionA == CurveDimension = matches "1*T***T**" matrix
+    | dimensionA == PointDimension || dimensionA == SurfaceDimension = matches "T*T***T**" matrix
     | otherwise = False
   where
     matrix = relate first second
-    (dimensionA, dimensionB) = matrixDimensions matrix
+    a = planar first
+    b = planar second
+    dimensionA = planarDimension a
+    dimensionB = planarDimension b
 
 {- | Test whether the second geometry has no point outside the first.
 Return 'False' if either geometry is empty. Boundary points are included.
@@ -163,25 +181,18 @@ Return 'False' if either geometry is empty. Boundary points are included.
 covers :: Geometry -> Geometry -> Bool
 covers first (PointGeometry point) = maybe False (coversPosition (planar first)) (withPoint position point)
 covers first second =
-    enclosesBounds (vertices (planar first)) (vertices (planar second))
+    planarDimension a >= planarDimension b
+        && enclosesBounds (allPositions a) (allPositions b)
         && matches "******FF*" matrix
         && not (matches "FF*FF****" matrix)
   where
+    a = planar first
+    b = planar second
     matrix = relate first second
 
 -- | Whether the first geometry is covered by the second, including its boundary.
 coveredBy :: Geometry -> Geometry -> Bool
 coveredBy first second = covers second first
-
--- | Recover the dimensions of the nonempty point sets from their matrix.
-matrixDimensions :: String -> (Int, Int)
-matrixDimensions matrix = (dimension [0, 1, 2, 3, 4, 5], dimension [0, 1, 3, 4, 6, 7])
-  where
-    dimension = maximum . map (value . (matrix !!))
-    value '0' = 0
-    value '1' = 1
-    value '2' = 2
-    value _ = -1
 
 {- | Return the minimum Euclidean distance in the XY plane.
 Empty geometries return NaN. Intersecting geometries return zero.
@@ -194,7 +205,10 @@ distance first second = case (verticesA, verticesB) of
         | otherwise ->
             let offset = subtractPosition p q
                 initial = (offset, squaredLength offset)
-             in vectorLength (fst (search verticesB treeA (search verticesA treeB initial)))
+                closest = case (treeA, treeB) of
+                    (Just firstTree, Just secondTree) -> nearestPair firstTree secondTree initial
+                    _ -> initial
+             in vectorLength (fst closest)
     _ -> 0 / 0
   where
     a = planar first
@@ -205,8 +219,6 @@ distance first second = case (verticesA, verticesB) of
     edgesB = segments b
     treeA = distanceIndex verticesA edgesA
     treeB = distanceIndex verticesB edgesB
-    search _ Nothing best = best
-    search points (Just tree) best = List.foldl' (\current point -> nearestOffset point tree current) best points
 
 -- | Index segments and retain isolated vertices as zero-length segments.
 distanceIndex :: [Position] -> [Segment] -> Maybe SegmentIndex
@@ -214,29 +226,36 @@ distanceIndex points edges = indexSegments (edges ++ [(p, p) | p <- points, Set.
   where
     endpoints = Set.fromList (concatMap (\(a, b) -> [a, b]) edges)
 
--- | Find a closer exact offset, pruning boxes by their squared-distance bounds.
-nearestOffset :: Position -> SegmentIndex -> (Position, Rational) -> (Position, Rational)
-nearestOffset point tree = visit (boxDistanceSquared point (indexBounds tree)) tree
+-- | Search pairs of subtrees, pruning whole groups by their exact distance bounds.
+nearestPair :: SegmentIndex -> SegmentIndex -> (Position, Rational) -> (Position, Rational)
+nearestPair first second = visit (bound first second) first second
   where
-    visit lowerBound current best@(_, bestSquared)
+    bound a b = boxesDistanceSquared (indexBounds a) (indexBounds b)
+    visit lowerBound a b best@(_, bestSquared)
         | lowerBound >= bestSquared = best
-        | otherwise = case current of
-            SegmentLeaf edge@(a, b) ->
-                let offset = if a == b then subtractPosition point a else segmentOffset point edge
-                    squared = squaredLength offset
-                 in if squared < bestSquared then (offset, squared) else best
-            SegmentBranch _ left right
-                | leftBound <= rightBound -> visit rightBound right (visit leftBound left best)
-                | otherwise -> visit leftBound left (visit rightBound right best)
-              where
-                leftBound = boxDistanceSquared point (indexBounds left)
-                rightBound = boxDistanceSquared point (indexBounds right)
+        | otherwise = case (a, b) of
+            (SegmentLeaf firstEdge@(p, q), SegmentLeaf secondEdge@(r, s)) ->
+                List.foldl' closer best [offset p secondEdge, offset q secondEdge, offset r firstEdge, offset s firstEdge]
+            (SegmentBranch _ left right, SegmentLeaf _) -> descend left b right b best
+            (SegmentLeaf _, SegmentBranch _ left right) -> descend a left a right best
+            (SegmentBranch _ leftA rightA, SegmentBranch _ leftB rightB)
+                | extent a >= extent b -> descend leftA b rightA b best
+                | otherwise -> descend a leftB a rightB best
+    descend a b c d best
+        | firstBound <= secondBound = visit secondBound c d (visit firstBound a b best)
+        | otherwise = visit firstBound a b (visit secondBound c d best)
+      where
+        firstBound = bound a b
+        secondBound = bound c d
+    extent tree = let ((x, y), (u, v)) = indexBounds tree in max (abs (u - x)) (abs (v - y))
+    offset point edge@(a, b) = if a == b then subtractPosition point a else segmentOffset point edge
+    closer best@(_, current) candidate = let squared = squaredLength candidate in if squared < current then (candidate, squared) else best
 
--- | The exact lower bound from a point to a segment's axis-aligned bounding box.
-boxDistanceSquared :: Position -> Segment -> Rational
-boxDistanceSquared (x, y) ((ax, ay), (bx, by)) = squaredLength (gap x ax bx, gap y ay by)
+-- | The exact squared distance between two closed axis-aligned bounding boxes.
+boxesDistanceSquared :: Segment -> Segment -> Rational
+boxesDistanceSquared ((ax, ay), (bx, by)) ((cx, cy), (dx, dy)) = squaredLength (gap ax bx cx dx, gap ay by cy dy)
   where
-    gap value first second = max 0 (max (min first second - value) (value - max first second))
+    gap a b c d = max 0 (max (min a b - max c d) (min c d - max a b))
 
 -- | Return the vector from the closest point on a segment to a point.
 segmentOffset :: Position -> Segment -> Position

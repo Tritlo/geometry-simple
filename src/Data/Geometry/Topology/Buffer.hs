@@ -37,9 +37,11 @@ bufferWithSegments quadrants radius geometry = assemble SurfaceDimension (polygo
     offsetRings = concatMap (offsetPolygon count radius) (planarPolygons source)
     edges = nodeSegments ((if radius /= 0 then concatMap ringSegments offsetRings else segments surfaces) ++ (if radius == 0 then [] else segments bands)) []
     queryEdges = segmentQuery edges
+    depths = map prepareDepth (planarPolygons source)
+    offsetWinding = prepareWinding (concatMap ringSegments (offsetRings ++ map (map toExact) rings))
     selected p
-        | radius == 0 = any ((> 0) . polygonDepth p) (planarPolygons source)
-        | otherwise = sum (map (winding p) (offsetRings ++ map (map toExact) rings)) < 0
+        | radius == 0 = any (\depth -> depth p > 0) depths
+        | otherwise = offsetWinding p < 0
     boundary =
         [ if leftInside then (a, b) else (b, a)
         | edge@(a, b) <- edges
@@ -48,21 +50,17 @@ bufferWithSegments quadrants radius geometry = assemble SurfaceDimension (polygo
         , leftInside /= selected right
         ]
 
--- | Count directed boundary crossings around a point.
-winding :: Position -> [Position] -> Int
-winding point@(_, y) ring = sum (map crossing (ringSegments ring))
+-- | Prepare ring winding and orientation for zero-buffer repair queries.
+prepareDepth :: [[Position]] -> Position -> Int
+prepareDepth [] = const 0
+prepareDepth (shell : holes) = \point -> shellDepth point - sum (map ($ point) holeDepths)
   where
-    crossing (a@(_, ay), b@(_, by))
-        | ay <= y && by > y && orientation a b point == GT = 1
-        | by <= y && ay > y && orientation a b point == LT = -1
-        | otherwise = 0
-
--- | Apply shell and hole orientation to preserve GEOS repair semantics.
-polygonDepth :: Position -> [[Position]] -> Int
-polygonDepth _ [] = 0
-polygonDepth point (shell : holes) = depth shell - sum (map depth holes)
-  where
-    depth ring = (if ringArea ring > 0 then 1 else -1) * winding point ring
+    shellDepth = depth shell
+    holeDepths = map depth holes
+    depth ring =
+        let sign = if ringArea ring > 0 then 1 else -1
+            winding = prepareWinding (ringSegments ring)
+         in \point -> sign * winding point
 
 {- | Offset shells clockwise and holes counterclockwise, with interior on the right.
 GEOS discards inverted erosion curves whose samples all lie within 0.99 of
@@ -92,7 +90,9 @@ offsetPolygon count distance (shell : holes)
              in 2 * toRational radius > min (maximum xs - minimum xs) (maximum ys - minimum ys)
     inverted ring curve = not (any farEnough (curve ++ map midpoint (ringSegments curve)))
       where
-        farEnough point = all ((> toRational (0.99 * radius) ^ (2 :: Int)) . segmentDistanceSquared point) (ringSegments ring)
+        query = segmentQuery (ringSegments ring)
+        reach = toRational (0.99 * radius)
+        farEnough point@(x, y) = all ((> reach ^ (2 :: Int)) . segmentDistanceSquared point) (query ((x - reach, y - reach), (x + reach, y + reach)))
 
 -- | The squared exact distance from a point to a segment.
 segmentDistanceSquared :: Position -> Segment -> Rational

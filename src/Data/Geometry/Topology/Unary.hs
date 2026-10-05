@@ -103,7 +103,7 @@ isRing _ = False
 
 -- | Compare segment intersections after removing adjacent repeated positions.
 simpleLines :: [[Position]] -> Bool
-simpleLines lines' = all allowed (pairs indexed)
+simpleLines lines' = all allowed (overlappingPairs [(edge, value) | value@(_, _, _, _, edge) <- indexed])
   where
     indexed = [(lineIndex, edgeIndex, length points - 2, first == last points, edge) | (lineIndex, input) <- zip [0 :: Int ..] lines', let points = [p | p : _ <- group input], first : _ <- [points], (edgeIndex, edge) <- zip [0 :: Int ..] (lineSegments points)]
     allowed ((lineA, indexA, lastA, closedA, edgeA), (lineB, indexB, lastB, closedB, edgeB)) = case segmentIntersection edgeA edgeB of
@@ -115,11 +115,6 @@ simpleLines lines' = all allowed (pairs indexed)
         _ -> False
     endpoint p i lastIndex (a, b) = (i == 0 && p == a) || (i == lastIndex && p == b)
     ends (a, b) = [a, b]
-
--- | Enumerate each unordered pair once.
-pairs :: [a] -> [(a, a)]
-pairs [] = []
-pairs (x : xs) = map ((,) x) xs ++ pairs xs
 
 {- | Check finite XY positions and the Simple Features topology rules.
 Polygon holes must lie inside the shell. Ring contacts must leave the
@@ -133,7 +128,7 @@ isValid geometry =
         LineString line -> validLine (positions line)
         MultiLineString lines' -> all (validLine . positions) (V.toList lines')
         Polygon rings -> validPolygon (polygonPositions rings)
-        MultiPolygon polygons -> all validPolygon rings && all disjointPolygons (pairs (filter (not . all null) rings))
+        MultiPolygon polygons -> all validPolygon rings && all disjointPolygons (overlappingPairs [(bounds, polygon) | polygon <- rings, Just bounds <- [pointBounds (concat polygon)]])
           where
             rings = map polygonPositions (V.toList polygons)
         GeometryCollection children -> all isValid (V.toList children)
@@ -171,22 +166,29 @@ validPolygon :: [[Position]] -> Bool
 validPolygon [] = True
 validPolygon (shell : holes)
     | null shell = all null holes
-    | otherwise = all validRing rings && all noOverlap (pairs rings) && all insideShell nonemptyHoles && all separateHoles (pairs nonemptyHoles) && acyclic contacts
+    | otherwise = all validRing rings && all noOverlap ringPairs && all insideShell nonemptyHoles && all separateHoles holePairs && acyclic contacts
   where
     nonemptyHoles = filter (not . null) holes
     rings = shell : nonemptyHoles
-    noOverlap (a, b) = not (sharedEdge a b)
-    insideShell hole = all ((/= Exterior) . (`ringLocation` shell)) (ringSamples hole shell)
-    separateHoles (a, b) = all ((/= Interior) . (`ringLocation` b)) (ringSamples a b) && all ((/= Interior) . (`ringLocation` a)) (ringSamples b a)
-    contacts = Set.toList (Set.fromList [(Left k, Right p) | ((i, a), (j, b)) <- pairs (zip [0 :: Int ..] rings), p <- ringIntersections a b, k <- [i, j]])
+    ringPairs = overlappingPairs [(bounds, (i, ring)) | (i, ring) <- zip [0 :: Int ..] rings, Just bounds <- [pointBounds ring]]
+    holePairs = [(a, b) | ((i, a), (j, b)) <- ringPairs, i > 0, j > 0]
+    noOverlap ((_, a), (_, b)) = not (sharedEdge a b)
+    locateShell = prepareRing shell
+    insideShell hole = all ((/= Exterior) . locateShell) (ringSamples hole shell)
+    separateHoles (a, b) = all ((/= Interior) . prepareRing b) (ringSamples a b) && all ((/= Interior) . prepareRing a) (ringSamples b a)
+    contacts = Set.toList (Set.fromList [(Left k, Right p) | ((i, a), (j, b)) <- ringPairs, p <- ringIntersections a b, k <- [i, j]])
 
 -- | The intersection positions of two ring boundaries.
 ringIntersections :: [Position] -> [Position] -> [Position]
-ringIntersections a b = unique (concat [segmentIntersection x y | x <- ringSegments a, y <- ringSegments b])
+ringIntersections a b = unique (concat [segmentIntersection x y | x <- ringSegments a, y <- query x])
+  where
+    query = segmentQuery (ringSegments b)
 
 -- | Whether ring boundaries share a segment of positive length.
 sharedEdge :: [Position] -> [Position] -> Bool
-sharedEdge a b = any ((> 1) . length) [segmentIntersection x y | x <- ringSegments a, y <- ringSegments b]
+sharedEdge a b = any ((> 1) . length) [segmentIntersection x y | x <- ringSegments a, y <- query x]
+  where
+    query = segmentQuery (ringSegments b)
 
 -- | Sample every open edge portion after all intersections with another ring.
 ringSamples :: [Position] -> [Position] -> [Position]
@@ -196,7 +198,8 @@ ringSamples ring other = ringSamplesAgainst ring (ringSegments other)
 ringSamplesAgainst :: [Position] -> [Segment] -> [Position]
 ringSamplesAgainst ring edges = concatMap sample (ringSegments ring)
   where
-    sample edge@(a, b) = map midpoint (lineSegments (unique (a : b : concatMap (segmentIntersection edge) edges)))
+    query = segmentQuery edges
+    sample edge@(a, b) = map midpoint (lineSegments (unique (a : b : concatMap (segmentIntersection edge) (query edge))))
 
 -- | A cycle through distinct contact positions disconnects a polygon interior.
 acyclic :: [(Either Int Position, Either Int Position)] -> Bool
@@ -215,8 +218,8 @@ acyclic = go Map.empty
 disjointPolygons :: ([[Position]], [[Position]]) -> Bool
 disjointPolygons (a, b) =
     not (any (uncurry sharedEdge) [(x, y) | x <- a, y <- b])
-        && all ((/= Interior) . (`polygonLocation` b)) (samples a b)
-        && all ((/= Interior) . (`polygonLocation` a)) (samples b a)
+        && all ((/= Interior) . preparePolygon b) (samples a b)
+        && all ((/= Interior) . preparePolygon a) (samples b a)
   where
     samples rings other = concatMap (\ring -> ringSamplesAgainst ring (concatMap ringSegments other)) rings
 

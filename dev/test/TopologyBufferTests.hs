@@ -37,6 +37,10 @@ tests =
             S.coordinateDimension (S.buffer 0 (geometry "POLYGON ZM ((0 0 1 4,3 0 2 5,0 3 3 6,0 0 1 4))")) @?= 2
         , testCase "zero buffer repairs the bowtie by winding" $
             sameXY (S.buffer 0 (geometry "POLYGON ((0 0,10 10,0 10,10 0,0 0))")) "POLYGON ((0 0,5 5,10 0,0 0))"
+        , testCase "coincident hole curves retain both winding contributions" $ do
+            let outer = geometry "POLYGON ((-2 -2,12 -2,12 12,-2 12,-2 -2),(3 3,7 3,7 7,3 7,3 3))"
+                combined = geometry "GEOMETRYCOLLECTION (POLYGON ((-2 -2,12 -2,12 12,-2 12,-2 -2),(3 3,7 3,7 7,3 7,3 3)),POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3)))"
+            S.equals (S.buffer 1 combined) (S.buffer 1 outer) @?= True
         , testCase "empty polygon remains empty" $
             sameXY (S.buffer 1 (geometry "POLYGON EMPTY")) "POLYGON EMPTY"
         , testCase "square erosion keeps straight corners" $

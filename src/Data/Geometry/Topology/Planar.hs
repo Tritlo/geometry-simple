@@ -6,6 +6,7 @@ module Data.Geometry.Topology.Planar where
 import Data.Geometry.Internal
 import Data.List (sortBy, sortOn)
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
@@ -36,7 +37,7 @@ indexSegments = build fst snd
     build _ _ [] = Nothing
     build _ _ [edge] = Just (SegmentLeaf edge)
     build coordinate other edges = do
-        let (first, second) = splitAt (length edges `div` 2) (sortOn (coordinate . midpoint) edges)
+        let (first, second) = splitAt (length edges `div` 2) (sortOn (\(a, b) -> coordinate a + coordinate b) edges)
         left <- build other coordinate first
         right <- build other coordinate second
         let ((ax, ay), (bx, by)) = indexBounds left
@@ -46,13 +47,60 @@ indexSegments = build fst snd
 
 -- | Build one index and select segments whose closed bounds meet each query box.
 segmentQuery :: [Segment] -> Segment -> [Segment]
-segmentQuery edges = maybe (const []) query (indexSegments edges)
+segmentQuery edges = maybe (const []) querySegments (indexSegments edges)
+
+-- | Select leaves whose closed bounds intersect the supplied box.
+querySegments :: SegmentIndex -> Segment -> [Segment]
+querySegments tree bounds
+    | not (overlapsBounds bounds (indexBounds tree)) = []
+    | otherwise = case tree of
+        SegmentLeaf edge -> [edge]
+        SegmentBranch _ left right -> querySegments left bounds ++ querySegments right bounds
+
+-- | Attach values to indexed bounds, retaining values with equal boxes.
+boundsQuery :: [(Segment, a)] -> Segment -> [a]
+boundsQuery entries = \bounds -> concatMap (table Map.!) (query bounds)
   where
-    query tree bounds
-        | not (overlapsBounds bounds (indexBounds tree)) = []
-        | otherwise = case tree of
-            SegmentLeaf edge -> [edge]
-            SegmentBranch _ left right -> query left bounds ++ query right bounds
+    table = Map.fromListWith (++) [(bounds, [value]) | (bounds, value) <- entries]
+    query = segmentQuery (Map.keys table)
+
+-- | Enumerate unordered pairs with intersecting bounds, including equal boxes.
+overlappingPairs :: [(Segment, a)] -> [(a, a)]
+overlappingPairs entries = [(a, b) | (bounds, (i, a)) <- indexed, (j, b) <- query bounds, i < j]
+  where
+    indexed = zipWith (\i (bounds, value) -> (bounds, (i, value))) [0 :: Int ..] entries
+    query = boundsQuery indexed
+
+-- | Prepare exact winding queries over directed edges, retaining duplicate edges.
+prepareWinding :: [Segment] -> Position -> Int
+prepareWinding edges = maybe (const 0) windingIndex (indexSegments edges)
+
+{- | Count crossings without visiting branches wholly to the right of the point.
+Each branch stores cumulative changes at endpoint Y values. An upward edge
+adds one between its endpoints; a downward edge subtracts one. Shared vertices
+cancel when branches combine. Branches that contain the query X still use exact
+orientation tests at their leaves.
+-}
+windingIndex :: SegmentIndex -> Position -> Int
+windingIndex = snd . build
+  where
+    build (SegmentLeaf (a@(_, ay), b@(_, by))) =
+        ( Map.filter (/= 0) (Map.fromListWith (+) [(ay, 1), (by, -1)])
+        , \point@(_, y) ->
+            if ay <= y && by > y && orientation a b point == GT
+                then 1
+                else if by <= y && ay > y && orientation a b point == LT then -1 else 0
+        )
+    build (SegmentBranch ((ax, ay), (bx, by)) left right) = (changes, classify)
+      where
+        (leftChanges, leftWinding) = build left
+        (rightChanges, rightWinding) = build right
+        changes = Map.filter (/= 0) (Map.unionWith (+) leftChanges rightChanges)
+        cumulative = snd (Map.mapAccum (\total delta -> let next = total + delta in (next, next)) 0 changes)
+        classify point@(x, y)
+            | x >= bx || y < ay || y >= by = 0
+            | x < ax = maybe 0 snd (Map.lookupLE y cumulative)
+            | otherwise = leftWinding point + rightWinding point
 
 -- | A point's location relative to a geometry.
 data Location = Exterior | Boundary | Interior deriving (Eq, Ord, Show, Read)
@@ -86,6 +134,21 @@ planar geometry = case geometry of
   where
     combine parts = Planar (concatMap planarPoints parts) (concatMap planarLines parts) (concatMap planarPolygons parts)
 
+{- | Find the dimension of a valid point set, ignoring empty components.
+Collapsed lines and collinear rings contribute only their stored point set.
+-}
+planarDimension :: Planar -> TopologicalDimension
+planarDimension shape
+    | any spansArea (concat (planarPolygons shape)) = SurfaceDimension
+    | not (null (segments shape)) = CurveDimension
+    | not (null (allPositions shape)) = PointDimension
+    | otherwise = NoDimension
+  where
+    spansArea (first : rest) = case dropWhile (== first) rest of
+        second : remaining -> any ((/= EQ) . orientation first second) remaining
+        [] -> False
+    spansArea [] = False
+
 -- | Round an exact planar position to an XY point.
 planarPoint :: Position -> Point
 planarPoint (x, y) = PointXY (XY (fromRational x) (fromRational y))
@@ -109,7 +172,11 @@ segments shape = concatMap lineSegments (planarLines shape) ++ concatMap ringSeg
 
 -- | List distinct input coordinates, including collapsed lines.
 vertices :: Planar -> [Position]
-vertices shape = unique (planarPoints shape ++ concat (planarLines shape) ++ concat (concat (planarPolygons shape)))
+vertices = unique . allPositions
+
+-- | Traverse coordinates without sorting or removing duplicates.
+allPositions :: Planar -> [Position]
+allPositions shape = planarPoints shape ++ concat (planarLines shape) ++ concat (concat (planarPolygons shape))
 
 -- | Enclose a nonempty point set in an exact axis-aligned rectangle.
 pointBounds :: [Position] -> Maybe Segment
@@ -238,6 +305,70 @@ ringLocation point@(x, y) ring
     edges = ringSegments ring
     crossesRay ((ax, ay), (bx, by)) = (ay > y) /= (by > y) && x < ax + (y - ay) * (bx - ax) / (by - ay)
 
+-- | Build one edge index for repeated exact location queries in a ring.
+prepareRing :: [Position] -> Position -> Location
+prepareRing ring = case indexSegments (ringSegments ring) of
+    Nothing -> const Exterior
+    Just tree ->
+        let winding = windingIndex tree
+         in \point ->
+                if any (pointOnSegment point) (querySegments tree (point, point))
+                    then Boundary
+                    else if odd (winding point) then Interior else Exterior
+
+-- | Index the shell and holes once. Skip holes whose bounds exclude the point.
+preparePolygon :: [[Position]] -> Position -> Location
+preparePolygon [] = const Exterior
+preparePolygon [shell] = prepareRing shell
+preparePolygon (shell : holes) = classify
+  where
+    locateShell = prepareRing shell
+    queryHoles = boundsQuery [(bounds, prepareRing hole) | hole <- holes, Just bounds <- [pointBounds hole]]
+    classify point = case locateShell point of
+        Exterior -> Exterior
+        shellLocation
+            | Interior `elem` holesHere -> Exterior
+            | Boundary `elem` holesHere -> Boundary
+            | otherwise -> shellLocation
+          where
+            holesHere = map ($ point) (queryHoles (point, point))
+
+-- | Index polygon components and retain the boundary rules for their union.
+prepareSurface :: [[[Position]]] -> Position -> Location
+prepareSurface [] = const Exterior
+prepareSurface [polygon] = preparePolygon polygon
+prepareSurface polygons = classify
+  where
+    queryPolygons = boundsQuery [(bounds, preparePolygon polygon) | polygon <- polygons, Just bounds <- [pointBounds (concat polygon)]]
+    queryEdges = segmentQuery (concatMap ringSegments (concat polygons))
+    locations point = map ($ point) (queryPolygons (point, point))
+    classify point
+        | Interior `elem` here = Interior
+        | otherwise = case filter (== Boundary) here of
+            _ : _ : _ | all (elem Interior . locations) (sectorSamples queryEdges point) -> Interior
+            _ : _ -> Boundary
+            [] -> Exterior
+      where
+        here = locations point
+
+-- | Prepare point locations and surface membership for repeated arrangement queries.
+prepareLocations :: Planar -> (Position -> Location, Position -> Bool)
+prepareLocations shape = (classify, (== Interior) . locateSurface)
+  where
+    locateSurface = prepareSurface (planarPolygons shape)
+    queryLines = segmentQuery (concatMap lineSegments lines')
+    lines' = planarLines shape
+    linePoints = Set.fromList (concat lines')
+    points = Set.fromList (planarPoints shape)
+    endpoints = Map.fromListWith (+) [(p, 1 :: Int) | line@(first : _) <- lines', p <- [first, last line]]
+    classify point = case locateSurface point of
+        Exterior
+            | Set.member point linePoints || any (pointOnSegment point) (queryLines (point, point)) ->
+                if odd (Map.findWithDefault 0 point endpoints) then Boundary else Interior
+            | Set.member point points -> Interior
+            | otherwise -> Exterior
+        result -> result
+
 -- | Locate a point in a polygon whose first ring is the shell.
 polygonLocation :: Position -> [[Position]] -> Location
 polygonLocation _ [] = Exterior
@@ -290,9 +421,12 @@ compareDirection a@(x, y) b@(u, v) = case compare (half x y) (half u v) of
 
 -- | Sample each angular sector around a boundary point.
 sectorPoints :: [Segment] -> Position -> [Position]
-sectorPoints edges point = [nearPoint query point (addPosition a b) | (a, b) <- zip directions (drop 1 directions ++ take 1 directions)]
+sectorPoints edges = sectorSamples (segmentQuery edges)
+
+-- | Sample boundary sectors using an existing edge index.
+sectorSamples :: (Segment -> [Segment]) -> Position -> [Position]
+sectorSamples query point = [nearPoint query point (addPosition a b) | (a, b) <- zip directions (drop 1 directions ++ take 1 directions)]
   where
-    query = segmentQuery edges
     directions = sortBy compareDirection (unique ([(1, 0), (0, 1), (-1, 0), (0, -1)] ++ incident))
     incident = [normalize direction | edge@(a, b) <- query (point, point), pointOnSegment point edge, q <- [a, b], q /= point, let direction = subtractPosition q point]
     normalize (x, y) = let size = abs x + abs y in (x / size, y / size)
