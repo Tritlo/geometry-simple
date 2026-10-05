@@ -49,14 +49,15 @@ cabal build exe:geometry-simple-shapely-probe
 uv run --script dev/test/shapely_compare.py --probe "$(cabal list-bin exe:geometry-simple-shapely-probe)" --report /tmp/geometry-shapely-report.json
 ```
 
-Python and GEOS are development dependencies only. The script pins Shapely and
+CI uses Shapely 2.1.2 with GEOS 3.13.1. Python and GEOS are development
+dependencies only. The script pins Shapely and
 uses fixed cases plus generated inputs with a repeatable seed. Unexpected
 differences fail the command. The report includes each method's comparison
 count and complete reproductions.
 
 Codec checks retain member layouts, empty metadata, and exact coordinate bits.
-WKT comparisons ignore decimal spelling and omit the native parent's dimension
-tag for geometry collections. Point selectors compare stored source rows,
+WKT comparisons ignore decimal spelling, require uniform collection tags, and
+omit parent tags for mixed collections. Point selectors compare stored source rows,
 including NaN Z/M, without native point-layout conversion.
 
 Constructed planar results must be XY. Hull checks compare exact XY geometry
@@ -70,6 +71,8 @@ operations require valid topology; invalid binary cases remain diagnostic
 records outside pass/failure counts. Known native collection defects have
 specific fixtures and independent expected answers. There are no Z/M copying
 exceptions for constructed results.
+The tests do not establish full SFA conformance or exact agreement with every
+GEOS output convention.
 
 Use `--cases`, `--buffer-cases`, and `--seed` to control generated inputs.
 `--phase` selects `existing`, `unary`, `relations`, `overlay`, or `buffer` during
@@ -79,7 +82,15 @@ Check the adapters and Python types with:
 
 ```sh
 uv run --script dev/test/test_shapely_compare.py
-uv run --no-project --with shapely==2.1.2 --with types-shapely==2.1.0.20260728 --with pyright==1.1.414 pyright dev/test/shapely_compare.py dev/test/test_shapely_compare.py dev/check_sdist.py
+uv run --no-project --with shapely==2.1.2 --with types-shapely==2.1.0.20260728 --with pyright==1.1.414 --with duckdb==1.5.5 pyright dev/test/shapely_compare.py dev/test/test_shapely_compare.py dev/test/test_duckdb_wkt.py dev/check_sdist.py
+```
+
+DuckDB 1.5.5 also reads the probe's WKT and WKB output in CI. This checks
+uniform collection tags, nested collections, and typed empty members against
+its stricter reader. The script loads or installs the spatial extension:
+
+```sh
+uv run --script dev/test/test_duckdb_wkt.py --probe "$(cabal list-bin exe:geometry-simple-shapely-probe)"
 ```
 
 ## Haskell style
@@ -111,6 +122,11 @@ cabal run -O1 geometry-simple-bench -- --topology +RTS -T -RTS
 Cases include disjoint polygons with overlapping envelopes, boundary points,
 and crossing lines. Report workload sizes and distinguish total allocation
 from retained memory.
+
+The README timings were measured with GHC 9.14.1, `-O1`, and a Ryzen 9 7950X.
+Inputs were prepared 400-vertex unit circles centered at `(0,0)` and `(0.5,0)`.
+The distance case used centers `(0,0)` and `(3,0)`. Each reported slow operation
+was evaluated once with its result fully forced.
 
 ## Pull requests and releases
 

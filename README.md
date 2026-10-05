@@ -6,7 +6,9 @@ collections. It provides ISO WKB and WKT codecs, planar measurements, spatial
 predicates, overlays, buffers, and measured-location queries.
 
 Coordinates use unboxed vectors. The library has no database or native-library
-dependency. It can exchange geometry with DuckDB through WKB or WKT.
+dependency. DuckDB interchange through WKB or WKT requires a
+[common coordinate layout](https://duckdb.org/docs/current/sql/data_types/geometry)
+across all members.
 
 ## Example
 
@@ -92,11 +94,14 @@ geometry model in OGC Simple Feature Access 1.2.1, section 6.1.2.5.
 
 `intersects` and `disjoint` reject separated envelopes and stop at the first
 contact. Point containment uses direct point-location tests. Full relation
-matrices and overlays can examine all segment pairs and suit modest geometries.
+matrices and overlays can examine all segment pairs. A local GHC 9.14.1 `-O1`
+run on 400-vertex polygons took 5.0 s for `relate`, 5.6 s for `intersection`,
+and 0.95 s for distance between disjoint polygons. Costs depend on the input
+and hardware.
 For large indexed workloads, use a native library such as
 [`geos`](https://hackage.haskell.org/package/geos).
 
-See [Simple Features and GEOS](docs/GEOS-DIFFERENCES.md) for numerical limits,
+See [Simple Features and GEOS](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md) for numerical limits,
 empty-value rules, format conversions, and deliberate differences from GEOS.
 The package implements the seven-family core; it does not claim full OGC SFA
 conformance or implement SQL, CRS metadata, Triangle, TIN, or PolyhedralSurface.
@@ -114,6 +119,10 @@ by `encodeWKT`, including negative zero and subnormals. Writers can promote
 layouts where a format requires one layout, such as WKT multi-geometries and
 WKB polygon rings. Missing Z/M values become NaN. A structural round trip is
 therefore not guaranteed for every mixed-layout value.
+
+WKT collections use a parent dimension tag when their members share one output
+layout. Mixed-layout collections omit it and retain child tags. That form is
+an extension accepted by this library and GEOS; DuckDB rejects it.
 
 ## Development
 

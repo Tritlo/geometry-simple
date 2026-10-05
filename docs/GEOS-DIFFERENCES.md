@@ -79,7 +79,13 @@ Untagged WKT infers XY, XYZ, or XYZM from two, three, or four ordinates. XYM
 requires M. Untagged collection children infer their layouts independently.
 In multi-geometries, empties before the first coordinate remain XY; later
 empties use the inferred layout. Explicit parent tags require matching child
-layouts. Writers avoid parent tags on geometry collections.
+layouts. Writers tag collections when all members share one output layout,
+including nested collections. Containers with no members have implicit XY.
+
+Mixed-layout collection WKT omits the parent tag and retains each child's tag.
+This extends the OGC grammar in section 7. GEOS accepts this form, but DuckDB
+requires one layout across all members for both WKT and WKB. Use a common
+layout for DuckDB interchange.
 
 The WKT decoder accepts attached tags such as `POINTZ`, both multipoint
 syntaxes, signed numbers, fractions, and exponents. Whitespace between ordinates
@@ -100,17 +106,3 @@ WKB rejects unknown type tags, incorrect child families, and counts exceeding
 the remaining input before allocation. Counts must fit in 32 bits. The codecs
 have no nesting limit, and WKT has no count limit. EWKB, EWKT, and embedded SRIDs
 are outside the package's scope.
-
-## Comparison tests
-
-CI uses Shapely 2.1.2 and GEOS 3.13.1. Codec comparisons check structure, layouts,
-and exact finite ordinate bits. Constructed results must be XY and match the
-native point set, family, and validity. Hull comparisons also check exact XY
-vertices and counterclockwise winding. Other constructed XY coordinates allow
-an absolute error of 1e-9; measurements use separate tolerances.
-
-Known native mixed-collection relation and symmetric-difference failures have
-fixed reproductions with independent expected answers. They are reported
-separately from unexpected differences. Invalid binary inputs remain diagnostic
-cases outside the finite, valid-topology contract. The tests do not establish
-full SFA conformance or exact agreement with every GEOS output convention.
