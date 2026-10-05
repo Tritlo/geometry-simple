@@ -101,9 +101,8 @@ robustOperation emptyDimension padding operation a b = case operation a b >>= va
         let result = combinePlanar (map planar parts)
         validateResult (assemble emptyDimension (planarPolygons result) (planarLines result) (planarPoints result))
   where
-    firstValid attempts = case [result | Right result <- map (>>= validateResult) attempts] of
-        result : _ -> Right result
-        [] -> Left PrecisionFailure
+    -- The Either semigroup keeps the first valid result, or else the last failure.
+    firstValid = foldr1 (<>) . map (>>= validateResult)
     snappedAttempts x y =
         [ let (snappedA, snappedB) = snapPlanars (tolerance * 10 ^ attemptIndex) x y
            in operation snappedA snappedB
