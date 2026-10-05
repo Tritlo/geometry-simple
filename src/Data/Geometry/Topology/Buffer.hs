@@ -113,12 +113,14 @@ offsetPolygon count distance (shell : holes)
             let xs = map fst ring
                 ys = map snd ring
              in 2 * toRational radius > min (maximum xs - minimum xs) (maximum ys - minimum ys)
-    -- GEOS tests only rings with 4 to 8 coordinates, and skips curves with more
-    -- than four times as many coordinates as their ring. Without these limits, a
-    -- radius below the coordinate precision makes every ring look inverted.
+    -- GEOS tests only rings with 4 to 8 coordinates after it removes repeated
+    -- points, and skips curves with more than four times as many coordinates.
+    -- Without these limits, a radius below the coordinate precision makes every
+    -- ring look inverted.
     inverted ring curve =
-        length ring > 3 && length ring < 9 && length curve <= 4 * length ring && not (any farEnough (curve ++ map midpoint (ringSegments curve)))
+        coordinateCount > 3 && coordinateCount < 9 && length curve <= 4 * coordinateCount && not (any farEnough (curve ++ map midpoint (ringSegments curve)))
       where
+        coordinateCount = length (group ring)
         query = segmentQuery (ringSegments ring)
         reach = toRational (0.99 * radius)
         farEnough point@(x, y) = all ((> reach ^ (2 :: Int)) . squaredLength . segmentOffset point) (query ((x - reach, y - reach), (x + reach, y + reach)))

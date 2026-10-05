@@ -94,6 +94,8 @@ tests =
             sameXY (successful (S.buffer (-1) (geometry "POLYGON ((0 0,10 0,10 10,0 10,0 0))"))) "POLYGON ((1 1,1 9,9 9,9 1,1 1))"
         , testCase "complete erosion is empty" $
             S.isEmpty (successful (S.buffer (-6) (geometry "POLYGON ((0 0,10 0,10 10,0 10,0 0))"))) @?= True
+        , testCase "repeated vertices do not hide an inverted erosion" $
+            S.isEmpty (successful (S.buffer (-9.8) (geometry "POLYGON ((0 -10,9 -6,9 -6,10 3,4 10,-4 10,-10 3,-9 -6,0 -10))"))) @?= True
         , testCase "collection members erode before union" $
             sameXY
                 (successful (S.buffer (-0.75) (geometry "GEOMETRYCOLLECTION (POLYGON ((0 0,2 0,2 2,0 2,0 0)),POLYGON ((1 0,3 0,3 2,1 2,1 0)))")))
