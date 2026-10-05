@@ -538,19 +538,35 @@ def written_ordinates(geometry: BaseGeometry, output_layout: str | None = None) 
     return [float(row[column]).hex() for row in sh.get_coordinates(geometry, include_z=True, include_m=True) for column in columns]
 
 
-def collection_tags(geometry: BaseGeometry) -> list[str]:
-    """Select parent tags from native member layouts in WKT traversal order."""
+def written_tags(geometry: BaseGeometry, inherited: str = "XY") -> list[str]:
+    """Give layoutless containers their parent's tag; retain stored member layouts."""
     def layouts(part: BaseGeometry) -> set[str]:
-        if int(get_type_id(part)) != 7:
-            return {coordinate_layout(part)}
-        return {layout for child in children(part) for layout in layouts(child)} or {"XY"}
+        kind = int(get_type_id(part))
+        members = children(part) if kind >= 4 else []
+        if kind >= 4 and not members:
+            return set()
+        if kind == 7:
+            return {layout for child in members for layout in layouts(child)}
+        return {coordinate_layout(part)}
 
-    if int(get_type_id(geometry)) != 7:
-        return []
+    kind = int(get_type_id(geometry))
     distinct = layouts(geometry)
-    layout = next(iter(distinct)) if len(distinct) == 1 else "XY"
+    layout = next(iter(distinct)) if len(distinct) == 1 else "XY" if distinct else inherited
     suffix = {"XY": "", "XYZ": " Z", "XYM": " M", "XYZM": " ZM"}[layout]
-    return ["GEOMETRYCOLLECTION" + suffix] + [tag for child in children(geometry) for tag in collection_tags(child)]
+    tag = geometry.geom_type.upper() + suffix
+    return [tag] + ([tag for child in children(geometry) for tag in written_tags(child, layout)] if kind == 7 else [])
+
+
+def inherit_empty_layouts(shape: Shape, inherited: str = "XY") -> Shape:
+    """Adapt only container metadata that has no stored coordinate layout."""
+    def has_layout(part: Shape) -> bool:
+        return any(has_layout(child) for child in part.children) if part.kind >= 4 else True
+
+    if shape.kind < 4:
+        return shape
+    layout = shape.layout if has_layout(shape) else inherited
+    return Shape(shape.kind, layout, coordinates=shape.coordinates,
+                 children=tuple(inherit_empty_layouts(child, layout) for child in shape.children))
 
 
 def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
@@ -574,13 +590,13 @@ def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
         return read_structure(actual) == expected
     if method == "encodeWKT":
         expected_text = sh.to_wkt(expected, rounding_precision=-1, output_dimension=4)
-        tags = iter(collection_tags(expected))
-        expected_text = re.sub(r"\bGEOMETRYCOLLECTION(?: (?:ZM|Z|M))?\b", lambda _: next(tags), expected_text)
+        tags = iter(written_tags(expected))
+        expected_text = re.sub(r"\b(?:POINT|LINESTRING|POLYGON|MULTIPOINT|MULTILINESTRING|MULTIPOLYGON|GEOMETRYCOLLECTION)(?: (?:ZM|Z|M))?\b", lambda _: next(tags), expected_text)
         tokens, numbers = wkt_tokens(actual)
         return tokens == wkt_tokens(expected_text)[0] and numbers == written_ordinates(expected)
     if method == "encodeWKB":
         native = sh.to_wkb(expected, byte_order=1, output_dimension=4, flavor="iso")
-        return binary_signature(bytes.fromhex(actual)) == binary_signature(native)
+        return binary_signature(bytes.fromhex(actual)) == inherit_empty_layouts(binary_signature(native))
     actual_shape, expected_shape = read_structure(actual), signature(expected)
     if method == "convexHull":
         if result_metadata(actual_shape) != result_metadata(expected_shape):

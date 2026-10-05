@@ -396,9 +396,9 @@ geometryWKT geometry =
   where
     sourceDimensions = geometryDimensions geometry
     (name, layout, body) = case geometry of
-        PointGeometry value -> ("POINT", Uniform sourceDimensions, \d -> pointWKT d value)
-        LineString points -> ("LINESTRING", Uniform sourceDimensions, \d -> coordinatesWKT d points)
-        Polygon rings -> ("POLYGON", Uniform sourceDimensions, \d -> polygonWKT d rings)
+        PointGeometry value -> ("POINT", Uniform sourceDimensions, (`pointWKT` value))
+        LineString points -> ("LINESTRING", Uniform sourceDimensions, (`coordinatesWKT` points))
+        Polygon rings -> ("POLYGON", Uniform sourceDimensions, (`polygonWKT` rings))
         MultiPoint points -> ("MULTIPOINT", if G.null points then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (pointWKT d) points)
         MultiLineString lineStrings -> ("MULTILINESTRING", if G.null lineStrings then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (coordinatesWKT d) lineStrings)
         MultiPolygon polygons -> ("MULTIPOLYGON", if G.null polygons then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (polygonWKT d) polygons)
@@ -409,8 +409,7 @@ geometryWKT geometry =
 
 -- | Empty points have no ordinates in WKT. Nonempty points use the writer's layout.
 pointWKT :: Dimensions -> Point -> Builder
-pointWKT _ (EmptyPoint _) = "EMPTY"
-pointWKT dimensions pointValue = "(" <> fromMaybe mempty (withPoint (coordinateWKT dimensions) pointValue) <> ")"
+pointWKT dimensions = fromMaybe "EMPTY" . withPoint (\value -> "(" <> coordinateWKT dimensions value <> ")")
 
 -- | Empty polygons discard their empty holes only during writing.
 polygonWKT :: Dimensions -> PolygonRings -> Builder

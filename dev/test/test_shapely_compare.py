@@ -23,6 +23,22 @@ def raw_geometry(wkt: str) -> str:
 class PlanarResultTests(unittest.TestCase):
     """Keep XY geometry and output layout checks independent of native Z/M."""
 
+    def test_empty_containers_inherit_only_their_parent_layout(self) -> None:
+        for tag in ("Z", "M", "ZM"):
+            ordinates = "1 2 3 4" if tag == "ZM" else "1 2 3"
+            expected = sh.from_wkt(f"GEOMETRYCOLLECTION {tag} (MULTIPOINT {tag} EMPTY,POINT {tag} ({ordinates}))")
+            good = f"GEOMETRYCOLLECTION {tag} (MULTIPOINT {tag} EMPTY,POINT {tag} ({ordinates}))"
+            self.assertTrue(matches("encodeWKT", good, expected, True))
+            self.assertFalse(matches("encodeWKT", good.replace(f"MULTIPOINT {tag}", "MULTIPOINT"), expected, True))
+            self.assertFalse(matches("encodeWKT", good.replace(f"POINT {tag} (", "POINT ("), expected, True))
+            native = bytearray(sh.to_wkb(expected, byte_order=1, output_dimension=4, flavor="iso"))
+            dimension_tag = {"Z": 1000, "M": 2000, "ZM": 3000}[tag]
+            native[10:14] = (4 + dimension_tag).to_bytes(4, "little")
+            self.assertTrue(matches("encodeWKB", native.hex(), expected, True))
+            if tag != "ZM":
+                native[19:23] = (2001 if tag == "Z" else 1001).to_bytes(4, "little")
+                self.assertFalse(matches("encodeWKB", native.hex(), expected, True))
+
     def test_extra_ordinates_are_rejected(self) -> None:
         self.assertFalse(operation_matches("intersection", raw_geometry("POINT Z (1 2 3)"), sh.from_wkt("POINT (1 2)")))
 

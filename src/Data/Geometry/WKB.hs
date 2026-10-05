@@ -35,7 +35,7 @@ A point with NaN in both X and Y becomes an empty point with the same layout.
 Return 'Left' for malformed WKB, invalid construction, or trailing bytes.
 -}
 decodeWKB :: ByteString -> Either String Geometry
-decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) Nothing) bytes
+decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes))) bytes
 
 {- | Encode little-endian ISO WKB. Child headers retain their layouts.
 Polygon rings use their combined layout, with NaN for absent Z or M ordinates.
@@ -82,50 +82,42 @@ getCount total little minimumBytes = do
         fail "Geometry WKB count exceeds the remaining bytes"
     pure (fromIntegral count)
 
--- | Read a geometry and check the child family required by a multi-geometry.
-getGeometry :: Int64 -> Maybe Word32 -> Get Geometry
-getGeometry total expectedFamily = do
+-- | Read a complete geometry, including each collection member's own header.
+getGeometry :: Int64 -> Get Geometry
+getGeometry total = do
     (little, dimensions, family) <- getHeader
-    case expectedFamily of
-        Just expected | family /= expected -> fail "Geometry WKB multi child has the wrong family"
-        _ -> pure ()
     case family of
         1 -> PointGeometry <$> getPoint little dimensions
         2 -> LineString <$> getCoordinates total little dimensions
-        3 -> do
-            count <- getCount total little 4
-            rings <-
-                if count == 0
-                    then pure (PolygonRings (emptyCoordinates dimensions) V.empty)
-                    else PolygonRings <$> getCoordinates total little dimensions <*> V.replicateM (count - 1) (getCoordinates total little dimensions)
-            either fail pure (validatePolygon rings)
-            pure (Polygon rings)
+        3 -> Polygon <$> getPolygon total little dimensions
         4 -> MultiPoint <$> getMultiPoints total little
         5 -> do
             count <- getCount total little 9
-            MultiLineString
-                <$> V.replicateM
-                    count
-                    ( do
-                        child <- getGeometry total (Just 2)
-                        case child of
-                            LineString points -> pure points
-                            _ -> fail "Geometry WKB multi child has the wrong family"
-                    )
+            MultiLineString <$> V.replicateM count (getChild 2 (getCoordinates total))
         6 -> do
             count <- getCount total little 9
-            MultiPolygon
-                <$> V.replicateM
-                    count
-                    ( do
-                        child <- getGeometry total (Just 3)
-                        case child of
-                            Polygon rings -> pure rings
-                            _ -> fail "Geometry WKB multi child has the wrong family"
-                    )
+            MultiPolygon <$> V.replicateM count (getChild 3 (getPolygon total))
         _ -> do
             count <- getCount total little 9
-            GeometryCollection <$> V.replicateM count (getGeometry total Nothing)
+            GeometryCollection <$> V.replicateM count (getGeometry total)
+
+-- | Check a multi-geometry child header before reading its typed body.
+getChild :: Word32 -> (Bool -> Dimensions -> Get a) -> Get a
+getChild expected body = do
+    (little, dimensions, family) <- getHeader
+    unless (family == expected) (fail "Geometry WKB multi child has the wrong family")
+    body little dimensions
+
+-- | Read a polygon's ring count and validate its shell and holes.
+getPolygon :: Int64 -> Bool -> Dimensions -> Get PolygonRings
+getPolygon total little dimensions = do
+    count <- getCount total little 4
+    rings <-
+        if count == 0
+            then pure (PolygonRings (emptyCoordinates dimensions) V.empty)
+            else PolygonRings <$> getCoordinates total little dimensions <*> V.replicateM (count - 1) (getCoordinates total little dimensions)
+    either fail pure (validatePolygon rings)
+    pure rings
 
 -- | Read point ordinates before applying WKB's XY-NaN empty convention.
 getPoint :: Bool -> Dimensions -> Get Point
@@ -301,9 +293,10 @@ putLength = Builder.word32LE . fromIntegral
 
 -- | Empty points use canonical quiet NaNs in every declared ordinate.
 putPoint :: Point -> Builder
-putPoint point = case point of
-    EmptyPoint dimensions -> mconcat (replicate (dimensionCount dimensions) (Builder.word64LE 0x7ff8000000000000))
-    _ -> fromMaybe mempty (withPoint (putCoordinate (pointDimensions point)) point)
+putPoint point = fromMaybe empty (withPoint (putCoordinate dimensions) point)
+  where
+    dimensions = pointDimensions point
+    empty = mconcat (replicate (dimensionCount dimensions) (Builder.word64LE 0x7ff8000000000000))
 
 -- | Write exact ordinate bits, padding absent Z or M ordinates with NaN.
 putCoordinate :: forall c. (Coordinate c) => Dimensions -> c -> Builder
