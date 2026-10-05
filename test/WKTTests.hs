@@ -1,12 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Check WKT syntax, coordinate dimensions, and numeric conversion.
+-- | Check WKT grammar, runtime layouts, empty members, and numeric conversion.
 module WKTTests (tests) where
 
 import Control.Monad (forM_)
 import Data.Either (isLeft)
 import Data.Geometry
-import Data.Geometry.WKT (decodeAnyWKT, decodeWKT, encodeWKT)
+import Data.Geometry.WKT (decodeWKT, encodeWKT)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -16,178 +16,131 @@ import GHC.Float (castDoubleToWord64)
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 
--- | Cover independent fixtures, rejected syntax, and parser boundaries.
+-- | Cover format fixtures, native layout inference, and malformed inputs.
 tests :: TestTree
 tests =
     testGroup
         "WKT"
-        [ testGroup "families and dimensions" $
+        [ testGroup
+            "families and dimensions"
             [ testCase (Text.unpack input) $ do
-                decodeAnyWKT input @?= Right expected
-                assertTypedDecode input expected
-                (renderAny expected >>= decodeAnyWKT) @?= Right expected
+                decodeWKT input @?= Right expected
+                (encodeWKT expected >>= decodeWKT) @?= Right expected
             | (input, expected) <- fixtures
             ]
-        , testGroup "literal syntax" $
-            [ testCase (Text.unpack input) $ decodeAnyWKT input @?= Right expected
-            | (input, expected) <- literalFixtures
-            ]
+        , testGroup
+            "literal syntax"
+            [testCase (Text.unpack input) $ decodeWKT input @?= Right expected | (input, expected) <- literalFixtures]
         , testCase "attached dimension suffixes work for all families" $
-            forM_ fixtures $ \(input, expected) -> do
-                let attached = Text.replace " ZM" "ZM" (Text.replace " M" "M" (Text.replace " Z" "Z" input))
-                decodeAnyWKT attached @?= Right expected
-        , testCase "keywords ignore case and surrounding whitespace" $
             forM_ fixtures $ \(input, expected) ->
-                decodeAnyWKT ("\t\n " <> Text.toLower input <> " \r\n") @?= Right expected
-        , testCase "untagged empty values remain XY for typed decoding" $
-            forM_ families $ \family -> do
-                let input = family <> " EMPTY"
-                assertLeft (decodeWKT input :: Either String (Geometry XYZ))
-                assertLeft (decodeWKT input :: Either String (Geometry XYM))
-                assertLeft (decodeWKT input :: Either String (Geometry XYZM))
-        , testCase "typed decoders reject other explicit dimensions, including empty values" $
-            forM_ fixtures $ \(input, expected) -> case expected of
-                GeometryXY _ -> do
-                    assertLeft (decodeWKT input :: Either String (Geometry XYZ))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYM))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYZM))
-                GeometryXYZ _ -> do
-                    assertLeft (decodeWKT input :: Either String (Geometry XY))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYM))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYZM))
-                GeometryXYM _ -> do
-                    assertLeft (decodeWKT input :: Either String (Geometry XY))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYZ))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYZM))
-                GeometryXYZM _ -> do
-                    assertLeft (decodeWKT input :: Either String (Geometry XY))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYZ))
-                    assertLeft (decodeWKT input :: Either String (Geometry XYM))
-        , testGroup "numeric boundaries" $
+                decodeWKT (Text.replace " ZM" "ZM" (Text.replace " M" "M" (Text.replace " Z" "Z" input))) @?= Right expected
+        , testCase "keywords ignore case and surrounding whitespace" $
+            forM_ fixtures $
+                \(input, expected) -> decodeWKT ("\t\n " <> Text.toLower input <> " \r\n") @?= Right expected
+        , testGroup
+            "numeric boundaries"
             [ testCase (Text.unpack token) $ do
-                shape <- rightOrFail (decodeWKT ("POINT (" <> token <> " -0)") :: Either String (Geometry XY))
+                shape <- rightOrFail (decodeWKT ("POINT (" <> token <> " -0)"))
                 case shape of
-                    PointGeometry (Point (XY x y)) -> do
-                        castDoubleToWord64 x @?= expectedBits
+                    PointGeometry (PointXY (XY x y)) -> do
+                        castDoubleToWord64 x @?= expected
                         castDoubleToWord64 y @?= 0x8000000000000000
                         rendered <- rightOrFail (encodeWKT shape)
-                        again <- rightOrFail (decodeWKT rendered :: Either String (Geometry XY))
+                        again <- rightOrFail (decodeWKT rendered)
                         case again of
-                            PointGeometry (Point (XY x' y')) -> do
-                                castDoubleToWord64 x' @?= expectedBits
-                                castDoubleToWord64 y' @?= 0x8000000000000000
-                            _ -> assertFailure "a rendered point changed family"
-                    _ -> assertFailure "a finite point changed family"
-            | (token, expectedBits) <- numericFixtures
+                            PointGeometry (PointXY (XY x' y')) -> map castDoubleToWord64 [x', y'] @?= [expected, 0x8000000000000000]
+                            _ -> assertFailure "finite point changed family or layout"
+                    _ -> assertFailure "finite point changed family or layout"
+            | (token, expected) <- numericFixtures
             ]
-        , localOption (mkTimeout 5000000) $
-            testCase "long mantissas parse in subquadratic time" $ do
-                let digits = Text.replicate 1000000 "1"
-                decodeWKT ("POINT (" <> digits <> "e-999999 0." <> digits <> ")")
-                    @?= Right (PointGeometry (Point (XY 1.1111111111111112 0.1111111111111111)))
+        , localOption (mkTimeout 5000000) $ testCase "long mantissas parse in subquadratic time" $ do
+            let digits = Text.replicate 1000000 "1"
+            decodeWKT ("POINT (" <> digits <> "e-999999 0." <> digits <> ")")
+                @?= Right (PointGeometry (PointXY (XY 1.1111111111111112 0.1111111111111111)))
         , testCase "numeric components retain their order in ZM" $ do
-            shape <- rightOrFail (decodeWKT "POINT ZM (-0 5e-324 -5e-324 1.7976931348623157e308)" :: Either String (Geometry XYZM))
+            shape <- rightOrFail (decodeWKT "POINT ZM (-0 5e-324 -5e-324 1.7976931348623157e308)")
             case shape of
-                PointGeometry (Point (XYZM x y z m)) ->
-                    map castDoubleToWord64 [x, y, z, m] @?= [0x8000000000000000, 1, 0x8000000000000001, 0x7fefffffffffffff]
-                _ -> assertFailure "a ZM point changed family"
+                PointGeometry (PointXYZM (XYZM x y z m)) -> map castDoubleToWord64 [x, y, z, m] @?= [0x8000000000000000, 1, 0x8000000000000001, 0x7fefffffffffffff]
+                _ -> assertFailure "ZM point changed layout"
         , testCase "non-finite WKT ordinates remain stored coordinates" $ do
             forM_ ["NaN", "nan", "+NaN", "-NaN"] $ \token -> do
-                shape <- rightOrFail (decodeWKT ("POINT (" <> token <> " NaN)") :: Either String (Geometry XY))
+                shape <- rightOrFail (decodeWKT ("POINT (" <> token <> " NaN)"))
                 case shape of
-                    PointGeometry (Point (XY x y)) -> assertBool "NaN point became empty" (isNaN x && isNaN y)
-                    _ -> assertFailure "WKT NaN coordinates must remain a nonempty point"
+                    PointGeometry (PointXY (XY x y)) -> assertBool "NaN point became empty" (isNaN x && isNaN y)
+                    _ -> assertFailure "WKT NaN point became empty"
                 rendered <- rightOrFail (encodeWKT shape)
                 assertBool "NaN output" (Text.isInfixOf "NaN" rendered)
-            forM_ [("Inf", 1 / 0), ("-Infinity", -1 / 0), ("1e309", 1 / 0), ("-1e" <> Text.replicate 200 "9", -1 / 0)] $ \(token, expected) -> do
-                decodeWKT ("POINT (" <> token <> " 2)") @?= Right (PointGeometry (Point (XY expected 2)))
-        , testCase "untagged triples infer Z rather than M" $
-            assertLeft (decodeWKT "POINT (1 2 3)" :: Either String (Geometry XYM))
+            forM_ [("Inf", 1 / 0), ("-Infinity", -1 / 0), ("1e309", 1 / 0), ("-1e" <> Text.replicate 200 "9", -1 / 0)] $ \(token, value) ->
+                decodeWKT ("POINT (" <> token <> " 2)") @?= Right (PointGeometry (PointXY (XY value 2)))
+        , testCase "mixed multipoint writers pad absent Z and M ordinates" $ do
+            let shape = MultiPoint (U.fromList [PointXY (XY 1 2), PointXYZ (XYZ 3 4 5), PointXYM (XYM 6 7 8)])
+            encodeWKT shape @?= Right "MULTIPOINT ZM ((1.0e0 2.0e0 NaN NaN), (3.0e0 4.0e0 5.0e0 NaN), (6.0e0 7.0e0 NaN 8.0e0))"
+        , testCase "polygon writers pad each ring independently" $ do
+            let shell = CoordinatesXY (U.fromList [XY 0 0, XY 4 0, XY 0 0])
+                hole = CoordinatesXYZ (U.fromList [XYZ 1 1 2, XYZ 2 1 3, XYZ 1 1 2])
+            encodeWKT (Polygon (PolygonRings shell (V.singleton hole))) @?= Right "POLYGON Z ((0.0e0 0.0e0 NaN, 4.0e0 0.0e0 NaN, 0.0e0 0.0e0 NaN), (1.0e0 1.0e0 2.0e0, 2.0e0 1.0e0 3.0e0, 1.0e0 1.0e0 2.0e0))"
         , testGroup "rejected syntax" [testCase (Text.unpack input) (assertRejected input) | input <- invalidInputs]
-        , testCase "all finite fixtures reject trailing input" $
-            forM_ fixtures $ \(input, _) ->
-                forM_ ["x", " POINT EMPTY", ",", ";", "\0"] $ \suffix ->
-                    assertRejected (input <> suffix)
+        , testCase "finite fixtures reject trailing input" $
+            forM_ fixtures $
+                \(input, _) -> forM_ ["x", " POINT EMPTY", ",", ";", "\0"] $ \suffix -> assertRejected (input <> suffix)
         , testCase "nested collections parse beyond 128 levels" $
-            forM_ [127, 128, 1024] $ \levels -> do
-                let shape = nestGeometry levels (PointGeometry (Point (XY 1 2)))
-                decodeWKT (nestText levels "POINT (1 2)") @?= Right shape
-        , testGroup "nested multi-geometries parse beyond 128 levels" $
-            [ testCase (Text.unpack family) $ forM_ [127, 128, 1024] $ \levels -> do
-                decodeWKT (nestText levels input) @?= Right (nestGeometry levels shape)
-                decodeWKT (nestText levels (family <> " EMPTY")) @?= Right (nestGeometry levels emptyShape)
-            | (family, input, shape, emptyShape) <-
-                [ ("MULTIPOINT", "MULTIPOINT ((1 2))", MultiPoint (U.singleton (Point (XY 1 2))), MultiPoint U.empty)
-                , ("MULTILINESTRING", "MULTILINESTRING ((1 2,1 2))", MultiLineString (V.singleton (U.replicate 2 (XY 1 2))), MultiLineString V.empty)
-                , ("MULTIPOLYGON", "MULTIPOLYGON (((1 2,1 2,1 2)))", MultiPolygon (V.singleton (V.singleton (U.replicate 3 (XY 1 2)))), MultiPolygon V.empty)
-                ]
-            ]
-        , testCase "nested empty point children parse beyond 128 levels" $
-            decodeWKT (nestText 1024 "MULTIPOINT (EMPTY)") @?= Right (nestGeometry 1024 (MultiPoint (U.singleton EmptyPoint)))
+            forM_ [127, 128, 1024] $ \levels ->
+                decodeWKT (nestText levels "POINT (1 2)") @?= Right (nestGeometry levels (PointGeometry (PointXY (XY 1 2))))
+        , testCase "nested empty point members preserve their layout" $
+            decodeWKT (nestText 1024 "MULTIPOINT Z (EMPTY)") @?= Right (nestGeometry 1024 (MultiPoint (U.singleton (EmptyPoint DimXYZ))))
         , testCase "wide collections parse" $ do
             let input = "GEOMETRYCOLLECTION (" <> Text.intercalate "," (replicate 1024 "POINT EMPTY") <> ")"
-            decodeWKT input @?= Right (GeometryCollection (V.replicate 1024 (PointGeometry EmptyPoint)) :: Geometry XY)
+            decodeWKT input @?= Right (GeometryCollection (V.replicate 1024 (PointGeometry (EmptyPoint DimXY))))
         ]
 
--- | The seven standard geometry family names.
-families :: [Text]
-families = ["POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION"]
-
--- | Explicit coordinates and dimension tags for each supported family.
-fixtures :: [(Text, AnyGeometry)]
+-- | Fixtures explicitly construct each coordinate layout.
+fixtures :: [(Text, Geometry)]
 fixtures =
-    dimensionFixtures "" "1 2" "3 4" (XY 1 2) (XY 3 4) GeometryXY
-        ++ dimensionFixtures " Z" "1 2 3" "4 5 6" (XYZ 1 2 3) (XYZ 4 5 6) GeometryXYZ
-        ++ dimensionFixtures " M" "1 2 3" "4 5 6" (XYM 1 2 3) (XYM 4 5 6) GeometryXYM
-        ++ dimensionFixtures " ZM" "1 2 3 4" "5 6 7 8" (XYZM 1 2 3 4) (XYZM 5 6 7 8) GeometryXYZM
+    dimensionFixtures DimXY "" "1 2" "3 4" (XY 1 2) (XY 3 4) CoordinatesXY PointXY
+        ++ dimensionFixtures DimXYZ " Z" "1 2 3" "4 5 6" (XYZ 1 2 3) (XYZ 4 5 6) CoordinatesXYZ PointXYZ
+        ++ dimensionFixtures DimXYM " M" "1 2 3" "4 5 6" (XYM 1 2 3) (XYM 4 5 6) CoordinatesXYM PointXYM
+        ++ dimensionFixtures DimXYZM " ZM" "1 2 3 4" "5 6 7 8" (XYZM 1 2 3 4) (XYZM 5 6 7 8) CoordinatesXYZM PointXYZM
 
--- | Pair each literal geometry body with an independently constructed value.
-dimensionFixtures :: (Coordinate c) => Text -> Text -> Text -> c -> c -> (Geometry c -> AnyGeometry) -> [(Text, AnyGeometry)]
-dimensionFixtures suffix first second a b wrap = do
-    let line = U.fromList [a, b]
-        ring = U.fromList [a, b, a]
+-- | Pair format bodies with values independent of the decoder.
+dimensionFixtures :: (Coordinate c) => Dimensions -> Text -> Text -> Text -> c -> c -> (U.Vector c -> Coordinates) -> (c -> Point) -> [(Text, Geometry)]
+dimensionFixtures dimensions suffix first second a b wrap makePoint = do
+    let line = wrap (U.fromList [a, b])
+        ring = wrap (U.fromList [a, b, a])
+        empty = wrap U.empty
         lineText = "(" <> first <> ", " <> second <> ")"
         polygonText = "((" <> first <> ", " <> second <> ", " <> first <> "))"
+        rings = PolygonRings ring V.empty
     (family, body, full, emptyShape) <-
-        [ ("POINT", "(" <> first <> ")", PointGeometry (Point a), PointGeometry EmptyPoint)
-        , ("LINESTRING", lineText, LineString line, LineString U.empty)
-        , ("POLYGON", polygonText, Polygon (V.singleton ring), Polygon V.empty)
-        , ("MULTIPOINT", "((" <> first <> "), EMPTY, (" <> second <> "))", MultiPoint (U.fromList [Point a, EmptyPoint, Point b]), MultiPoint U.empty)
-        , ("MULTILINESTRING", "(" <> lineText <> ", EMPTY)", MultiLineString (V.fromList [line, U.empty]), MultiLineString V.empty)
-        , ("MULTIPOLYGON", "(" <> polygonText <> ", EMPTY)", MultiPolygon (V.fromList [V.singleton ring, V.empty]), MultiPolygon V.empty)
-        , ("GEOMETRYCOLLECTION", "(POINT" <> suffix <> " (" <> first <> "), LINESTRING" <> suffix <> " EMPTY)", GeometryCollection (V.fromList [PointGeometry (Point a), LineString U.empty]), GeometryCollection V.empty)
+        [ ("POINT", "(" <> first <> ")", PointGeometry (makePoint a), PointGeometry (EmptyPoint dimensions))
+        , ("LINESTRING", lineText, LineString line, LineString empty)
+        , ("POLYGON", polygonText, Polygon rings, Polygon (PolygonRings empty V.empty))
+        , ("MULTIPOINT", "((" <> first <> "), EMPTY, (" <> second <> "))", MultiPoint (U.fromList [makePoint a, EmptyPoint dimensions, makePoint b]), MultiPoint U.empty)
+        , ("MULTILINESTRING", "(" <> lineText <> ", EMPTY)", MultiLineString (V.fromList [line, empty]), MultiLineString V.empty)
+        , ("MULTIPOLYGON", "(" <> polygonText <> ", EMPTY)", MultiPolygon (V.fromList [rings, PolygonRings empty V.empty]), MultiPolygon V.empty)
+        , ("GEOMETRYCOLLECTION", "(POINT" <> suffix <> " (" <> first <> "), LINESTRING" <> suffix <> " EMPTY)", GeometryCollection (V.fromList [PointGeometry (makePoint a), LineString empty]), GeometryCollection V.empty)
         ]
-    [(family <> suffix <> " " <> body, wrap full), (family <> suffix <> " EMPTY", wrap emptyShape)]
+    [(family <> suffix <> " " <> body, full), (family <> suffix <> " EMPTY", emptyShape)]
 
--- | Cover holes, empty children, optional numeric components, and delimiters.
-literalFixtures :: [(Text, AnyGeometry)]
+-- | Cover heterogeneous members and the order of layout inference.
+literalFixtures :: [(Text, Geometry)]
 literalFixtures =
-    [ ("POINT (1 2 3)", GeometryXYZ (PointGeometry (Point (XYZ 1 2 3))))
-    , ("POINT (1 2 3 4)", GeometryXYZM (PointGeometry (Point (XYZM 1 2 3 4))))
-    , ("GEOMETRYCOLLECTION Z (POINT (1 2 3))", GeometryXYZ (GeometryCollection (V.singleton (PointGeometry (Point (XYZ 1 2 3))))))
-    , ("GEOMETRYCOLLECTION (POINT EMPTY,POINT Z (1 2 3))", GeometryXYZ (GeometryCollection (V.fromList [PointGeometry EmptyPoint, PointGeometry (Point (XYZ 1 2 3))])))
-    , ("GEOMETRYCOLLECTION (POINT M EMPTY)", GeometryXYM (GeometryCollection (V.singleton (PointGeometry EmptyPoint))))
-    , ("GEOMETRYCOLLECTION (MULTIPOINT M EMPTY,POINT (1 2))", GeometryXY (GeometryCollection (V.fromList [MultiPoint U.empty, PointGeometry (Point (XY 1 2))])))
-    , ("GEOMETRYCOLLECTION (GEOMETRYCOLLECTION M (MULTIPOINT M EMPTY),POINT (1 2))", GeometryXY (GeometryCollection (V.fromList [GeometryCollection (V.singleton (MultiPoint U.empty)), PointGeometry (Point (XY 1 2))])))
-    , ("GEOMETRYCOLLECTION (POINT Z EMPTY,POINT ZM (1 2 3 4))", GeometryXYZM (GeometryCollection (V.fromList [PointGeometry EmptyPoint, PointGeometry (Point (XYZM 1 2 3 4))])))
-    , ("POLYGON (EMPTY,EMPTY)", GeometryXY (Polygon (V.replicate 2 U.empty)))
-    , ("POLYGON Z ((0 0 1,1 1 2,0 0 3))", GeometryXYZ (Polygon (V.singleton (U.fromList [XYZ 0 0 1, XYZ 1 1 2, XYZ 0 0 3]))))
-    , ("pOiNt\t( +.5\n-2.E+1 )", GeometryXY (PointGeometry (Point (XY 0.5 (-20)))))
-    , ("POINT(+1. -2.)", GeometryXY (PointGeometry (Point (XY 1 (-2)))))
-    , ("POINT (.5 .25)", GeometryXY (PointGeometry (Point (XY 0.5 0.25))))
-    , ("POINT (001 002)", GeometryXY (PointGeometry (Point (XY 1 2))))
-    , ("POINT (1e+2 2E-1)", GeometryXY (PointGeometry (Point (XY 100 0.2))))
-    , ("MULTIPOINT(1 2, 3 4)", GeometryXY (MultiPoint (U.fromList [Point (XY 1 2), Point (XY 3 4)])))
-    , ("MULTIPOINT((1 2),(3 4))", GeometryXY (MultiPoint (U.fromList [Point (XY 1 2), Point (XY 3 4)])))
-    ,
-        ( "POLYGON ((0 0,4 0,4 4,0 0),(1 1,2 1,1 2,1 1))"
-        , GeometryXY (Polygon (V.fromList [U.fromList [XY 0 0, XY 4 0, XY 4 4, XY 0 0], U.fromList [XY 1 1, XY 2 1, XY 1 2, XY 1 1]]))
-        )
-    , ("MULTIPOLYGON ((EMPTY), EMPTY)", GeometryXY (MultiPolygon (V.fromList [V.singleton U.empty, V.empty])))
-    ,
-        ( "GEOMETRYCOLLECTION Z (POINTZ(1 2 3),GEOMETRYCOLLECTIONZ(LINESTRING Z EMPTY))"
-        , GeometryXYZ (GeometryCollection (V.fromList [PointGeometry (Point (XYZ 1 2 3)), GeometryCollection (V.singleton (LineString U.empty))]))
-        )
+    [ ("POINT (1 2 3)", PointGeometry (PointXYZ (XYZ 1 2 3)))
+    , ("POINT (1 2 3 4)", PointGeometry (PointXYZM (XYZM 1 2 3 4)))
+    , ("POINT (.5 .25)", PointGeometry (PointXY (XY 0.5 0.25)))
+    , ("POINT(+1. -2.)", PointGeometry (PointXY (XY 1 (-2))))
+    , ("pOiNt\t( +.5\n-2.E+1 )", PointGeometry (PointXY (XY 0.5 (-20))))
+    , ("POINT (001 002)", PointGeometry (PointXY (XY 1 2)))
+    , ("MULTIPOINT (1 2,3 4)", MultiPoint (U.fromList [PointXY (XY 1 2), PointXY (XY 3 4)]))
+    , ("MULTIPOINT (EMPTY,(1 2 3))", MultiPoint (U.fromList [EmptyPoint DimXY, PointXYZ (XYZ 1 2 3)]))
+    , ("MULTIPOINT ((1 2 3),EMPTY)", MultiPoint (U.fromList [PointXYZ (XYZ 1 2 3), EmptyPoint DimXYZ]))
+    , ("MULTILINESTRING (EMPTY,(1 2 3,4 5 6))", MultiLineString (V.fromList [CoordinatesXY U.empty, CoordinatesXYZ (U.fromList [XYZ 1 2 3, XYZ 4 5 6])]))
+    , ("MULTIPOLYGON (EMPTY,((0 0 1,1 1 2,0 0 1)))", MultiPolygon (V.fromList [PolygonRings (CoordinatesXY U.empty) V.empty, PolygonRings (CoordinatesXYZ (U.fromList [XYZ 0 0 1, XYZ 1 1 2, XYZ 0 0 1])) V.empty]))
+    , ("POLYGON (EMPTY,EMPTY)", Polygon (PolygonRings (CoordinatesXY U.empty) (V.singleton (CoordinatesXY U.empty))))
+    , ("GEOMETRYCOLLECTION (POINT Z EMPTY,POINT (1 2))", GeometryCollection (V.fromList [PointGeometry (EmptyPoint DimXYZ), PointGeometry (PointXY (XY 1 2))]))
+    , ("GEOMETRYCOLLECTION (POINT M EMPTY,POINT Z (1 2 3))", GeometryCollection (V.fromList [PointGeometry (EmptyPoint DimXYM), PointGeometry (PointXYZ (XYZ 1 2 3))]))
+    , ("GEOMETRYCOLLECTION (MULTIPOINT M EMPTY,POINT (1 2))", GeometryCollection (V.fromList [MultiPoint U.empty, PointGeometry (PointXY (XY 1 2))]))
+    , ("GEOMETRYCOLLECTION Z (POINT (1 2 3))", GeometryCollection (V.singleton (PointGeometry (PointXYZ (XYZ 1 2 3)))))
+    , ("GEOMETRYCOLLECTION (POINT M EMPTY)", GeometryCollection (V.singleton (PointGeometry (EmptyPoint DimXYM))))
     ]
 
 -- | Literal decimal inputs and their correctly rounded IEEE 754 results.
@@ -293,36 +246,13 @@ invalidInputs =
            , "GEOMETRYCOLLECTION M (POINT (1 2 3))"
            , "LINESTRING (0 0,1 1 2)"
            , "LINESTRING (0 0 3,1 1)"
-           , "GEOMETRYCOLLECTION (POINT Z EMPTY,POINT (1 2))"
-           , "GEOMETRYCOLLECTION (POINT M EMPTY,POINT Z (1 2 3))"
-           , "GEOMETRYCOLLECTION (POINT (1 2),POINT Z (3 4 5))"
            , "POINT (NaNx 0)"
            , "POINT (Infinityx 0)"
            ]
 
--- | Decode a fixture with its declared static coordinate type.
-assertTypedDecode :: Text -> AnyGeometry -> Assertion
-assertTypedDecode input expected = case expected of
-    GeometryXY shape -> decodeWKT input @?= Right shape
-    GeometryXYZ shape -> decodeWKT input @?= Right shape
-    GeometryXYM shape -> decodeWKT input @?= Right shape
-    GeometryXYZM shape -> decodeWKT input @?= Right shape
-
--- | Render a fixture whose dimensions are known at runtime.
-renderAny :: AnyGeometry -> Either String Text
-renderAny geometry = case geometry of
-    GeometryXY shape -> encodeWKT shape
-    GeometryXYZ shape -> encodeWKT shape
-    GeometryXYM shape -> encodeWKT shape
-    GeometryXYZM shape -> encodeWKT shape
-
--- | Require a controlled syntax or value error.
+-- | Require a controlled syntax or construction failure.
 assertRejected :: Text -> Assertion
-assertRejected = assertLeft . decodeAnyWKT
-
--- | Require a validation error without matching its text.
-assertLeft :: Either String a -> Assertion
-assertLeft result = assertBool "expected a WKT validation error" (isLeft result)
+assertRejected input = assertBool "expected WKT rejection" (isLeft (decodeWKT input))
 
 -- | Turn a parser error into a test failure.
 rightOrFail :: Either String a -> IO a
@@ -330,11 +260,11 @@ rightOrFail result = case result of
     Left message -> assertFailure message
     Right value -> pure value
 
--- | Add collection wrappers without using the WKT encoder.
+-- | Add untagged collection wrappers without using the writer.
 nestText :: Int -> Text -> Text
 nestText count input = Text.replicate count "GEOMETRYCOLLECTION (" <> input <> Text.replicate count ")"
 
--- | Construct the expected value independently of the parser.
-nestGeometry :: Int -> Geometry XY -> Geometry XY
+-- | Build nested geometry values independently of the parser.
+nestGeometry :: Int -> Geometry -> Geometry
 nestGeometry 0 geometry = geometry
 nestGeometry count geometry = GeometryCollection (V.singleton (nestGeometry (count - 1) geometry))

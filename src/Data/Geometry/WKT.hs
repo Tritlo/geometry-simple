@@ -2,29 +2,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Checked WKT decoding and encoding for the seven simple geometry families.
+{- | WKT codecs for the seven Simple Features families.
 
-Untagged coordinates infer XY, XYZ, or XYZM from their arity. Use M for
-measured coordinates. Explicit collection tags also constrain their children.
-Keywords are case-insensitive. The decoder accepts
-@MULTIPOINT (1 2, 3 4)@ and @MULTIPOINT ((1 2), (3 4))@.
-
-Decoding requires complete input and whitespace between ordinates. It checks
-line lengths and ring closure. NaN and infinity are accepted. It does not
-check polygon topology.
-EWKT SRID prefixes are not supported. Keep CRS metadata beside the geometry.
+Collection members retain their layouts. Untagged coordinates infer XY, XYZ,
+or XYZM from their arity. M must be explicit. Multi-geometries infer one layout
+for subsequent coordinates; empty members before inference retain XY.
+The codecs check line lengths and ring closure, but not polygon topology.
+NaN and infinity are accepted. EWKT and SRIDs are not supported.
 -}
-module Data.Geometry.WKT (
-    decodeWKT,
-    decodeAnyWKT,
-    encodeWKT,
-) where
+module Data.Geometry.WKT (decodeWKT, encodeWKT) where
 
 import Control.Monad (unless, when)
 import Control.Monad.ST (runST)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT (..), get, modify', put)
-import Data.Bits ((.|.))
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Builder.RealFloat as RealFloat
@@ -44,55 +35,17 @@ import qualified Data.Vector.Unboxed as U
 -- | The remaining text and a controlled parse error.
 type Parser = StateT Text (Either String)
 
-{- | Decode WKT into the requested coordinate type.
-Untagged coordinates infer dimensions from their arity. An untagged EMPTY
-body is XY. Collections infer dimensions from their members. The inferred
-root dimensions must match the type.
--}
-decodeWKT :: forall c. (Coordinate c) => Text -> Either String (Geometry c)
-{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XY) #-}
-{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYZ) #-}
-{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYM) #-}
-{-# SPECIALIZE decodeWKT :: Text -> Either String (Geometry XYZM) #-}
+-- | Decode one complete geometry and preserve each member's coordinate layout.
+decodeWKT :: Text -> Either String Geometry
 decodeWKT input = do
-    ((geometry, dimensions, _), remaining) <- runStateT (geometryParser <* spaces) input
-    unless (dimensions == coordinateDimensions (Proxy :: Proxy c)) $
-        Left "Geometry WKT has the wrong coordinate dimensions"
-    if Text.null remaining
-        then Right geometry
-        else Left "Geometry WKT has trailing input"
+    ((geometry, _), remaining) <- runStateT (geometryParser <* spaces) input
+    if Text.null remaining then Right geometry else Left "Geometry WKT has trailing input"
 
--- | Decode WKT and retain explicit or inferred coordinate dimensions.
-decodeAnyWKT :: Text -> Either String AnyGeometry
-decodeAnyWKT input = do
-    ((_, dimensions), _) <- runStateT header input
-    case dimensions of
-        Just DimXY -> GeometryXY <$> decodeWKT input
-        Just DimXYZ -> GeometryXYZ <$> decodeWKT input
-        Just DimXYM -> GeometryXYM <$> decodeWKT input
-        Just DimXYZM -> GeometryXYZM <$> decodeWKT input
-        Nothing ->
-            firstSuccess
-                [ GeometryXY <$> decodeWKT input
-                , GeometryXYZ <$> decodeWKT input
-                , GeometryXYM <$> decodeWKT input
-                , GeometryXYZM <$> decodeWKT input
-                ]
-  where
-    firstSuccess [] = Left "Geometry WKT has inconsistent coordinate dimensions or invalid syntax"
-    firstSuccess (Right shape : _) = Right shape
-    firstSuccess (Left _ : rest) = firstSuccess rest
-
-{- | Encode WKT with a dimension suffix for XYZ, XYM, and XYZM geometries.
-Empty geometries retain their dimensions. Each ordinate uses scientific
-notation with the shortest digits that decode to the same Double, such as
-@1.0e0@.
+{- | Write native dimension tags and shortest scientific decimal ordinates.
+Multi-geometries and polygon rings pad absent Z or M ordinates with NaN.
+Geometry collections retain each child's own tags and ordinates.
 -}
-encodeWKT :: (Coordinate c) => Geometry c -> Either String Text
-{-# SPECIALIZE encodeWKT :: Geometry XY -> Either String Text #-}
-{-# SPECIALIZE encodeWKT :: Geometry XYZ -> Either String Text #-}
-{-# SPECIALIZE encodeWKT :: Geometry XYM -> Either String Text #-}
-{-# SPECIALIZE encodeWKT :: Geometry XYZM -> Either String Text #-}
+encodeWKT :: Geometry -> Either String Text
 encodeWKT geometry = do
     validateGeometry (const (Right ())) geometry
     pure (TextEncoding.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (geometryWKT geometry))))
@@ -157,78 +110,137 @@ header = do
             [(family, dimensions)] -> pure (family, Just dimensions)
             _ -> failure "has an unsupported geometry type"
 
--- | Keep the parsed tag separate from the dimensions retained by GEOS geometry values.
-geometryParser :: forall c. (Coordinate c) => Parser (Geometry c, Dimensions, Dimensions)
+-- | Read a geometry and retain the parsed layout for an explicit parent tag.
+geometryParser :: Parser (Geometry, Dimensions)
 geometryParser = do
     (family, declared) <- header
-    let wanted = coordinateDimensions (Proxy :: Proxy c)
-        position = do
-            unless (maybe (wanted /= DimXYM) (== wanted) declared) $
-                failure "has the wrong coordinate dimensions"
-            coordinate
-        line = do
-            points <- vector position
-            lift (validateLine points)
-            pure points
-        polygon = do
-            rings <- vector (vector position)
-            lift (validatePolygon rings)
-            pure rings
     if family == 7
         then do
             members <- vector geometryParser
-            let observed = V.foldl' (\acc (_, _, dim) -> toEnum (fromEnum acc .|. fromEnum dim)) DimXY members
-                dimensions = fromMaybe observed declared
             case declared of
-                Just dim -> unless (V.all (\(_, child, _) -> child == dim) members) (failure "has mixed coordinate dimensions")
+                Just dimensions -> unless (V.all ((== dimensions) . snd) members) (failure "has mixed coordinate dimensions")
                 Nothing -> pure ()
-            pure (GeometryCollection (V.map (\(shape, _, _) -> shape) members), dimensions, observed)
+            let shape = GeometryCollection (V.map fst members)
+            pure (shape, fromMaybe (geometryDimensions shape) declared)
         else do
-            shape <- case family of
-                1 -> PointGeometry <$> point position
-                2 -> LineString <$> line
-                3 -> Polygon <$> polygon
-                4 -> MultiPoint <$> multiPoint position
-                5 -> MultiLineString <$> vector line
-                _ -> MultiPolygon <$> vector polygon
-            let dimensions = fromMaybe (if geometryEmpty shape then DimXY else wanted) declared
-                observed = case shape of
-                    MultiPoint points | U.null points -> DimXY
-                    MultiLineString lineStrings | V.null lineStrings -> DimXY
-                    MultiPolygon polygons | V.null polygons -> DimXY
-                    _ -> dimensions
-            pure (shape, dimensions, observed)
+            (shape, inferred) <- case family of
+                1 -> do (value, dimensions) <- point True declared; pure (PointGeometry value, dimensions)
+                2 -> do
+                    (values, dimensions) <- coordinates declared
+                    lift (validateLine values)
+                    pure (LineString values, dimensions)
+                3 -> do (rings, dimensions) <- polygon declared; pure (Polygon rings, dimensions)
+                4 -> do (values, dimensions) <- multiPoint declared; pure (MultiPoint values, dimensions)
+                5 -> do
+                    (values, dimensions) <-
+                        vectorState
+                            declared
+                            ( \current -> do
+                                (line, next) <- coordinates current
+                                lift (validateLine line)
+                                pure (line, next)
+                            )
+                    pure (MultiLineString values, dimensions)
+                _ -> do (values, dimensions) <- vectorState declared polygon; pure (MultiPolygon values, dimensions)
+            pure (shape, fromMaybe DimXY inferred)
 
--- | Parse a parenthesized coordinate or an empty point.
-point :: Parser c -> Parser (Point c)
-point position = do
+-- | Inspect one coordinate without consuming its text.
+lookAheadParser :: Parser a -> Parser a
+lookAheadParser parser = StateT $ \input -> do
+    (value, _) <- runStateT parser input
+    pure (value, input)
+
+-- | Infer an untagged coordinate's two, three, or four ordinates.
+inferDimensions :: Parser Dimensions
+inferDimensions = do
+    _ <- number
+    _ <- nextNumber
+    third <- more
+    if not third
+        then pure DimXY
+        else do
+            _ <- nextNumber
+            fourth <- more
+            if fourth then nextNumber >> pure DimXYZM else pure DimXYZ
+  where
+    more = do
+        remaining <- get
+        pure $ case Text.uncons (Text.dropWhile whitespace remaining) of
+            Nothing -> False
+            Just (c, _) -> c /= ',' && c /= ')'
+
+-- | Read a point body. Bare MULTIPOINT coordinates cannot contain EMPTY.
+point :: Bool -> Maybe Dimensions -> Parser (Point, Maybe Dimensions)
+point parenthesized current = do
+    empty <- if parenthesized then emptyKeyword else pure False
+    if empty
+        then pure (EmptyPoint (fromMaybe DimXY current), current)
+        else do
+            when parenthesized (symbol '(')
+            spaces
+            dimensions <- maybe (lookAheadParser inferDimensions) pure current
+            x <- number
+            y <- nextNumber
+            (z, m) <- case dimensions of
+                DimXY -> pure (0, 0)
+                DimXYZ -> do z <- nextNumber; pure (z, 0)
+                DimXYM -> do m <- nextNumber; pure (0, m)
+                DimXYZM -> (,) <$> nextNumber <*> nextNumber
+            when parenthesized (symbol ')')
+            pure (pointFromComponents dimensions (x, y, z, m), Just dimensions)
+
+-- | Read one sequence into the unboxed buffer for its inferred layout.
+coordinates :: Maybe Dimensions -> Parser (Coordinates, Maybe Dimensions)
+coordinates current = do
     empty <- emptyKeyword
     if empty
-        then pure EmptyPoint
-        else symbol '(' *> (Point <$> position) <* symbol ')'
+        then pure (emptyCoordinates (fromMaybe DimXY current), current)
+        else do
+            dimensions <- maybe (lookAheadParser (symbol '(' *> spaces *> inferDimensions)) pure current
+            values <- case dimensions of
+                DimXY -> CoordinatesXY <$> vector coordinate
+                DimXYZ -> CoordinatesXYZ <$> vector coordinate
+                DimXYM -> CoordinatesXYM <$> vector coordinate
+                DimXYZM -> CoordinatesXYZM <$> vector coordinate
+            pure (values, Just dimensions)
 
--- | MULTIPOINT uses one spelling throughout: bare coordinates or point bodies.
-multiPoint :: (Coordinate c) => Parser c -> Parser (U.Vector (Point c))
-multiPoint position = do
+-- | Preserve empty rings and their layouts when reading a polygon.
+polygon :: Maybe Dimensions -> Parser (PolygonRings, Maybe Dimensions)
+polygon current = do
+    (rings, dimensions) <- vectorState current coordinates
+    let values =
+            if V.null rings
+                then PolygonRings (emptyCoordinates (fromMaybe DimXY current)) V.empty
+                else PolygonRings (V.head rings) (V.tail rings)
+    lift (validatePolygon values)
+    pure (values, dimensions)
+
+-- | Use one MULTIPOINT spelling throughout its body.
+multiPoint :: Maybe Dimensions -> Parser (U.Vector Point, Maybe Dimensions)
+multiPoint current = do
     spaces
     input <- get
     let first = Text.dropWhile whitespace (Text.drop 1 input)
         parenthesized = Text.isPrefixOf "(" first || Text.isPrefixOf "EMPTY" (Text.toUpper first)
-    vector (if parenthesized then point position else Point <$> position)
+    vectorState current (point parenthesized)
 
--- | Build each sequence directly in a growable vector, then copy its used slice.
+-- | Read a vector whose elements do not share inference state.
 vector :: (V.Vector v a) => Parser a -> Parser (v a)
-vector element = do
+vector element = fst <$> vectorState () (\() -> do value <- element; pure (value, ()))
+
+-- | Build a vector while carrying the inferred layout between its elements.
+vectorState :: (V.Vector v a) => s -> (s -> Parser (a, s)) -> Parser (v a, s)
+vectorState initialState element = do
     empty <- emptyKeyword
     if empty
-        then pure V.empty
+        then pure (V.empty, initialState)
         else do
             symbol '('
             StateT $ \input -> runST $ do
                 initial <- M.new 16
-                let go !count buffer remaining = case runStateT element remaining of
+                let go !count buffer current remaining = case runStateT (element current) remaining of
                         Left message -> pure (Left message)
-                        Right (value, afterElement) -> case runStateT delimiter afterElement of
+                        Right ((value, next), afterElement) -> case runStateT delimiter afterElement of
                             Left message -> pure (Left message)
                             Right (finished, rest) -> do
                                 target <- if count == M.length buffer then M.grow buffer (M.length buffer) else pure buffer
@@ -236,11 +248,11 @@ vector element = do
                                 if finished
                                     then do
                                         result <- V.freeze (M.slice 0 (count + 1) target)
-                                        pure (Right (result, rest))
-                                    else go (count + 1) target rest
-                go 0 initial input
+                                        pure (Right ((result, next), rest))
+                                    else go (count + 1) target next rest
+                go 0 initial initialState input
 
--- | Consume a comma or the closing parenthesis of a nonempty sequence.
+-- | Consume a comma or a closing parenthesis.
 delimiter :: Parser Bool
 delimiter = do
     spaces
@@ -341,42 +353,56 @@ digitsValue digits
     half = size `div` 2
     (high, low) = Text.splitAt half digits
 
--- | Render a validated geometry with its family and dimension suffix.
-geometryWKT :: forall c. (Coordinate c) => Geometry c -> Builder
+-- | Render each family with its native aggregate flags.
+geometryWKT :: Geometry -> Builder
 geometryWKT geometry = name <> suffix <> " " <> body
   where
-    suffix = case coordinateDimensions (Proxy :: Proxy c) of
+    dimensions = geometryDimensions geometry
+    suffix = case dimensions of
         DimXY -> ""
         DimXYZ -> " Z"
         DimXYM -> " M"
         DimXYZM -> " ZM"
     (name, body) = case geometry of
-        PointGeometry value -> ("POINT", pointWKT value)
-        LineString points -> ("LINESTRING", sequenceWKT coordinateWKT points)
-        Polygon rings -> ("POLYGON", sequenceWKT (sequenceWKT coordinateWKT) (normalizePolygon rings))
-        MultiPoint points -> ("MULTIPOINT", sequenceWKT pointWKT points)
-        MultiLineString lineStrings -> ("MULTILINESTRING", sequenceWKT (sequenceWKT coordinateWKT) lineStrings)
-        MultiPolygon polygons -> ("MULTIPOLYGON", sequenceWKT (sequenceWKT (sequenceWKT coordinateWKT) . normalizePolygon) polygons)
-        GeometryCollection children -> ("GEOMETRYCOLLECTION", sequenceWKT geometryWKT children)
+        PointGeometry value -> ("POINT", pointWKT dimensions value)
+        LineString points -> ("LINESTRING", coordinatesWKT dimensions points)
+        Polygon rings -> ("POLYGON", polygonWKT dimensions rings)
+        MultiPoint points -> ("MULTIPOINT", sequenceWKT (pointWKT dimensions) points)
+        MultiLineString lineStrings -> ("MULTILINESTRING", sequenceWKT (coordinatesWKT dimensions) lineStrings)
+        MultiPolygon polygons -> ("MULTIPOLYGON", sequenceWKT (polygonWKT dimensions) polygons)
+        GeometryCollection members -> ("GEOMETRYCOLLECTION", sequenceWKT geometryWKT members)
 
--- | Render an empty point or a parenthesized coordinate.
-pointWKT :: (Coordinate c) => Point c -> Builder
-pointWKT EmptyPoint = "EMPTY"
-pointWKT (Point position) = "(" <> coordinateWKT position <> ")"
+-- | Empty points have no ordinates in WKT. Nonempty points use the writer's layout.
+pointWKT :: Dimensions -> Point -> Builder
+pointWKT _ (EmptyPoint _) = "EMPTY"
+pointWKT dimensions pointValue = "(" <> maybe mempty id (withPoint (coordinateWKT dimensions) pointValue) <> ")"
 
--- | Render the ordinates in their declared order without intermediate lists.
-coordinateWKT :: forall c. (Coordinate c) => c -> Builder
-coordinateWKT position =
-    let (x, y, z, m) = coordinateComponents position
+-- | Empty polygons discard their empty holes only during writing.
+polygonWKT :: Dimensions -> PolygonRings -> Builder
+polygonWKT dimensions (PolygonRings shell holes)
+    | coordinatesEmpty shell = "EMPTY"
+    | otherwise = "(" <> coordinatesWKT dimensions shell <> V.foldMap (\ring -> ", " <> coordinatesWKT dimensions ring) holes <> ")"
+
+-- | Render a sequence in the dimensions selected by its containing geometry.
+coordinatesWKT :: Dimensions -> Coordinates -> Builder
+coordinatesWKT dimensions = withCoordinates (sequenceWKT (coordinateWKT dimensions))
+
+-- | Preserve finite bits with scientific notation and pad absent extra ordinates.
+coordinateWKT :: forall c. (Coordinate c) => Dimensions -> c -> Builder
+coordinateWKT target coordinateValue =
+    let (x, y, z, m) = coordinateComponents coordinateValue
+        source = coordinateDimensions (Proxy :: Proxy c)
         ordinate = RealFloat.formatDouble RealFloat.scientific
-        extra = case coordinateDimensions (Proxy :: Proxy c) of
+        zValue = if source == DimXYZ || source == DimXYZM then z else 0 / 0
+        mValue = if source == DimXYM || source == DimXYZM then m else 0 / 0
+        extra = case target of
             DimXY -> mempty
-            DimXYZ -> " " <> ordinate z
-            DimXYM -> " " <> ordinate m
-            DimXYZM -> " " <> ordinate z <> " " <> ordinate m
+            DimXYZ -> " " <> ordinate zValue
+            DimXYM -> " " <> ordinate mValue
+            DimXYZM -> " " <> ordinate zValue <> " " <> ordinate mValue
      in ordinate x <> " " <> ordinate y <> extra
 
--- | Render a vector as EMPTY or a parenthesized sequence, without a list.
+-- | Render a vector as EMPTY or a parenthesized sequence.
 sequenceWKT :: (V.Vector v a) => (a -> Builder) -> v a -> Builder
 sequenceWKT render values
     | V.null values = "EMPTY"

@@ -1,15 +1,14 @@
-{- | Simple Features geometry values. The coordinate type sets the dimensions.
-
-A @'Geometry' t'XY'@ has two-dimensional coordinates. A @'Geometry' t'XYZM'@ has
-coordinates with elevation and a measure. Use 'AnyGeometry' when the
-dimensions are known only at runtime.
+{- | Simple Features geometry values. Each point and coordinate sequence has
+its own layout. Collections and polygon rings can contain different layouts.
 
 @
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
-square :: Geometry XY
-square = Polygon (V.singleton (U.fromList [XY 0 0, XY 1 0, XY 1 1, XY 0 1, XY 0 0]))
+square :: Geometry
+square = Polygon (PolygonRings
+    (CoordinatesXY (U.fromList [XY 0 0, XY 1 0, XY 1 1, XY 0 1, XY 0 0]))
+    V.empty)
 @
 
 A geometry does not store a coordinate reference system. Keep the CRS or SRID
@@ -25,10 +24,12 @@ module Data.Geometry (
     XYZ (..),
     XYM (..),
     XYZM (..),
+    Dimensions (..),
     Coordinate,
     Point (..),
+    Coordinates (..),
+    PolygonRings (..),
     Geometry (..),
-    AnyGeometry (..),
 ) where
 
 import Data.Geometry.Internal

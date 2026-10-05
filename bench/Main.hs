@@ -4,7 +4,7 @@ module Main (main) where
 import Control.Exception (evaluate)
 import Control.Monad (forM_, unless)
 import qualified Data.ByteString as BS
-import Data.Geometry (Geometry (..), XY (..))
+import Data.Geometry (Coordinates (..), Geometry (..), XY (..))
 import Data.Geometry.WKB (decodeWKB, encodeWKB)
 import Data.Geometry.WKT (decodeWKT, encodeWKT)
 import Data.IORef (newIORef, readIORef)
@@ -38,13 +38,13 @@ main = do
     evaluate (U.foldl' checksum 0 unboxed) >>= check expected
     evaluate (V.foldl' checksum 0 boxed) >>= check expected
     _ <- evaluate textLength
-    bytes <- checked (encodeWKB (LineString unboxed))
+    bytes <- checked (encodeWKB (LineString (CoordinatesXY unboxed)))
     _ <- evaluate (BS.length bytes)
-    wkt <- checked (encodeWKT (LineString unboxed))
+    wkt <- checked (encodeWKT (LineString (CoordinatesXY unboxed)))
     _ <- evaluate (Text.length wkt)
     bytesRef <- newIORef bytes
     wktRef <- newIORef wkt
-    geometryRef <- newIORef (LineString unboxed)
+    geometryRef <- newIORef (LineString (CoordinatesXY unboxed))
     unboxedRef <- newIORef unboxed
     boxedRef <- newIORef boxed
     putStrLn "workload,points,run,milliseconds,allocated_bytes,checksum"
@@ -52,7 +52,7 @@ main = do
         input <- readIORef bytesRef
         geometry <- checked (decodeWKB input)
         case geometry of
-            LineString coordinates -> evaluate (U.foldl' checksum 0 coordinates)
+            LineString (CoordinatesXY coordinates) -> evaluate (U.foldl' checksum 0 coordinates)
             _ -> fail "Expected a decoded line"
     benchmark "encode-wkb" count (fromIntegral (9 + 16 * count)) $ do
         input <- readIORef geometryRef
@@ -62,7 +62,7 @@ main = do
         input <- readIORef wktRef
         geometry <- checked (decodeWKT input)
         case geometry of
-            LineString coordinates -> evaluate (U.foldl' checksum 0 coordinates)
+            LineString (CoordinatesXY coordinates) -> evaluate (U.foldl' checksum 0 coordinates)
             _ -> fail "Expected a decoded line"
     benchmark "render-wkt" count (fromIntegral textLength) $ do
         input <- readIORef geometryRef

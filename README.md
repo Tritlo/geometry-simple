@@ -10,20 +10,21 @@ package needs no database or native library.
 import Data.ByteString (ByteString)
 import Data.Geometry
 import Data.Geometry.WKB
-import Data.Geometry.WKT (decodeAnyWKT, decodeWKT, encodeWKT)
+import Data.Geometry.WKT (decodeWKT, encodeWKT)
 import qualified Data.Geometry.SimpleFeatures as SF
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
-point = PointGeometry (Point (XY 1 2))
-line = LineString (U.fromList [XY 0 0, XY 1 2, XY 3 4])
-polygon = Polygon (V.singleton (U.fromList [XY 0 0, XY 1 0, XY 1 1, XY 0 0]))
-points = MultiPoint (U.fromList [Point (XY 1 2), EmptyPoint])
+point = PointGeometry (PointXY (XY 1 2))
+line = LineString (CoordinatesXY (U.fromList [XY 0 0, XY 1 2, XY 3 4]))
+polygon = Polygon (PolygonRings
+    (CoordinatesXY (U.fromList [XY 0 0, XY 1 0, XY 1 1, XY 0 0])) V.empty)
+points = MultiPoint (U.fromList [PointXY (XY 1 2), EmptyPoint DimXYZ])
 
 encoded = encodeWKB line
--- Decode with known dimensions, or use decodeAnyWKB for runtime dimensions.
-decoded = encoded >>= (decodeWKB :: ByteString -> Either String (Geometry XY))
-parsed = decodeWKT "POINT Z (1 2 3)" :: Either String (Geometry XYZ)
+-- Each decoded point and sequence retains its coordinate layout.
+decoded = encoded >>= (decodeWKB :: ByteString -> Either String Geometry)
+parsed = decodeWKT "POINT Z (1 2 3)" :: Either String Geometry
 -- Right "POLYGON ((0.0e0 0.0e0, 1.0e0 0.0e0, 1.0e0 1.0e0, 0.0e0 0.0e0))"
 text = encodeWKT polygon
 polygonArea = SF.area polygon
@@ -49,19 +50,20 @@ use `Text` from `text`.
 
 `Geometry` has a constructor for each of the seven families: points,
 linestrings, polygons, their three multi-geometry forms, and geometry
-collections. A point is `Point coordinate` or `EmptyPoint`, and a multipoint
-can contain empty members.
+collections. Each `Point` has an XY, XYZ, XYM, or XYZM layout. An empty point
+stores its layout explicitly, such as `EmptyPoint DimXYZ`.
 
-The coordinate type is `XY`, `XYZ`, `XYM`, or `XYZM`. All parts of a
-`Geometry c`, including nested collections, use the same type `c`, so an empty
-geometry still has known dimensions. Use `AnyGeometry` when the dimensions are
-known only at runtime.
+`Coordinates` wraps an unboxed vector of `XY`, `XYZ`, `XYM`, or `XYZM` values.
+Every sequence has its own layout, including empty sequences. Collection
+members can have different layouts. There is one runtime `Geometry` type;
+callers do not select a coordinate type before decoding.
 
-A polygon is a vector of rings: the exterior ring first, then the holes. An
-empty vector is an empty polygon. Coordinate sequences and multipoints are
-unboxed vectors, with one numeric buffer per ordinate and a separate presence
-buffer for empty multipoint members. Rings, polygons, and collection members
-are boxed vectors.
+`PolygonRings` stores an exterior ring and a boxed vector of holes. An empty
+polygon has an empty exterior ring, which retains its layout. Different rings
+can use different layouts. Coordinate sequences and multipoints use unboxed
+vectors. Multipoints have four ordinate buffers and a tag buffer that records
+each point's layout and presence. Lines, polygons, and collection members use
+boxed vectors.
 
 `Data.Geometry.Internal` exports the `Coordinate` class methods and the shared
 validation. It does not follow the PVP and can change in any release.
@@ -88,21 +90,22 @@ equal. As for `Double`, `0` and `-0` compare equal.
 | Polygon rings | `exteriorRing`, `numInteriorRings`, `interiorRingN` |
 | Planar operations | `envelope`, `area`, `geometryLength`, `curveLength`, `perimeter`, `centroid`, `convexHull` |
 
-Indices start at one. Accessors that return `Maybe` give `Nothing` for an
+Indices start at zero, as in GEOS. Accessors that return `Maybe` give `Nothing` for an
 index out of range or for a geometry family they do not apply to. `isClosed`
 gives `False` for families other than lines. Member counts include empty
 members, and a geometry that is not a collection counts as one member.
 `isEmpty` checks every child. An empty point, line, or polygon keeps its
 family's dimension, and a geometry collection with no members has dimension -1.
-Coordinate layout queries follow GEOS: atomic empty geometries retain their
-layout, but multi-geometries with no members report XY. Collections report the
-layout of their atomic members, or XY when they have none. The Haskell
-coordinate type remains unchanged.
+Atomic empty geometries retain their layout. Collections with no members
+report XY. `is3D` and `isMeasured` combine the Z and M flags of all members.
+`coordinateDimension` reports the largest coordinate count among the members.
+Thus, an XYZ member and an XYM member together give coordinate dimension 3,
+while both `is3D` and `isMeasured` are true.
 
 Measurements and closure tests use only X and Y. Lengths are in coordinate
-units and areas in square units. `envelope`, `centroid`, and `convexHull`
-return `XY` geometries. The operations are planar, so for longitude and
-latitude input, lengths are in degrees.
+units and areas in square units. Envelopes and nonempty centroids use XY.
+Hull vertices can retain Z, and discard M. The operations are planar, so for
+longitude and latitude input, lengths are in degrees.
 
 `area` treats the first ring of each polygon as the exterior and the other
 rings as holes. Ring orientation does not matter. `geometryLength` matches
@@ -127,16 +130,21 @@ when all intermediate values are finite.
 segments by length. If all segments have zero length, it averages the points,
 and counts each line or ring as one point at its first coordinate, as GEOS
 does. Lower-dimensional parts do not affect a higher-dimensional centroid.
-Empty input gives `EmptyPoint`. An empty envelope is an empty point. An envelope
+An empty centroid retains GEOS's coordinate-count rule: 2 gives XY, 3 gives
+XYZ, and 4 gives XYZM, including when the source has M. An empty envelope is
+an XY empty point. An envelope
 with one XY location is a point. Other envelopes are polygons, including
 degenerate polygons for horizontal or vertical bounds. Hull polygons are
-counterclockwise.
+clockwise and start at the lowest Y, then X. The first hull vertex determines
+the output layout: a non-NaN Z gives XYZ; otherwise the hull uses XY. An empty
+hull is an XY geometry collection.
 
-The comparison tests use Shapely 2.1.2 with GEOS 3.13.1. Measurements can differ
-in their last floating-point digits. WKT formatting also differs. The current
-API uses one-based selectors and returns XY hulls; GEOS uses zero-based
-selectors and retains Z in nonempty hulls. Hull vertex order also differs.
-Mixed nonempty coordinate layouts cannot be represented by `Geometry c`.
+The comparison tests use Shapely 2.1.2 with GEOS 3.13.1. They compare mixed
+layouts, empty members, selectors, and hull vertex order directly. Measurements
+can differ in their last floating-point digits. WKT numeric formatting also
+differs. When duplicate XY hull candidates have different Z values, this
+library keeps the first input candidate. GEOS can select a different candidate
+when it reduces a large point set.
 
 The package does not claim full Simple Features conformance. For validity
 checks, spatial predicates such as `intersects` and `contains`, distance,
@@ -146,16 +154,13 @@ GEOS library.
 
 ## Codecs
 
-- `decodeWKB` decodes WKB into the requested coordinate type, including empty
-  values.
-- `decodeAnyWKB` keeps the coordinate type from the WKB header.
+- `decodeWKB` decodes WKB and retains each point and sequence's layout.
 - `encodeWKB` writes little-endian ISO WKB.
 - `encodeWKT` writes WKT with a Z, M, or ZM suffix where needed. Each
   ordinate uses scientific notation with the shortest digits that decode to the
   same `Double`, such as `1.0e0` or `1.2345e-2`. Scientific notation is faster
   to render than fixed notation such as `1.0`.
-- `decodeWKT` decodes WKT into the requested coordinate type.
-- `decodeAnyWKT` keeps the explicit or inferred coordinate type.
+- `decodeWKT` decodes WKT with explicit or inferred coordinate layouts.
 
 `Data.Geometry.WKB` has the WKB functions and `Data.Geometry.WKT` has the WKT
 functions. The WKT decoder accepts lowercase keywords, attached dimension
@@ -165,18 +170,24 @@ exponent. Ordinates must be separated by whitespace, which is space, tab, CR,
 or LF. Trailing input is an error.
 
 Untagged WKT infers XY, XYZ, or XYZM from two, three, or four ordinates.
-XYM needs an M tag. Nonempty collection members must use the same coordinate
-type. Explicitly tagged WKT collections require matching tags or inferred
-dimensions on their children, including empty children. GEOS 3.13 can drop tags
-from empty collection members when it writes WKT; its reader and this decoder
-reject those mixed dimensions. Untagged collections can promote empty children
-to the common coordinate type. The WKB decoder accepts empty children with
-different dimension tags and retains the parent's coordinate type.
+XYM needs an M tag. Untagged geometry collections infer each child's layout
+independently. In untagged multi-geometries, an empty member before the first
+coordinate has XY layout. Later empty members use the inferred layout.
+Explicitly tagged WKT collections require matching tags or inferred dimensions
+on their children, including empty children.
+
+WKB collection members retain their own dimension tags. Collection metadata
+comes from the members. Writers pad missing Z and M ordinates with NaN when
+the format requires one layout, such as polygon rings in WKB and multi-geometry
+bodies in WKT. These conversions can change layouts when the output is read.
+GEOS writes mixed-layout geometry collections with an aggregate WKT tag and
+separate child tags. Its reader can reject this output. This library follows
+that behavior; use WKB to exchange mixed-layout collections.
 EWKT `SRID=...;` prefixes are not supported.
 
 All codecs return `Either String`. The WKB decoder accepts both byte orders,
 also mixed within nested geometries. It rejects trailing bytes, unknown type
-codes, and inconsistent nonempty dimensions. It checks every count against
+codes, and incorrect child families. It checks every count against
 the remaining input before it allocates a vector. EWKB flags and embedded
 SRIDs are not supported.
 
@@ -187,8 +198,10 @@ construction checks. They do not detect self-intersections or overlapping holes.
 Writers normalize polygons that contain only empty rings to an empty polygon.
 Readers retain empty holes, so ring counts can change after encoding.
 
-Finite `Double` values keep their exact bits through WKB and through WKT from
-`encodeWKT`, including negative zero and subnormals. The WKT decoder rounds
+Finite `Double` ordinates keep their exact bits through WKB. WKT numbers from
+`encodeWKT` also retain their bits when decoded, including negative zero and
+subnormals. This does not promise a structural round trip for layouts that a
+writer must convert. The WKT decoder rounds
 other numbers to the nearest `Double`. Underflow gives a signed zero and
 overflow gives an infinity. The codecs accept NaN and infinite ordinates.
 The planar operations require finite X and Y values.
