@@ -65,7 +65,7 @@ locationIndex location = case location of
 relatePattern :: String -> Geometry -> Geometry -> Bool
 relatePattern pattern first second = matches pattern (relate first second)
 
--- | Match a validated pattern against a complete intersection matrix.
+-- | Validate a pattern and match it against a complete intersection matrix.
 matches :: String -> String -> Bool
 matches pattern matrix = length pattern == 9 && all (`elem` "TF*012") pattern && and (zipWith match pattern matrix)
   where
@@ -95,8 +95,10 @@ touches first second = any (`matches` matrix) ["FT*******", "F**T*****", "F***T*
   where
     matrix = relate first second
 
-{- | Test whether interior intersections cross between the geometries.
-This includes mixed dimensions and point intersections between two curves.
+{- | Whether the geometries cross in their interiors.
+For different dimensions, the interiors must intersect and the geometry with
+the lower dimension must extend outside the other. Two lines cross when
+their interiors meet at points. Other equal-dimension pairs return 'False'.
 -}
 crosses :: Geometry -> Geometry -> Bool
 crosses first second
@@ -114,7 +116,9 @@ interiors intersect. A geometry on only the second boundary is not within it.
 within :: Geometry -> Geometry -> Bool
 within = relatePattern "T*F**F***"
 
--- | Test the inverse of 'within'.
+{- | Whether the second geometry lies in the first and their interiors intersect.
+Contact confined to the boundary does not count. Use 'covers' to include it.
+-}
 contains :: Geometry -> Geometry -> Bool
 contains = relatePattern "T*****FF*"
 
@@ -139,7 +143,7 @@ covers first second = matches "******FF*" matrix && not (matches "FF*FF****" mat
   where
     matrix = relate first second
 
--- | Test the inverse of 'covers'.
+-- | Whether the first geometry is covered by the second, including its boundary.
 coveredBy :: Geometry -> Geometry -> Bool
 coveredBy first second = covers second first
 

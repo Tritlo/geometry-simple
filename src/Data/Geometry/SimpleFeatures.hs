@@ -13,18 +13,18 @@ qualified:
 Measurements use only X and Y. Z and M stay available through the accessors.
 Envelopes and nonempty centroids use t'XY' coordinates. Convex hulls discard M.
 
-The planar operations require finite X and Y values. They use Double
-arithmetic, so results can overflow or underflow near the limits of Double.
-Polygon measurements assume valid topology, and these functions do not check
-it. Area and perimeter close open rings. Binary spatial operations require valid
-topology. Use 'isValid' when the input topology is not known. Topology uses exact
-rational segment intersections; constructed output coordinates round to Double.
-Buffer arcs use Double arithmetic and polygonal approximations.
+Planar operations require finite X and Y. Measurements use 'Double'
+arithmetic and can overflow or underflow. Polygon measurements and binary
+spatial operations assume valid topology; use 'isValid' to check it.
+Area and perimeter close open rings. Topology uses exact rational segment
+intersections and rounds constructed coordinates to 'Double'. Buffers
+approximate circular arcs with straight segments.
 
-The module targets the seven geometry families supported by GEOS. It does not
-implement the additional surface types or reference systems in all of OGC SFA.
+The module covers the Simple Features core for GEOS's seven geometry families.
+The additional surface types and reference systems in OGC SFA are outside its scope.
 -}
 module Data.Geometry.SimpleFeatures (
+    -- * Geometry properties
     geometryType,
     dimension,
     coordinateDimension,
@@ -32,10 +32,14 @@ module Data.Geometry.SimpleFeatures (
     is3D,
     isMeasured,
     isEmpty,
+
+    -- * Coordinate ordinates
     x,
     y,
     z,
     m,
+
+    -- * Members, points, and rings
     numGeometries,
     geometryN,
     numPoints,
@@ -46,6 +50,8 @@ module Data.Geometry.SimpleFeatures (
     exteriorRing,
     numInteriorRings,
     interiorRingN,
+
+    -- * Measurements and bounds
     envelope,
     area,
     geometryLength,
@@ -53,11 +59,15 @@ module Data.Geometry.SimpleFeatures (
     perimeter,
     centroid,
     convexHull,
+
+    -- * Topology
     boundary,
     isSimple,
     isRing,
     isValid,
     pointOnSurface,
+
+    -- * Spatial relations
     relate,
     relatePattern,
     equals,
@@ -70,6 +80,8 @@ module Data.Geometry.SimpleFeatures (
     overlaps,
     covers,
     coveredBy,
+
+    -- * Distance and geometry construction
     distance,
     intersection,
     union,
@@ -77,10 +89,13 @@ module Data.Geometry.SimpleFeatures (
     symmetricDifference,
     buffer,
     bufferWithSegments,
+
+    -- * Measured locations
     locateAlong,
     locateBetween,
 ) where
 
+import Control.Applicative ((<|>))
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Buffer (buffer, bufferWithSegments)
 import Data.Geometry.Topology.Measures (locateAlong, locateBetween)
@@ -109,17 +124,10 @@ Empty values keep their family's dimension. A collection has the largest
 dimension of its members, or -1 when it has no members.
 -}
 dimension :: Geometry -> Int
-dimension geometry = case geometry of
-    PointGeometry _ -> 0
-    MultiPoint _ -> 0
-    LineString _ -> 1
-    MultiLineString _ -> 1
-    Polygon _ -> 2
-    MultiPolygon _ -> 2
-    GeometryCollection children -> V.foldl' (\n child -> max n (dimension child)) (-1) children
+dimension = topologicalDimension
 
-{- | The greatest ordinate count among the stored points and coordinate
-sequences: 2, 3, or 4. XYZ and XYM members together give 3, even though both
+{- | The largest number of ordinates in any stored point or sequence: 2, 3,
+or 4. XYZ and XYM members together give 3, even though both
 'is3D' and 'isMeasured' are true. Atomic empty geometries retain their layout.
 Collections without atomic members report 2.
 -}
@@ -183,26 +191,24 @@ numGeometries geometry = case geometry of
 of range. A geometry that is not a collection is its own first member.
 -}
 geometryN :: Int -> Geometry -> Maybe Geometry
-geometryN index geometry
-    | index < 0 = Nothing
-    | otherwise = case geometry of
-        MultiPoint points -> PointGeometry <$> points U.!? index
-        MultiLineString lineStrings -> LineString <$> lineStrings V.!? index
-        MultiPolygon polygons -> Polygon <$> polygons V.!? index
-        GeometryCollection children -> children V.!? index
-        _ -> if index == 0 then Just geometry else Nothing
+geometryN index geometry = case geometry of
+    MultiPoint points -> PointGeometry <$> points U.!? index
+    MultiLineString lineStrings -> LineString <$> lineStrings V.!? index
+    MultiPolygon polygons -> Polygon <$> polygons V.!? index
+    GeometryCollection children -> children V.!? index
+    _ -> if index == 0 then Just geometry else Nothing
 
 -- | The number of coordinates in a 'LineString'. Other families give 'Nothing'.
 numPoints :: Geometry -> Maybe Int
 numPoints (LineString points) = Just (withCoordinates U.length points)
 numPoints _ = Nothing
 
-{- | The 'LineString' point at a zero-based index. NaN Z and M ordinates
-are omitted from the returned point's layout.
+{- | The 'LineString' point at a zero-based index. Return 'Nothing' for an
+index out of range or another geometry family. Omit NaN Z and M ordinates
+from the returned point's layout.
 -}
 pointN :: Int -> Geometry -> Maybe Point
-pointN index (LineString points)
-    | index >= 0 = withCoordinates (\values -> coordinatePoint <$> values U.!? index) points
+pointN index (LineString points) = withCoordinates (\values -> coordinatePoint <$> values U.!? index) points
 pointN _ _ = Nothing
 
 -- | Construct a point with the non-NaN Z and M ordinates of a coordinate.
@@ -215,11 +221,11 @@ coordinatePoint coordinate = case (z coordinate, m coordinate) of
   where
     (a, b) = xy coordinate
 
--- | The first point of a nonempty 'LineString'.
+-- | The first point of a 'LineString', or 'Nothing' for an empty line or another family.
 startPoint :: Geometry -> Maybe Point
 startPoint = pointN 0
 
--- | The last point of a nonempty 'LineString'.
+-- | The last point of a 'LineString', or 'Nothing' for an empty line or another family.
 endPoint :: Geometry -> Maybe Point
 endPoint geometry@(LineString points) = pointN (withCoordinates U.length points - 1) geometry
 endPoint _ = Nothing
@@ -236,7 +242,7 @@ isClosed geometry = case geometry of
   where
     closed points = not (U.null points) && xy (U.head points) == xy (U.last points)
 
--- | The exterior ring of a 'Polygon', including its layout when empty.
+-- | The exterior ring of a 'Polygon', including its empty layout. Other families give 'Nothing'.
 exteriorRing :: Geometry -> Maybe Coordinates
 exteriorRing (Polygon (PolygonRings shell _)) = Just shell
 exteriorRing _ = Nothing
@@ -246,7 +252,9 @@ numInteriorRings :: Geometry -> Maybe Int
 numInteriorRings (Polygon (PolygonRings _ holes)) = Just (V.length holes)
 numInteriorRings _ = Nothing
 
--- | The 'Polygon' hole at a zero-based index. Index 0 is the first hole.
+{- | The 'Polygon' hole at a zero-based index. Index 0 is the first hole.
+Return 'Nothing' for an index out of range or another geometry family.
+-}
 interiorRingN :: Int -> Geometry -> Maybe Coordinates
 interiorRingN index (Polygon (PolygonRings _ holes)) = holes V.!? index
 interiorRingN _ _ = Nothing
@@ -302,21 +310,18 @@ XYZ, or XYZM when 'coordinateDimension' is 2, 3, or 4. Polygons are weighted by
 area. If the total area is zero, segments are weighted by length. If all
 segments have zero length, the result is the mean of the points, and each
 line or ring counts as one point at its first coordinate, as in GEOS.
-Lower-dimensional parts do not affect a higher-dimensional centroid. The
-centroid can be outside the geometry, for example in a hole. Compensated sums
-retain small contributions when large moments cancel. Polygon positions and
-local moments stay separate until summation. The moments can
-overflow when a polygon spans more than about 1e100 units or a line more than
-about 1e150 units, and underflow at the reciprocal sizes. Products still round
-to Double. Strong cancellation between products can reduce accuracy even
-when all intermediate values are finite.
+Lower-dimensional parts do not affect a higher-dimensional centroid.
+The centroid can be outside the geometry, for example in a hole.
+
+Compensated sums retain small contributions when large moments cancel.
+Polygon positions and local moments stay separate until summation. Moments
+can overflow when a polygon spans more than about 1e100 units or a line more
+than about 1e150 units. They can underflow below about 1e-100 units for polygons
+or 1e-150 units for lines. Products still round to 'Double'. Strong cancellation
+between products can reduce accuracy even when all intermediate values are finite.
 -}
 centroid :: Geometry -> Point
-centroid geometry = case weightedMean 2 of
-    Just point -> point
-    Nothing -> case weightedMean 1 of
-        Just point -> point
-        Nothing -> fromMaybe (EmptyPoint emptyDimensions) (weightedMean 0)
+centroid geometry = fromMaybe (EmptyPoint emptyDimensions) (weightedMean 2 <|> weightedMean 1 <|> weightedMean 0)
   where
     emptyDimensions = case coordinateDimension geometry of
         3 -> DimXYZ

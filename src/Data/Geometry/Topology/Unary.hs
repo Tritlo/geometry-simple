@@ -1,5 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
-
 -- | Boundary, topology validation, and representative interior points.
 module Data.Geometry.Topology.Unary (
     boundary,
@@ -135,7 +133,7 @@ isValid geometry =
         LineString line -> validLine (positions line)
         MultiLineString lines' -> all (validLine . positions) (V.toList lines')
         Polygon rings -> validPolygon (polygonPositions rings)
-        MultiPolygon polygons -> all validPolygon rings && all disjointPolygons (pairs (filter (not . null . concat) rings))
+        MultiPolygon polygons -> all validPolygon rings && all disjointPolygons (pairs (filter (not . all null) rings))
           where
             rings = map polygonPositions (V.toList polygons)
         GeometryCollection children -> all isValid (V.toList children)
@@ -160,7 +158,8 @@ polygonPositions (PolygonRings shell holes) = map positions (shell : V.toList ho
 
 -- | Nonempty valid lines have at least two distinct XY positions.
 validLine :: [Position] -> Bool
-validLine points = null points || Set.size (Set.fromList points) >= 2
+validLine [] = True
+validLine (first : rest) = any (/= first) rest
 
 -- | Nonempty valid rings are closed, simple, and have three distinct vertices.
 validRing :: [Position] -> Bool
@@ -172,11 +171,10 @@ validPolygon :: [[Position]] -> Bool
 validPolygon [] = True
 validPolygon (shell : holes)
     | null shell = all null holes
-    | otherwise = all validRing rings && all noOverlap relations && all insideShell nonemptyHoles && all separateHoles (pairs nonemptyHoles) && acyclic contacts
+    | otherwise = all validRing rings && all noOverlap (pairs rings) && all insideShell nonemptyHoles && all separateHoles (pairs nonemptyHoles) && acyclic contacts
   where
     nonemptyHoles = filter (not . null) holes
     rings = shell : nonemptyHoles
-    relations = [(a, b) | (a, b) <- pairs rings]
     noOverlap (a, b) = not (sharedEdge a b)
     insideShell hole = all ((/= Exterior) . (`ringLocation` shell)) (ringSamples hole shell)
     separateHoles (a, b) = all ((/= Interior) . (`ringLocation` b)) (ringSamples a b) && all ((/= Interior) . (`ringLocation` a)) (ringSamples b a)
@@ -222,9 +220,14 @@ disjointPolygons (a, b) =
   where
     samples rings other = concatMap (\ring -> ringSamplesAgainst ring (concatMap ringSegments other)) rings
 
-{- | Choose a representative point with the GEOS selection rules. Polygon
-points use a horizontal interior scan line. Lines and points select an
-existing vertex nearest their centroid. Line results retain Z and discard M.
+{- | Choose a representative point with the GEOS selection rules.
+For polygons, use a horizontal scan line through the interior. For lines,
+choose the interior vertex nearest the centroid, or an endpoint when there
+are no interior vertices. Point collections use the point nearest their
+centroid. Line results retain Z and discard M.
+
+Empty input gives an empty point. Its layout is XY, XYZ, or XYZM for a source
+coordinate count of 2, 3, or 4, respectively.
 -}
 pointOnSurface :: Geometry -> Point
 pointOnSurface geometry = case topologicalDimension geometry of
@@ -279,17 +282,6 @@ selectionCenter geometry
             size = sqrt ((u - x) * (u - x) + (v - y) * (v - y))
          in if size == 0 then state else (a + size * ((x + u) / 2), b + size * ((y + v) / 2), len + size)
 
--- | Read the greatest declared topological dimension, including empty members.
-topologicalDimension :: Geometry -> Int
-topologicalDimension geometry = case geometry of
-    PointGeometry _ -> 0
-    MultiPoint _ -> 0
-    LineString _ -> 1
-    MultiLineString _ -> 1
-    Polygon _ -> 2
-    MultiPolygon _ -> 2
-    GeometryCollection children -> V.foldl' (\d child -> max d (topologicalDimension child)) (-1) children
-
 -- | List atomic point members in input order.
 pointMembers :: Geometry -> [Point]
 pointMembers (PointGeometry point) = [point]
@@ -315,7 +307,7 @@ polygonMembers _ = []
 polygonInterior :: PolygonRings -> Maybe (Double, Point)
 polygonInterior (PolygonRings shell holes) = case map pointXY (coordinatePoints shell) of
     [] -> Nothing
-    shellPoints@(first : _) -> Just (List.foldl' widest (0, uncurry (\x y -> PointXY (XY x y)) first) intervals)
+    shellPoints@((x, y) : _) -> Just (List.foldl' widest (0, PointXY (XY x y)) intervals)
       where
         rings = shellPoints : map (map pointXY . coordinatePoints) (V.toList holes)
         ys = map snd (concat rings)

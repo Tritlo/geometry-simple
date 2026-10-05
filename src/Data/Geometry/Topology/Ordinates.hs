@@ -16,7 +16,7 @@ import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar (Position, orientation, overlapsBounds, pointOnSegment, position, positions, segmentIntersection, subtractPosition, unique)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Ord (comparing)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -53,7 +53,7 @@ overlaySources select first second
     ((lx, ly), (ux, uy)) = expand (extent (fst target : snd target : [p | (a, b) <- segments, overlapsBounds target (extent [a, b]), p <- [a, b]]))
     inside (x, y) = lx <= x && x <= ux && ly <= y && y <= uy
     sequenceM coordinates
-        | all (inside . fst) (concat (sourcePaths (LineString coordinates))) = coordinates
+        | all inside (positions coordinates) = coordinates
         | otherwise = case coordinates of
             CoordinatesXYM values -> CoordinatesXYM (U.map (\(XYM x y _) -> XYM x y (0 / 0)) values)
             CoordinatesXYZM values -> CoordinatesXYZM (U.map (\(XYZM x y z _) -> XYZM x y z (0 / 0)) values)
@@ -214,7 +214,7 @@ interpolatedCoordinateSequence full preferred output = packPoints (geometryDimen
     original = originalPoint full
     entries = zip3 (Nothing : map Just output) output (map Just (drop 1 output) ++ [Nothing])
     build (before, point, after) =
-        maybe (fallback point) (original point . snd) (preferredSample paths point (mapMaybe id [before, after]))
+        maybe (fallback point) (original point . snd) (preferredSample paths point (catMaybes [before, after]))
 
 -- | Build a preferred original vertex, retaining its known ordinates.
 originalPoint :: Geometry -> Position -> (Maybe Double, Maybe Double) -> Point
@@ -239,7 +239,7 @@ preferredSample paths point neighbors
         | path <- paths
         , (before, sample@(position', _), after) <- zip3 (Nothing : map Just path) path (map Just (drop 1 path) ++ [Nothing])
         , position' == point
-        , let incident = [(point, fst other) | other <- mapMaybe id [before, after], fst other /= point]
+        , let incident = [(point, fst other) | other <- catMaybes [before, after], fst other /= point]
               score = length [neighbor | neighbor <- neighbors, any (pointOnSegment neighbor) incident]
         , score > 0
         ]
@@ -319,7 +319,7 @@ average values = sum values / fromIntegral (length values)
 -- | Fill absent result elevations from the full source model, preserving M.
 populateElevation :: Geometry -> Geometry -> Geometry
 populateElevation source
-    | not (any hasElevation (concat (sourcePaths source))) = id
+    | not (any (any hasElevation) (sourcePaths source)) = id
     | otherwise = visit
   where
     hasElevation (_, (Just _, _)) = True

@@ -22,6 +22,7 @@ import qualified Data.ByteString.Builder.Prim as Prim
 import qualified Data.ByteString.Lazy as BL
 import Data.Geometry.Internal
 import Data.Int (Int64)
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -31,6 +32,7 @@ import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 
 {- | Decode one complete ISO WKB geometry. Each child uses its own header.
 A point with NaN in both X and Y becomes an empty point with the same layout.
+Return 'Left' for malformed WKB, invalid construction, or trailing bytes.
 -}
 decodeWKB :: ByteString -> Either String Geometry
 decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) Nothing) bytes
@@ -38,6 +40,7 @@ decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes)) Nothi
 {- | Encode little-endian ISO WKB. Child headers retain their layouts.
 Polygon rings use their combined layout, with NaN for absent Z or M ordinates.
 Finite ordinates retain their exact bits, including negative zero.
+Return 'Left' for invalid construction or a count that exceeds 32 bits.
 -}
 encodeWKB :: Geometry -> Either String ByteString
 encodeWKB geometry = do
@@ -282,7 +285,7 @@ putLength = Builder.word32LE . fromIntegral
 putPoint :: Point -> Builder
 putPoint point = case point of
     EmptyPoint dimensions -> mconcat (replicate (dimensionCount dimensions) (Builder.word64LE 0x7ff8000000000000))
-    _ -> maybe mempty id (withPoint (putCoordinate (pointDimensions point)) point)
+    _ -> fromMaybe mempty (withPoint (putCoordinate (pointDimensions point)) point)
 
 -- | Write exact ordinate bits, padding absent Z or M ordinates with NaN.
 putCoordinate :: forall c. (Coordinate c) => Dimensions -> c -> Builder

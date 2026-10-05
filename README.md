@@ -1,8 +1,8 @@
 # geometry-simple
 
 OGC Simple Features geometry types for Haskell, with checked ISO WKB and WKT
-codecs and pure planar operations. Coordinates are stored in unboxed vectors. The
-package needs no database or native library.
+codecs and pure planar operations. The package stores coordinates in unboxed
+vectors and needs no database or native library.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -55,18 +55,18 @@ stores its layout explicitly, such as `EmptyPoint DimXYZ`.
 
 `Coordinates` wraps an unboxed vector of `XY`, `XYZ`, `XYM`, or `XYZM` values.
 Every sequence has its own layout, including empty sequences. Collection
-members can have different layouts. There is one runtime `Geometry` type;
-callers do not select a coordinate type before decoding.
+members can have different layouts. Decoding returns one `Geometry` type,
+so callers do not need to know the coordinate layout in advance.
 
 `PolygonRings` stores an exterior ring and a boxed vector of holes. An empty
 polygon has an empty exterior ring, which retains its layout. Different rings
-can use different layouts. Coordinate sequences and multipoints use unboxed
-vectors. Multipoints have four ordinate buffers and a tag buffer that records
-each point's layout and presence. Lines, polygons, and collection members use
-boxed vectors.
+can use different layouts. Multipoints use four unboxed ordinate buffers and
+a tag buffer for each point's layout and presence. Multilines, multipolygons,
+and geometry collections store their members in boxed vectors.
 
-`Data.Geometry.Internal` exports the `Coordinate` class methods and the shared
-validation. It does not follow the PVP and can change in any release.
+`Data.Geometry.Internal` exports the `Coordinate` class methods and shared
+validation. It can change in any release without following the package
+versioning policy (PVP).
 
 Work with these values through the `vector` API. A slice shares memory with
 its source. To release the larger buffer, copy the slice with `U.force`.
@@ -94,22 +94,23 @@ equal. As for `Double`, `0` and `-0` compare equal.
 | Distance and construction | `distance`, `intersection`, `union`, `difference`, `symmetricDifference`, `buffer`, `bufferWithSegments` |
 | Measured locations | `locateAlong`, `locateBetween` |
 
-Indices start at zero, as in GEOS. Accessors that return `Maybe` give `Nothing` for an
-index out of range or for a geometry family they do not apply to. `isClosed`
+Indices start at zero, as in GEOS. Accessors that return `Maybe` give `Nothing`
+for an index out of range or a geometry family they do not apply to. `isClosed`
 gives `False` for families other than lines. Member counts include empty
-members, and a geometry that is not a collection counts as one member.
-`isEmpty` checks every child. An empty point, line, or polygon keeps its
-family's dimension, and a geometry collection with no members has dimension -1.
-Atomic empty geometries retain their layout. Collections with no members
-report XY. `is3D` and `isMeasured` combine the Z and M flags of all members.
-`coordinateDimension` reports the largest coordinate count among the members.
-Thus, an XYZ member and an XYM member together give coordinate dimension 3,
-while both `is3D` and `isMeasured` are true.
+members. A geometry that is not a collection counts as one member.
+
+`isEmpty` checks every child. Empty points, lines, and polygons keep their
+family's dimension and coordinate layout. A geometry collection with no
+members has dimension -1; collections with no members report XY layout.
+`is3D` and `isMeasured` combine the Z and M flags of all members.
+`coordinateDimension` reports the largest ordinate count among them. An XYZ
+member and an XYM member together give coordinate dimension 3, while both
+`is3D` and `isMeasured` are true.
 
 Measurements and closure tests use only X and Y. Lengths are in coordinate
 units and areas in square units. Envelopes and nonempty centroids use XY.
-Hull vertices can retain Z, and discard M. The operations are planar, so for
-longitude and latitude input, lengths are in degrees.
+Hull vertices can retain Z and always discard M. For longitude and latitude
+input, planar lengths are in degrees.
 
 `area` treats the first ring of each polygon as the exterior and the other
 rings as holes. Ring orientation does not matter. `geometryLength` matches
@@ -118,30 +119,32 @@ only lines, and `perimeter` measures only polygon rings, including holes.
 The planar operations assume finite X and Y values and valid polygon topology.
 Area and perimeter close open rings supplied through the Haskell constructors.
 
-The measurements use `Double` arithmetic. Polygon cross products use coordinates
-relative to a ring vertex. Centroids use compensated sums and keep polygon positions
-separate from local moments. This retains small contributions when large moments
-cancel. `centroid` multiplies coordinate
-differences, so it can overflow when a polygon spans more than about 1e100 units
-or a line more than about 1e150 units. It can underflow when a polygon spans
-less than about 1e-100 units or a line less than about 1e-150 units. The orientation tests in `convexHull` are exact: they use
-`Double` when its error bound decides the sign, and `Rational` otherwise.
-Compensated sums do not recover rounding errors in products. Strong
-cancellation between weighted products can reduce centroid accuracy even
-when all intermediate values are finite.
+Measurements use `Double` arithmetic. Polygon cross products use coordinates
+relative to a ring vertex. Centroids use compensated sums and keep polygon
+positions separate from local moments to retain small contributions when
+large moments cancel. Multiplying coordinate differences can still overflow:
+for `centroid`, this can occur when a polygon spans more than about 1e100 units
+or a line more than about 1e150 units. Underflow can occur below about 1e-100
+units for polygons or 1e-150 units for lines. Compensated sums cannot recover
+rounding errors in products. Strong cancellation between weighted products
+can reduce accuracy even when all intermediate values are finite.
+
+The orientation tests in `convexHull` are exact. They use `Double` when its
+error bound decides the sign, and `Rational` otherwise.
 
 `centroid` weights polygons by area. If the total area is zero, it weights
 segments by length. If all segments have zero length, it averages the points,
 and counts each line or ring as one point at its first coordinate, as GEOS
 does. Lower-dimensional parts do not affect a higher-dimensional centroid.
 An empty centroid retains GEOS's coordinate-count rule: 2 gives XY, 3 gives
-XYZ, and 4 gives XYZM, including when the source has M. An empty envelope is
-an XY empty point. An envelope
-with one XY location is a point. Other envelopes are polygons, including
-degenerate polygons for horizontal or vertical bounds. Hull polygons are
-clockwise and start at the lowest Y, then X. The first hull vertex determines
-the output layout: a non-NaN Z gives XYZ; otherwise the hull uses XY. An empty
-hull is an XY geometry collection.
+XYZ, and 4 gives XYZM, including when the source has M.
+
+An empty envelope is an XY empty point. An envelope with one XY location is
+a point. Other envelopes are polygons, including degenerate polygons for
+horizontal or vertical bounds. Hull polygons are clockwise and start at the
+lowest Y, then X. The first hull vertex determines the output layout: a
+non-NaN Z gives XYZ; otherwise the hull uses XY. An empty hull is an XY
+geometry collection.
 
 The comparison tests use Shapely 2.1.2 with GEOS 3.13.1. They compare mixed
 layouts, empty members, selectors, and hull vertex order directly. Measurements
@@ -159,9 +162,9 @@ Simple Features rules. Line boundaries use the mod-2 endpoint rule.
 characters `T`, `F`, `*`, `0`, `1`, and `2`; an invalid pattern returns `False`.
 `distance` returns NaN when either geometry is empty.
 
-The topology implementation uses rational segment intersections and planar
-face classification. Output coordinates round to `Double`. The implementation
-checks segment pairs directly. It is intended for modest geometries; use
+Topology uses rational segment intersections to classify points, edges, and
+faces. Output coordinates round to `Double`. The implementation checks
+segment pairs directly and is intended for modest geometries. Use
 [`geos`](https://hackage.haskell.org/package/geos) for large indexed workloads.
 
 `buffer` uses round joins and caps, with eight segments per quadrant.
@@ -174,15 +177,16 @@ interpolation along segments. They return `Nothing` for empty input and an
 empty point for no match. Polygon queries select boundary positions.
 The OGC specification leaves the surface interpretation to the implementation.
 
-The target is the Simple Features core on GEOS's seven geometry families. The package
-does not claim full OGC SFA conformance. It has no Triangle, TIN,
-PolyhedralSurface, MultiSurface, or spatial-reference metadata model.
-Native comparisons retain known GEOS data-loss and relation diagnostics
+The package targets the Simple Features core on GEOS's seven geometry
+families. Its scope excludes Triangle, TIN, PolyhedralSurface, MultiSurface,
+and spatial-reference metadata, so it does not claim full OGC SFA conformance.
+
+The comparison report lists known GEOS data-loss and relation differences
 separately. Overlay noding uses a deterministic order. When coincident input
 vertices have conflicting Z/M values, GEOS's unstable node sort can select a
-different source value. The tests retain a fixed example of this difference
-and require complete input Z/M tuples at those vertices. Exact native parity
-is not claimed.
+different source value. A fixed test records this difference and requires
+complete input Z/M tuples at those vertices. The library does not promise
+exact GEOS parity.
 
 The test suite includes the 46 applicable geometry cases from the standard's
 SQL conformance examples. Each case runs through WKT and WKB. See
@@ -237,9 +241,9 @@ Readers retain empty holes, so ring counts can change after encoding.
 Finite `Double` ordinates keep their exact bits through WKB. WKT numbers from
 `encodeWKT` also retain their bits when decoded, including negative zero and
 subnormals. This does not promise a structural round trip for layouts that a
-writer must convert. The WKT decoder rounds
-other numbers to the nearest `Double`. Underflow gives a signed zero and
-overflow gives an infinity. The codecs accept NaN and infinite ordinates.
+writer must convert. The WKT decoder rounds other numbers to the nearest
+`Double`. Underflow gives a signed zero and overflow gives an infinity.
+The codecs accept NaN and infinite ordinates.
 The planar operations require finite X and Y values.
 In WKB, NaN in both X and Y denotes an empty point, regardless of Z and M.
 Non-finite coordinates do not have the finite-coordinate round-trip guarantee.

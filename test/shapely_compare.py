@@ -4,21 +4,21 @@
 # dependencies = ["shapely==2.1.2", "types-shapely==2.1.0.20260728"]
 # ///
 # pyright: strict
-"""Compare every Simple Features export and both codecs with Shapely.
+"""Compare the GEOS-compatible operations and both codecs with Shapely.
 
 Run with uv and --probe pointing to geometry-simple-shapely-probe. The optional
---report writes method counts and complete repros as JSON. All random inputs
-use the supplied seed. Unexpected mismatches give a nonzero exit status.
+--report writes method counts and complete reproductions as JSON. All random
+inputs use the supplied seed. Unexpected mismatches give a nonzero exit status.
 
-Raw structure comparisons retain every member and ring layout, including
-empty values. Selectors use zero-based indices. Hull coordinates and order
-are compared directly. WKT checks use native writer structure and original
-coordinate bits, with NaN padding where GEOS requires it. WKB checks include
-every type tag. Codec-only requests omit measurements on nonfinite inputs.
+Raw structure comparisons check every member and ring layout, including
+empty values. Selectors use zero-based indices. The tests compare hull
+coordinates and order directly. WKT checks use native writer structure and
+original coordinate bits, with NaN padding where GEOS requires it. WKB checks
+include every type tag. Codec-only requests omit measurements on nonfinite inputs.
 
 Topology requests compare exact predicates, DE-9IM matrices, and output
 metadata. Constructed XY coordinates allow at most 1e-9 absolute error after
-ordering normalization; no snapping or geometry repair is used. Z/M checks
+ordering normalization. The tests do not snap or repair geometry. Z/M checks
 use native output vertices or linear interpolation along native output edges.
 Additional nearly-collinear vertices require discrete Hausdorff distance below
 1e-9 with each segment split into quarters, plus bounded length and area
@@ -27,8 +27,8 @@ Distance uses relative tolerance only, so a small positive distance cannot
 match zero through an absolute error allowance.
 GeometryCollection simplicity calls GEOSisSimple_r because Shapely overrides
 that native result. --phase selects explicit groups during development; the
-default and CI run every group. Operation exceptions are separate from decode
-failures and do not prevent the other methods from being checked.
+default and CI run every group. The report lists operation exceptions and
+decode failures separately. The tests continue to check the other methods.
 Binary operations require valid input topology. Invalid binary inputs remain
 in the report as out_of_contract outcomes, outside the pass/failure counts.
 
@@ -46,9 +46,10 @@ Native loss of M at a polygon's repeated closing vertex is reported separately.
 Only that ordinate may differ; all other geometry checks must still pass.
 Specified uniform-M case/method pairs also retain source M=4 when native output
 replaces it with NaN. These require exact operands and exact actual M values.
-One fixed coincident-shell case permits source Z/M tuples at shared vertices.
-GEOS chooses among these tuples with an unstable sort. Every other ordinate,
-the output metadata, and XY geometry remain checked. Raw results are retained.
+One fixed case with coincident shells permits source Z/M tuples at shared
+vertices. GEOS chooses among these tuples with an unstable sort. The test
+checks every other ordinate, the output metadata, and XY geometry. The report
+retains the raw results.
 """
 
 from __future__ import annotations

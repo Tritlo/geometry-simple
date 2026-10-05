@@ -17,12 +17,15 @@ import qualified Data.Vector.Unboxed as U
 {- | Buffer by a distance in coordinate units, with eight segments per quadrant.
 Positive distances expand geometry. Negative distances erode polygons and give
 empty polygons for points and lines. Nonzero buffers discard Z and M.
+A zero distance returns polygon components and repairs their topology.
+The distance and XY coordinates must be finite.
 -}
 buffer :: Double -> Geometry -> Geometry
 buffer = bufferWithSegments 8
 
 {- | Construct a round buffer with the requested number of segments per quadrant.
 Values below one use one segment. The distance and XY coordinates must be finite.
+The distance and coordinate-layout rules are the same as for 'buffer'.
 -}
 bufferWithSegments :: Int -> Double -> Geometry -> Geometry
 bufferWithSegments quadrants radius geometry

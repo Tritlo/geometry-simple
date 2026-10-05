@@ -1,5 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
-
 -- | Exact planar primitives shared by the topology operations.
 module Data.Geometry.Topology.Planar where
 
@@ -184,7 +182,7 @@ compareDirection a@(x, y) b@(u, v) = case compare (half x y) (half u v) of
     EQ -> compare 0 (cross a b)
     result -> result
   where
-    half p q = if q > 0 || (q == 0 && p >= 0) then False else True
+    half p q = not (q > 0 || (q == 0 && p >= 0))
 
 -- | Sample each angular sector around a boundary point.
 sectorPoints :: [Segment] -> Position -> [Position]
@@ -215,5 +213,5 @@ locate shape point
     | otherwise = Exterior
   where
     lines' = planarLines shape
-    onLine = any (point `elem`) lines' || any (pointOnSegment point) (concatMap lineSegments lines')
+    onLine = any (point `elem`) lines' || any (any (pointOnSegment point) . lineSegments) lines'
     endpoints = length [end | line@(first : _) <- lines', end <- [first, last line], end == point]

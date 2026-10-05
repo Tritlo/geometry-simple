@@ -1,5 +1,6 @@
-{- | Simple Features geometry values. Each point and coordinate sequence has
-its own layout. Collections and polygon rings can contain different layouts.
+{- | Simple Features geometry values with XY, XYZ, XYM, or XYZM coordinates.
+Each point and coordinate sequence has its own layout. Collection members
+and polygon rings can use different layouts.
 
 @
 import qualified Data.Vector as V
@@ -15,9 +16,10 @@ A geometry does not store a coordinate reference system. Keep the CRS or SRID
 next to the value.
 
 "Data.Geometry.WKB" and "Data.Geometry.WKT" convert geometries to and from
-ISO WKB and WKT. "Data.Geometry.SimpleFeatures" has accessors and planar
-measurements. "Data.Geometry.Internal" has the 'Coordinate' methods, without a
-stability guarantee.
+ISO WKB and WKT. "Data.Geometry.SimpleFeatures" provides accessors,
+measurements, spatial predicates, and planar geometry operations.
+"Data.Geometry.Internal" exposes the 'Coordinate' methods. That module can
+change between releases without following the package versioning policy.
 -}
 module Data.Geometry (
     XY (..),

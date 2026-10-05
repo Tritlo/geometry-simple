@@ -38,8 +38,8 @@ corrections to inconsistent source examples. These tests use the standard's
 expected results independently of Shapely.
 
 The comparison tests check GEOS-compatible operations and both codec formats
-against Shapely. Python and GEOS are test dependencies only. Measured-location
-queries use the OGC examples because Shapely does not expose those operations.
+against Shapely. Python and GEOS are test dependencies only. Queries for
+measured locations use the OGC examples because Shapely does not expose them.
 Use `nix-shell -A env` for the pinned Haskell environment, then run:
 
 ```sh
@@ -49,7 +49,7 @@ uv run --script test/shapely_compare.py --probe "$(cabal list-bin -fshapely-test
 
 The script pins its Python dependencies. It uses fixed edge cases and generated
 geometries with a repeatable seed. It reports each method's comparison count
-and exits with a failure status for unexpected differences. It checks selectors,
+and fails on unexpected differences. It checks selectors,
 hull layouts and vertex order, envelopes, empty metadata, and total geometry
 length directly. Curve lengths and polygon perimeters have separate checks.
 Raw geometry results include every point and ring layout. This prevents writer
@@ -58,13 +58,16 @@ tokens and exact source ordinates separately from numeric formatting. Codec
 fixtures check accepted and rejected inputs without running planar operations
 on non-finite coordinates. Numeric measurements use a tolerance; finite
 coordinate round trips retain exact bits.
-One named hull diagnostic reports GEOS's choice of Z among duplicate XY
-positions separately. It still checks XY coordinates and vertex order. Other
-hull comparisons retain strict layout and ordinate checks.
-One fixed overlay case permits conflicting input Z/M tuples at coincident
-vertices. This records a native unstable-sort choice. It does not permit
-invented values, different metadata, or different XY geometry. The report
-retains both results. `test/test_shapely_compare.py` checks these restrictions.
+
+One named hull case records GEOS's choice of Z among duplicate XY positions
+separately. It still checks XY coordinates and vertex order. Other hull
+comparisons require matching layouts and ordinates.
+
+One fixed overlay case accepts a choice between conflicting input Z/M tuples
+at coincident vertices. GEOS uses an unstable sort to choose these tuples.
+The test still requires matching metadata and XY geometry, and rejects
+invented ordinate values. The report retains both results.
+`test/test_shapely_compare.py` checks these restrictions.
 Use `--cases` and `--seed` to change the generated inputs.
 
 Paired cases cover every ordered pair of geometry families. They check
@@ -73,12 +76,11 @@ separate `--buffer-cases` count because their segment arrangements are larger.
 `--phase` selects `existing`, `unary`, `relations`, `overlay`, or `buffer`
 during development. The default and CI run every phase.
 
-Constructed results retain exact family and layout checks. XY comparisons
-allow an absolute error of `1e-9`; scalar measurements retain their separate
-tolerance. The report keeps known native discrepancies and invalid-input
-outcomes separate from successful comparisons. Binary operations require
-valid topology. Invalid binary inputs remain diagnostic cases and do not
-count as passed comparisons. Unexpected differences fail the command.
+Constructed results must match the expected family and layout. XY comparisons
+allow an absolute error of `1e-9`; scalar measurements use a separate
+tolerance. The report lists known native differences separately. Binary
+operations require valid topology. Cases with invalid binary inputs remain
+in the report but do not count as passed comparisons.
 
 Type-check the Python script in strict mode with:
 

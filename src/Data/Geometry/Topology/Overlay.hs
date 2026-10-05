@@ -1,5 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
-
 -- | Planar set operations over exact segment arrangements.
 module Data.Geometry.Topology.Overlay where
 
@@ -29,17 +27,6 @@ difference a b = overlay (\x y -> x && not y) (topologicalDimension a) a b
 -- | The closure of the points in exactly one geometry.
 symmetricDifference :: Geometry -> Geometry -> Geometry
 symmetricDifference a b = overlay (/=) (max (topologicalDimension a) (topologicalDimension b)) a b
-
--- | The declared topological dimension, including empty components.
-topologicalDimension :: Geometry -> Int
-topologicalDimension geometry = case geometry of
-    PointGeometry _ -> 0
-    MultiPoint _ -> 0
-    LineString _ -> 1
-    MultiLineString _ -> 1
-    Polygon _ -> 2
-    MultiPolygon _ -> 2
-    GeometryCollection children -> V.foldl' (\n child -> max n (topologicalDimension child)) (-1) children
 
 -- | Evaluate a Boolean set operation on faces, edges, and vertices.
 overlay :: (Bool -> Bool -> Bool) -> Int -> Geometry -> Geometry -> Geometry

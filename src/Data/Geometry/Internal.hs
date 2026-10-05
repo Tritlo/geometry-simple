@@ -8,8 +8,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_HADDOCK not-home #-}
 
-{- | The geometry types, the 'Coordinate' methods, and the validation that the
-codecs share.
+{- | Geometry types, coordinate conversion, and shared codec validation.
 
 This module is internal. It does not follow the PVP, and any release can
 change it. Import "Data.Geometry" and the codec modules for a stable API.
@@ -25,33 +24,53 @@ import qualified Data.Vector.Generic.Mutable as M
 import qualified Data.Vector.Unboxed as U
 import Data.Word (Word8)
 
--- | A coordinate with X and Y.
-data XY = XY !Double !Double deriving (Eq, Show, Read)
+-- | A coordinate in the XY plane.
+data XY
+    = -- | @XY x y@.
+      XY !Double !Double
+    deriving (Eq, Show, Read)
 
 -- | A coordinate with X, Y, and elevation Z.
-data XYZ = XYZ !Double !Double !Double deriving (Eq, Show, Read)
+data XYZ
+    = -- | @XYZ x y z@.
+      XYZ !Double !Double !Double
+    deriving (Eq, Show, Read)
 
 -- | A coordinate with X, Y, and a measure M.
-data XYM = XYM !Double !Double !Double deriving (Eq, Show, Read)
+data XYM
+    = -- | @XYM x y m@.
+      XYM !Double !Double !Double
+    deriving (Eq, Show, Read)
 
 -- | A coordinate with X, Y, elevation Z, and a measure M.
-data XYZM = XYZM !Double !Double !Double !Double deriving (Eq, Show, Read)
+data XYZM
+    = -- | @XYZM x y z m@.
+      XYZM !Double !Double !Double !Double
+    deriving (Eq, Show, Read)
 
--- | The coordinate dimensions stored by a geometry.
-data Dimensions = DimXY | DimXYZ | DimXYM | DimXYZM
+-- | The ordinates stored by a point or coordinate sequence.
+data Dimensions
+    = -- | X and Y.
+      DimXY
+    | -- | X, Y, and Z.
+      DimXYZ
+    | -- | X, Y, and M.
+      DimXYM
+    | -- | X, Y, Z, and M.
+      DimXYZM
     deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
 {- | The coordinate types t'XY', t'XYZ', t'XYM', and t'XYZM'. Other instances
 are not supported.
 -}
 class (Eq c, Show c, Read c, NFData c, U.Unbox c) => Coordinate c where
-    -- | The dimensions of the coordinate type.
+    -- | The ordinates available in this coordinate type.
     coordinateDimensions :: proxy c -> Dimensions
 
     -- | The X, Y, Z, and M ordinates. An ordinate that the type does not have is zero.
     coordinateComponents :: c -> (Double, Double, Double, Double)
 
-    -- | Make a coordinate from X, Y, Z, and M. The type ignores ordinates that it does not have.
+    -- | Construct a coordinate from X, Y, Z, and M. Ignore ordinates absent from the type.
     coordinateFromComponents :: (Double, Double, Double, Double) -> c
 
 instance Coordinate XY where
@@ -76,23 +95,38 @@ instance Coordinate XYZM where
 
 -- | A point with its own coordinate layout. Empty points retain their layout.
 data Point
-    = EmptyPoint !Dimensions
-    | PointXY !XY
-    | PointXYZ !XYZ
-    | PointXYM !XYM
-    | PointXYZM !XYZM
+    = -- | No coordinate, with an explicit layout for serialization.
+      EmptyPoint !Dimensions
+    | -- | A point in the XY plane.
+      PointXY !XY
+    | -- | A point with elevation Z.
+      PointXYZ !XYZ
+    | -- | A point with measure M.
+      PointXYM !XYM
+    | -- | A point with elevation Z and measure M.
+      PointXYZM !XYZM
     deriving (Eq, Show, Read)
 
 -- | An unboxed coordinate sequence. Empty sequences retain their layout.
 data Coordinates
-    = CoordinatesXY !(U.Vector XY)
-    | CoordinatesXYZ !(U.Vector XYZ)
-    | CoordinatesXYM !(U.Vector XYM)
-    | CoordinatesXYZM !(U.Vector XYZM)
+    = -- | An XY sequence, including an empty XY sequence.
+      CoordinatesXY !(U.Vector XY)
+    | -- | An XYZ sequence, including an empty XYZ sequence.
+      CoordinatesXYZ !(U.Vector XYZ)
+    | -- | An XYM sequence, including an empty XYM sequence.
+      CoordinatesXYM !(U.Vector XYM)
+    | -- | An XYZM sequence, including an empty XYZM sequence.
+      CoordinatesXYZM !(U.Vector XYZM)
     deriving (Eq, Show, Read)
 
 -- | An exterior ring and its holes. Each ring has its own coordinate layout.
-data PolygonRings = PolygonRings !Coordinates !(V.Vector Coordinates)
+data PolygonRings
+    = -- | @PolygonRings shell holes@. Ring orientation does not affect area.
+      PolygonRings
+        -- | Exterior ring. An empty polygon has an empty exterior.
+        !Coordinates
+        -- | Interior rings, in stored order.
+        !(V.Vector Coordinates)
     deriving (Eq, Show, Read)
 
 {- | The seven Simple Features geometry families. Each point, line, and ring
@@ -100,13 +134,20 @@ retains its coordinate layout. Collection members can have different layouts.
 The constructors do not check minimum lengths, ring closure, or topology.
 -}
 data Geometry
-    = PointGeometry !Point
-    | LineString !Coordinates
-    | Polygon !PolygonRings
-    | MultiPoint !(U.Vector Point)
-    | MultiLineString !(V.Vector Coordinates)
-    | MultiPolygon !(V.Vector PolygonRings)
-    | GeometryCollection !(V.Vector Geometry)
+    = -- | One point, which may be empty.
+      PointGeometry !Point
+    | -- | A sequence joined by straight segments.
+      LineString !Coordinates
+    | -- | An exterior ring and any holes.
+      Polygon !PolygonRings
+    | -- | Points with independent layouts and empty values.
+      MultiPoint !(U.Vector Point)
+    | -- | Line strings with independent coordinate layouts.
+      MultiLineString !(V.Vector Coordinates)
+    | -- | Polygons with independent ring layouts.
+      MultiPolygon !(V.Vector PolygonRings)
+    | -- | Geometries of any family, including nested collections.
+      GeometryCollection !(V.Vector Geometry)
     deriving (Eq, Show, Read)
 
 -- Coordinates have strict fields, so weak head normal form is normal form.
@@ -172,7 +213,7 @@ pointDimensions (PointXYZ _) = DimXYZ
 pointDimensions (PointXYM _) = DimXYM
 pointDimensions (PointXYZM _) = DimXYZM
 
--- | Construct a nonempty point. Missing ordinates are ignored by its layout.
+-- | Construct a nonempty point. Ignore tuple fields absent from the chosen layout.
 {-# INLINE pointFromComponents #-}
 pointFromComponents :: Dimensions -> (Double, Double, Double, Double) -> Point
 pointFromComponents dimensions values = case dimensions of
@@ -206,6 +247,20 @@ geometryDimensions geometry = case geometry of
     MultiPolygon polygons -> V.foldl' (\acc rings -> unionDimensions acc (polygonDimensions rings)) DimXY polygons
     GeometryCollection children -> V.foldl' (\acc child -> unionDimensions acc (geometryDimensions child)) DimXY children
 
+{- | The topological dimension: 0 for points, 1 for lines, and 2 for polygons.
+Empty values keep their family's dimension. Collections use the greatest
+member dimension, or -1 when they have no members.
+-}
+topologicalDimension :: Geometry -> Int
+topologicalDimension geometry = case geometry of
+    PointGeometry _ -> 0
+    MultiPoint _ -> 0
+    LineString _ -> 1
+    MultiLineString _ -> 1
+    Polygon _ -> 2
+    MultiPolygon _ -> 2
+    GeometryCollection children -> V.foldl' (\n child -> max n (topologicalDimension child)) (-1) children
+
 -- | The greatest coordinate count among members. XYZ and XYM together give 3.
 geometryCoordinateDimension :: Geometry -> Int
 geometryCoordinateDimension geometry = case geometry of
@@ -233,7 +288,10 @@ finite :: Double -> Bool
 {-# INLINE finite #-}
 finite value = not (isNaN value || isInfinite value)
 
--- | Check the constructor rules that the GEOS readers require.
+{- | Check line lengths, ring closure, and polygon emptiness.
+Apply the supplied count check to each sequence and collection before checking
+its contents. WKB uses it to enforce its 32-bit count limit.
+-}
 validateGeometry :: (Int -> Either String ()) -> Geometry -> Either String ()
 validateGeometry checkLength geometry = case geometry of
     PointGeometry _ -> pure ()
@@ -268,16 +326,13 @@ validatePolygon (PolygonRings shell holes) = do
     unless (not (coordinatesEmpty shell) || V.all coordinatesEmpty holes) $
         Left "Geometry polygon has an empty shell and nonempty holes"
   where
-    validateRing = withCoordinates $ \points ->
-        if U.null points
-            then pure ()
-            else
-                if U.length points < 3
-                    then Left "Geometry ring must have zero or at least three coordinates"
-                    else
-                        let (x, y, _, _) = coordinateComponents (U.head points)
-                            (x', y', _, _) = coordinateComponents (U.last points)
-                         in unless (x == x' && y == y') (Left "Geometry ring is not closed")
+    validateRing = withCoordinates $ \points -> case U.length points of
+        0 -> pure ()
+        count | count < 3 -> Left "Geometry ring must have zero or at least three coordinates"
+        _ ->
+            let (x, y, _, _) = coordinateComponents (U.head points)
+                (x', y', _, _) = coordinateComponents (U.last points)
+             in unless (x == x' && y == y') (Left "Geometry ring is not closed")
 
 -- | Test whether a geometry has no stored coordinates.
 geometryEmpty :: Geometry -> Bool
@@ -301,8 +356,16 @@ instance U.IsoUnbox XY (Double, Double) where
     fromURepr (x, y) = XY x y
     {-# INLINE fromURepr #-}
 
-newtype instance U.MVector s XY = MVXY (U.MVector s (Double, Double))
-newtype instance U.Vector XY = VXY (U.Vector (Double, Double))
+-- | Mutable unboxed storage for XY values.
+newtype instance U.MVector s XY
+    = -- | Internal wrapper around the ordinate buffers.
+      MVXY (U.MVector s (Double, Double))
+
+-- | Immutable unboxed storage for XY values.
+newtype instance U.Vector XY
+    = -- | Internal wrapper around the ordinate buffers.
+      VXY (U.Vector (Double, Double))
+
 deriving via (U.As XY (Double, Double)) instance M.MVector U.MVector XY
 deriving via (U.As XY (Double, Double)) instance G.Vector U.Vector XY
 instance U.Unbox XY
@@ -313,8 +376,16 @@ instance U.IsoUnbox XYZ (Double, Double, Double) where
     fromURepr (x, y, z) = XYZ x y z
     {-# INLINE fromURepr #-}
 
-newtype instance U.MVector s XYZ = MVXYZ (U.MVector s (Double, Double, Double))
-newtype instance U.Vector XYZ = VXYZ (U.Vector (Double, Double, Double))
+-- | Mutable unboxed storage for XYZ values.
+newtype instance U.MVector s XYZ
+    = -- | Internal wrapper around the ordinate buffers.
+      MVXYZ (U.MVector s (Double, Double, Double))
+
+-- | Immutable unboxed storage for XYZ values.
+newtype instance U.Vector XYZ
+    = -- | Internal wrapper around the ordinate buffers.
+      VXYZ (U.Vector (Double, Double, Double))
+
 deriving via (U.As XYZ (Double, Double, Double)) instance M.MVector U.MVector XYZ
 deriving via (U.As XYZ (Double, Double, Double)) instance G.Vector U.Vector XYZ
 instance U.Unbox XYZ
@@ -325,8 +396,16 @@ instance U.IsoUnbox XYM (Double, Double, Double) where
     fromURepr (x, y, m) = XYM x y m
     {-# INLINE fromURepr #-}
 
-newtype instance U.MVector s XYM = MVXYM (U.MVector s (Double, Double, Double))
-newtype instance U.Vector XYM = VXYM (U.Vector (Double, Double, Double))
+-- | Mutable unboxed storage for XYM values.
+newtype instance U.MVector s XYM
+    = -- | Internal wrapper around the ordinate buffers.
+      MVXYM (U.MVector s (Double, Double, Double))
+
+-- | Immutable unboxed storage for XYM values.
+newtype instance U.Vector XYM
+    = -- | Internal wrapper around the ordinate buffers.
+      VXYM (U.Vector (Double, Double, Double))
+
 deriving via (U.As XYM (Double, Double, Double)) instance M.MVector U.MVector XYM
 deriving via (U.As XYM (Double, Double, Double)) instance G.Vector U.Vector XYM
 instance U.Unbox XYM
@@ -337,8 +416,16 @@ instance U.IsoUnbox XYZM (Double, Double, Double, Double) where
     fromURepr (x, y, z, m) = XYZM x y z m
     {-# INLINE fromURepr #-}
 
-newtype instance U.MVector s XYZM = MVXYZM (U.MVector s (Double, Double, Double, Double))
-newtype instance U.Vector XYZM = VXYZM (U.Vector (Double, Double, Double, Double))
+-- | Mutable unboxed storage for XYZM values.
+newtype instance U.MVector s XYZM
+    = -- | Internal wrapper around the ordinate buffers.
+      MVXYZM (U.MVector s (Double, Double, Double, Double))
+
+-- | Immutable unboxed storage for XYZM values.
+newtype instance U.Vector XYZM
+    = -- | Internal wrapper around the ordinate buffers.
+      VXYZM (U.Vector (Double, Double, Double, Double))
+
 deriving via (U.As XYZM (Double, Double, Double, Double)) instance M.MVector U.MVector XYZM
 deriving via (U.As XYZM (Double, Double, Double, Double)) instance G.Vector U.Vector XYZM
 instance U.Unbox XYZM
@@ -362,8 +449,16 @@ instance U.IsoUnbox Point (Word8, Double, Double, Double, Double) where
         _ -> PointXYZM (XYZM x y z m)
     {-# INLINE fromURepr #-}
 
-newtype instance U.MVector s Point = MVPoint (U.MVector s (Word8, Double, Double, Double, Double))
-newtype instance U.Vector Point = VPoint (U.Vector (Word8, Double, Double, Double, Double))
+-- | Mutable unboxed storage for Point values.
+newtype instance U.MVector s Point
+    = -- | Internal wrapper around the ordinate buffers.
+      MVPoint (U.MVector s (Word8, Double, Double, Double, Double))
+
+-- | Immutable unboxed storage for Point values.
+newtype instance U.Vector Point
+    = -- | Internal wrapper around the ordinate buffers.
+      VPoint (U.Vector (Word8, Double, Double, Double, Double))
+
 deriving via (U.As Point (Word8, Double, Double, Double, Double)) instance M.MVector U.MVector Point
 deriving via (U.As Point (Word8, Double, Double, Double, Double)) instance G.Vector U.Vector Point
 instance U.Unbox Point

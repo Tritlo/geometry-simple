@@ -4,9 +4,10 @@
 
 {- | WKT codecs for the seven Simple Features families.
 
-Collection members retain their layouts. Untagged coordinates infer XY, XYZ,
-or XYZM from their arity. M must be explicit. Multi-geometries infer one layout
-for subsequent coordinates; empty members before inference retain XY.
+The decoder retains each collection member's layout. For untagged input,
+it infers XY, XYZ, or XYZM from the number of ordinates. XYM requires an M tag.
+Within a multi-geometry, the first coordinate sets the layout for the remaining
+coordinates. Empty members before that coordinate retain XY.
 The codecs check line lengths and ring closure, but not polygon topology.
 NaN and infinity are accepted. EWKT and SRIDs are not supported.
 -}
@@ -35,7 +36,10 @@ import qualified Data.Vector.Unboxed as U
 -- | The remaining text and a controlled parse error.
 type Parser = StateT Text (Either String)
 
--- | Decode one complete geometry and preserve each member's coordinate layout.
+{- | Decode one complete geometry and preserve each member's coordinate layout.
+Return 'Left' for malformed WKT or trailing input. See the module documentation
+for layout inference and the construction checks.
+-}
 decodeWKT :: Text -> Either String Geometry
 decodeWKT input = do
     ((geometry, _), remaining) <- runStateT (geometryParser <* spaces) input
@@ -44,6 +48,7 @@ decodeWKT input = do
 {- | Write native dimension tags and shortest scientific decimal ordinates.
 Multi-geometries and polygon rings pad absent Z or M ordinates with NaN.
 Geometry collections retain each child's own tags and ordinates.
+Return 'Left' for invalid line lengths, ring closure, or polygon emptiness.
 -}
 encodeWKT :: Geometry -> Either String Text
 encodeWKT geometry = do
@@ -331,13 +336,10 @@ decimalNumber negative unsigned = do
         else do
             let coefficient = digitsValue (whole <> fraction)
                 adjustedPower = power - toInteger (Text.length fraction)
-                magnitude =
-                    if power > exponentLimit
-                        then 1 / 0
-                        else
-                            if adjustedPower >= 0
-                                then fromInteger (coefficient * 10 ^ adjustedPower)
-                                else fromRational (coefficient % (10 ^ negate adjustedPower))
+                magnitude
+                    | power > exponentLimit = 1 / 0
+                    | adjustedPower >= 0 = fromInteger (coefficient * 10 ^ adjustedPower)
+                    | otherwise = fromRational (coefficient % (10 ^ negate adjustedPower))
                 value = if negative then negate magnitude else magnitude
             put rest >> pure value
 
@@ -375,7 +377,7 @@ geometryWKT geometry = name <> suffix <> " " <> body
 -- | Empty points have no ordinates in WKT. Nonempty points use the writer's layout.
 pointWKT :: Dimensions -> Point -> Builder
 pointWKT _ (EmptyPoint _) = "EMPTY"
-pointWKT dimensions pointValue = "(" <> maybe mempty id (withPoint (coordinateWKT dimensions) pointValue) <> ")"
+pointWKT dimensions pointValue = "(" <> fromMaybe mempty (withPoint (coordinateWKT dimensions) pointValue) <> ")"
 
 -- | Empty polygons discard their empty holes only during writing.
 polygonWKT :: Dimensions -> PolygonRings -> Builder
