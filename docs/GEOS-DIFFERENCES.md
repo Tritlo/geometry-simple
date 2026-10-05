@@ -43,6 +43,9 @@ Sources: [OGC common architecture](https://docs.ogc.org/is/06-103r4/06-103r4.pdf
   A collection with no atomic members has dimension -1.
 - Coordinate dimensions combine stored member metadata. XYZ and XYM members
   together have coordinate dimension 3, while both Z and M flags are present.
+- Empty multi-geometries and empty collections have no stored coordinate layout.
+  Writers inherit the containing collection's output tag, or use XY at the top
+  level. An empty container does not force a collection to use mixed layouts.
 - Polygon area subtracts holes regardless of input winding. Area and perimeter
   close rings supplied directly through Haskell constructors.
 - `geometryLength` includes lines and polygon boundaries. `curveLength` counts

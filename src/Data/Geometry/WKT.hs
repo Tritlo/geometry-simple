@@ -72,7 +72,7 @@ Return 'Left' for invalid line lengths, ring closure, or polygon emptiness.
 encodeWKT :: Geometry -> Either String Text
 encodeWKT geometry = do
     validateGeometry (const (Right ())) geometry
-    pure (TextEncoding.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (snd (geometryWKT geometry)))))
+    pure (TextEncoding.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (snd (geometryWKT geometry) DimXY))))
 
 -- | Stop parsing with a geometry-specific error.
 failure :: String -> Parser a
@@ -372,33 +372,40 @@ digitsValue digits
     half = size `div` 2
     (high, low) = Text.splitAt half digits
 
-{- | Render a geometry and report its common output layout for containing collections.
-Return 'Nothing' for mixed collections. Share rendered children to avoid rescanning
-nested collections when choosing their parent tags.
--}
-geometryWKT :: Geometry -> (Maybe Dimensions, Builder)
-geometryWKT geometry = (layout, name <> suffix <> " " <> body)
+-- | Whether a WKT container has a fixed, inherited, or mixed output layout.
+data OutputLayout = Uniform Dimensions | Inherited | Mixed
+
+-- | Combine child layouts. Containers without a stored layout are neutral.
+combineLayout :: OutputLayout -> OutputLayout -> OutputLayout
+combineLayout Inherited second = second
+combineLayout first Inherited = first
+combineLayout (Uniform first) (Uniform second) | first == second = Uniform first
+combineLayout _ _ = Mixed
+
+-- | Compute layouts once and give empty containers their parent's output tag.
+geometryWKT :: Geometry -> (OutputLayout, Dimensions -> Builder)
+geometryWKT geometry =
+    ( layout
+    , \inherited ->
+        let dimensions = case layout of Uniform value -> value; Inherited -> inherited; Mixed -> DimXY
+            suffix = case layout of
+                Mixed -> ""
+                _ -> case dimensions of DimXYZ -> " Z"; DimXYM -> " M"; DimXYZM -> " ZM"; DimXY -> ""
+         in name <> suffix <> " " <> body dimensions
+    )
   where
-    dimensions = geometryDimensions geometry
-    suffix = case layout of
-        Just DimXYZ -> " Z"
-        Just DimXYM -> " M"
-        Just DimXYZM -> " ZM"
-        _ -> ""
+    sourceDimensions = geometryDimensions geometry
     (name, layout, body) = case geometry of
-        PointGeometry value -> ("POINT", Just dimensions, pointWKT dimensions value)
-        LineString points -> ("LINESTRING", Just dimensions, coordinatesWKT dimensions points)
-        Polygon rings -> ("POLYGON", Just dimensions, polygonWKT dimensions rings)
-        MultiPoint points -> ("MULTIPOINT", Just dimensions, sequenceWKT (pointWKT dimensions) points)
-        MultiLineString lineStrings -> ("MULTILINESTRING", Just dimensions, sequenceWKT (coordinatesWKT dimensions) lineStrings)
-        MultiPolygon polygons -> ("MULTIPOLYGON", Just dimensions, sequenceWKT (polygonWKT dimensions) polygons)
+        PointGeometry value -> ("POINT", Uniform sourceDimensions, \d -> pointWKT d value)
+        LineString points -> ("LINESTRING", Uniform sourceDimensions, \d -> coordinatesWKT d points)
+        Polygon rings -> ("POLYGON", Uniform sourceDimensions, \d -> polygonWKT d rings)
+        MultiPoint points -> ("MULTIPOINT", if G.null points then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (pointWKT d) points)
+        MultiLineString lineStrings -> ("MULTILINESTRING", if G.null lineStrings then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (coordinatesWKT d) lineStrings)
+        MultiPolygon polygons -> ("MULTIPOLYGON", if G.null polygons then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (polygonWKT d) polygons)
         GeometryCollection members ->
             let children = G.map geometryWKT members
-                common = case G.uncons children of
-                    Nothing -> Just DimXY
-                    Just ((first, _), rest) | G.all ((== first) . fst) rest -> first
-                    _ -> Nothing
-             in ("GEOMETRYCOLLECTION", common, sequenceWKT snd children)
+                common = G.foldl' (\acc (childLayout, _) -> combineLayout acc childLayout) Inherited children
+             in ("GEOMETRYCOLLECTION", common, \d -> sequenceWKT (\(_, render) -> render d) children)
 
 -- | Empty points have no ordinates in WKT. Nonempty points use the writer's layout.
 pointWKT :: Dimensions -> Point -> Builder

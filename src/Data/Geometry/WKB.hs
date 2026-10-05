@@ -253,28 +253,37 @@ checkedLength count = when (toInteger count > toInteger (maxBound :: Word32)) (L
 
 -- | Write a geometry with its own aggregate header and each child's own layout.
 putGeometry :: Geometry -> Builder
-putGeometry = snd . geometryBuilder
+putGeometry geometry = snd (geometryBuilder geometry) DimXY
 
--- | Return the layout with the bytes so parents do not scan descendants again.
-geometryBuilder :: Geometry -> (Dimensions, Builder)
+-- | Compute layouts once. Empty containers inherit their containing header.
+geometryBuilder :: Geometry -> (Maybe Dimensions, Dimensions -> Builder)
 geometryBuilder geometry = case geometry of
-    PointGeometry point -> tagged (pointDimensions point) (putPoint point)
-    LineString points -> tagged (dimensionsOf points) (withCoordinates (putLine (dimensionsOf points)) points)
+    PointGeometry point -> tagged (Just (pointDimensions point)) (const (putPoint point))
+    LineString points -> tagged (Just (dimensionsOf points)) (const (withCoordinates (putLine (dimensionsOf points)) points))
     Polygon rings@(PolygonRings shell holes) ->
         let dimensions = polygonDimensions rings
-         in tagged dimensions $
-                if coordinatesEmpty shell
+         in tagged (Just dimensions)
+                $ const
+                $ if coordinatesEmpty shell
                     then putLength 0
                     else putLength (1 + V.length holes) <> withCoordinates (putLine dimensions) shell <> V.foldMap (withCoordinates (putLine dimensions)) holes
-    MultiPoint points -> tagged (geometryDimensions geometry) (putLength (U.length points) <> U.foldMap (putGeometry . PointGeometry) points)
-    MultiLineString lines' -> tagged (geometryDimensions geometry) (putLength (V.length lines') <> V.foldMap (putGeometry . LineString) lines')
-    MultiPolygon polygons -> tagged (geometryDimensions geometry) (putLength (V.length polygons) <> V.foldMap (putGeometry . Polygon) polygons)
+    MultiPoint points -> tagged (if U.null points then Nothing else Just (geometryDimensions geometry)) (const (putLength (U.length points) <> U.foldMap (putGeometry . PointGeometry) points))
+    MultiLineString lines' -> tagged (if V.null lines' then Nothing else Just (geometryDimensions geometry)) (const (putLength (V.length lines') <> V.foldMap (putGeometry . LineString) lines'))
+    MultiPolygon polygons -> tagged (if V.null polygons then Nothing else Just (geometryDimensions geometry)) (const (putLength (V.length polygons) <> V.foldMap (putGeometry . Polygon) polygons))
     GeometryCollection children ->
         let parts = V.map geometryBuilder children
-            dimensions = V.foldl' (\acc (layout, _) -> unionDimensions acc layout) DimXY parts
-         in tagged dimensions (putLength (V.length children) <> V.foldMap snd parts)
+            dimensions = V.foldl' (\acc (layout, _) -> combine acc layout) Nothing parts
+         in tagged dimensions (\layout -> putLength (V.length children) <> V.foldMap (\(_, render) -> render layout) parts)
   where
-    tagged dimensions body = (dimensions, Builder.word8 1 <> Builder.word32LE (geometryFamily geometry + 1000 * fromIntegral (fromEnum dimensions)) <> body)
+    combine Nothing second = second
+    combine first Nothing = first
+    combine (Just first) (Just second) = Just (unionDimensions first second)
+    tagged declared body =
+        ( declared
+        , \inherited ->
+            let dimensions = fromMaybe inherited declared
+             in Builder.word8 1 <> Builder.word32LE (geometryFamily geometry + 1000 * fromIntegral (fromEnum dimensions)) <> body dimensions
+        )
 
 -- | The ISO WKB family tag for a geometry.
 geometryFamily :: Geometry -> Word32

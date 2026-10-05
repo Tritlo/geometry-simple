@@ -41,7 +41,10 @@ WKB uses `ByteString` from `bytestring`. WKT uses `Text` from `text`.
 ## Geometry values
 
 Each `Point` and `Coordinates` value has an XY, XYZ, XYM, or XYZM layout.
-Empty values retain their layout, such as `EmptyPoint DimXYZ`.
+Empty points and coordinate sequences retain their layout, such as
+`EmptyPoint DimXYZ`. Empty multi-geometries and empty collections have no
+layout of their own. Writers give them their containing collection's layout,
+or XY when no containing layout is available.
 `PolygonRings` stores an exterior ring and a boxed vector of interior rings.
 Each ring has its own layout. Collection members can have different layouts.
 

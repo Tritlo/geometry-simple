@@ -96,11 +96,21 @@ tests =
             shape <- rightOrFail (decodeWKT input)
             encodeWKT shape @?= Right input
             (encodeWKT shape >>= decodeWKT) @?= Right shape
-        , testCase "empty collections retain their implicit XY layout" $ do
+        , testCase "empty collections inherit a containing layout" $ do
             let input = "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION EMPTY, POINT Z EMPTY)"
             shape <- rightOrFail (decodeWKT input)
-            encodeWKT shape @?= Right input
+            encodeWKT shape @?= Right "GEOMETRYCOLLECTION Z (GEOMETRYCOLLECTION Z EMPTY, POINT Z EMPTY)"
             (encodeWKT shape >>= decodeWKT) @?= Right shape
+        , testCase "empty containers are neutral when selecting collection tags" $
+            forM_ [(" Z", "1 2 3"), (" M", "1 2 3"), (" ZM", "1 2 3 4")] $ \(tag, values) -> do
+                let container family = family <> tag <> " EMPTY"
+                    input = "GEOMETRYCOLLECTION" <> tag <> " (POINT" <> tag <> " (" <> values <> ")," <> Text.intercalate "," (map container ["MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON"]) <> ",GEOMETRYCOLLECTION" <> tag <> " (MULTIPOINT" <> tag <> " EMPTY))"
+                shape <- rightOrFail (decodeWKT input)
+                output <- rightOrFail (encodeWKT shape)
+                assertBool "uniform parent tag" (Text.isPrefixOf ("GEOMETRYCOLLECTION" <> tag <> " (") output)
+                forM_ ["MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON"] $ \family ->
+                    assertBool "inherited empty tag" (Text.isInfixOf (container family) output)
+                decodeWKT output @?= Right shape
         , testCase "collection tags use promoted multi-geometry output layouts" $ do
             let member = MultiPoint (U.fromList [PointXY (XY 1 2), PointXYZ (XYZ 3 4 5)])
             encodeWKT (GeometryCollection (V.singleton member)) @?= Right "GEOMETRYCOLLECTION Z (MULTIPOINT Z ((1.0e0 2.0e0 NaN), (3.0e0 4.0e0 5.0e0)))"

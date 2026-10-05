@@ -29,6 +29,8 @@ def fixtures() -> list[str]:
         nested = f"GEOMETRYCOLLECTION{tag} ({empty}, {line})"
         for members in [point, f"{point}, {line}", f"{point}, {nested}", f"{empty}, LINESTRING{tag} EMPTY"]:
             result.append(f"GEOMETRYCOLLECTION{tag} ({members})")
+        containers = ", ".join(f"{family}{tag} EMPTY" for family in ["MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON"])
+        result.append(f"GEOMETRYCOLLECTION{tag} ({point}, {containers}, GEOMETRYCOLLECTION{tag} ({containers}))")
     return result
 
 
