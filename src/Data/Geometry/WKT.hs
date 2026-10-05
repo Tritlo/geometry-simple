@@ -52,7 +52,6 @@ data Family
       MultiPolygonFamily
     | -- | A collection of arbitrary geometries.
       CollectionFamily
-    deriving (Eq)
 
 {- | Decode one complete geometry and preserve each member's coordinate layout.
 Return 'Left' for malformed WKT or trailing input. See the module documentation
@@ -65,14 +64,15 @@ decodeWKT input = do
 
 {- | Write dimension tags and shortest scientific decimal ordinates.
 Multi-geometries and polygon rings pad absent Z or M ordinates with NaN.
-Geometry collections have no parent dimension tag. Each child retains its
-own tag and ordinates, so mixed collections can be decoded again.
+Geometry collections use a parent tag when all children share one output layout.
+Mixed collections omit that tag and retain each child's layout and ordinates.
+Mixed-layout collections extend the standard WKT grammar.
 Return 'Left' for invalid line lengths, ring closure, or polygon emptiness.
 -}
 encodeWKT :: Geometry -> Either String Text
 encodeWKT geometry = do
     validateGeometry (const (Right ())) geometry
-    pure (TextEncoding.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (geometryWKT geometry))))
+    pure (TextEncoding.decodeUtf8 (BL.toStrict (Builder.toLazyByteString (snd (geometryWKT geometry)))))
 
 -- | Stop parsing with a geometry-specific error.
 failure :: String -> Parser a
@@ -138,35 +138,33 @@ header = do
 geometryParser :: Parser (Geometry, Dimensions)
 geometryParser = do
     (family, declared) <- header
-    case family of
+    (shape, inferred) <- case family of
         CollectionFamily -> do
             members <- vector geometryParser
             case declared of
                 Just dimensions -> unless (V.all ((== dimensions) . snd) members) (failure "has mixed coordinate dimensions")
                 Nothing -> pure ()
             let shape = GeometryCollection (V.map fst members)
-            pure (shape, fromMaybe (geometryDimensions shape) declared)
-        _ -> do
-            (shape, inferred) <- case family of
-                PointFamily -> do (value, dimensions) <- point True declared; pure (PointGeometry value, dimensions)
-                LineFamily -> do
-                    (values, dimensions) <- coordinates declared
-                    lift (validateLine values)
-                    pure (LineString values, dimensions)
-                PolygonFamily -> do (rings, dimensions) <- polygon declared; pure (Polygon rings, dimensions)
-                MultiPointFamily -> do (values, dimensions) <- multiPoint declared; pure (MultiPoint values, dimensions)
-                MultiLineFamily -> do
-                    (values, dimensions) <-
-                        vectorState
-                            declared
-                            ( \current -> do
-                                (line, next) <- coordinates current
-                                lift (validateLine line)
-                                pure (line, next)
-                            )
-                    pure (MultiLineString values, dimensions)
-                MultiPolygonFamily -> do (values, dimensions) <- vectorState declared polygon; pure (MultiPolygon values, dimensions)
-            pure (shape, fromMaybe DimXY inferred)
+            pure (shape, Just (fromMaybe (geometryDimensions shape) declared))
+        PointFamily -> do (value, dimensions) <- point True declared; pure (PointGeometry value, dimensions)
+        LineFamily -> do
+            (values, dimensions) <- coordinates declared
+            lift (validateLine values)
+            pure (LineString values, dimensions)
+        PolygonFamily -> do (rings, dimensions) <- polygon declared; pure (Polygon rings, dimensions)
+        MultiPointFamily -> do (values, dimensions) <- multiPoint declared; pure (MultiPoint values, dimensions)
+        MultiLineFamily -> do
+            (values, dimensions) <-
+                vectorState
+                    declared
+                    ( \current -> do
+                        (line, next) <- coordinates current
+                        lift (validateLine line)
+                        pure (line, next)
+                    )
+            pure (MultiLineString values, dimensions)
+        MultiPolygonFamily -> do (values, dimensions) <- vectorState declared polygon; pure (MultiPolygon values, dimensions)
+    pure (shape, fromMaybe DimXY inferred)
 
 -- | Inspect one coordinate without consuming its text.
 lookAheadParser :: Parser a -> Parser a
@@ -374,26 +372,33 @@ digitsValue digits
     half = size `div` 2
     (high, low) = Text.splitAt half digits
 
--- | Tag atomic and multi-geometries. Collection children have their own tags.
-geometryWKT :: Geometry -> Builder
-geometryWKT geometry = name <> suffix <> " " <> body
+{- | Render a geometry and report its common output layout for containing collections.
+Return 'Nothing' for mixed collections. Share rendered children to avoid rescanning
+nested collections when choosing their parent tags.
+-}
+geometryWKT :: Geometry -> (Maybe Dimensions, Builder)
+geometryWKT geometry = (layout, name <> suffix <> " " <> body)
   where
     dimensions = geometryDimensions geometry
-    suffix = case geometry of
-        GeometryCollection _ -> ""
-        _ -> case dimensions of
-            DimXY -> ""
-            DimXYZ -> " Z"
-            DimXYM -> " M"
-            DimXYZM -> " ZM"
-    (name, body) = case geometry of
-        PointGeometry value -> ("POINT", pointWKT dimensions value)
-        LineString points -> ("LINESTRING", coordinatesWKT dimensions points)
-        Polygon rings -> ("POLYGON", polygonWKT dimensions rings)
-        MultiPoint points -> ("MULTIPOINT", sequenceWKT (pointWKT dimensions) points)
-        MultiLineString lineStrings -> ("MULTILINESTRING", sequenceWKT (coordinatesWKT dimensions) lineStrings)
-        MultiPolygon polygons -> ("MULTIPOLYGON", sequenceWKT (polygonWKT dimensions) polygons)
-        GeometryCollection members -> ("GEOMETRYCOLLECTION", sequenceWKT geometryWKT members)
+    suffix = case layout of
+        Just DimXYZ -> " Z"
+        Just DimXYM -> " M"
+        Just DimXYZM -> " ZM"
+        _ -> ""
+    (name, layout, body) = case geometry of
+        PointGeometry value -> ("POINT", Just dimensions, pointWKT dimensions value)
+        LineString points -> ("LINESTRING", Just dimensions, coordinatesWKT dimensions points)
+        Polygon rings -> ("POLYGON", Just dimensions, polygonWKT dimensions rings)
+        MultiPoint points -> ("MULTIPOINT", Just dimensions, sequenceWKT (pointWKT dimensions) points)
+        MultiLineString lineStrings -> ("MULTILINESTRING", Just dimensions, sequenceWKT (coordinatesWKT dimensions) lineStrings)
+        MultiPolygon polygons -> ("MULTIPOLYGON", Just dimensions, sequenceWKT (polygonWKT dimensions) polygons)
+        GeometryCollection members ->
+            let children = V.map geometryWKT members
+                common = case V.uncons children of
+                    Nothing -> Just DimXY
+                    Just ((first, _), rest) | V.all ((== first) . fst) rest -> first
+                    _ -> Nothing
+             in ("GEOMETRYCOLLECTION", common, sequenceWKT snd children)
 
 -- | Empty points have no ordinates in WKT. Nonempty points use the writer's layout.
 pointWKT :: Dimensions -> Point -> Builder

@@ -46,7 +46,22 @@ class PlanarResultTests(unittest.TestCase):
 
 
 class CollectionWKTTests(unittest.TestCase):
-    """Permit omitted collection tags while checking all member data."""
+    """Require uniform collection tags and retain mixed member data."""
+
+    def test_uniform_collection_requires_matching_tags(self) -> None:
+        for tag, ordinates in [("Z", "1 2 3"), ("M", "1 2 3"), ("ZM", "1 2 3 4")]:
+            text = f"GEOMETRYCOLLECTION {tag} (GEOMETRYCOLLECTION {tag} (POINT {tag} ({ordinates})), POINT {tag} EMPTY)"
+            expected = sh.from_wkt(text)
+            with self.subTest(tag=tag):
+                self.assertTrue(matches("encodeWKT", text, expected, True))
+                self.assertFalse(matches("encodeWKT", text.replace(f"GEOMETRYCOLLECTION {tag}", "GEOMETRYCOLLECTION", 1), expected, True))
+                self.assertFalse(matches("encodeWKT", text.replace(f"GEOMETRYCOLLECTION {tag}", "GEOMETRYCOLLECTION"), expected, True))
+
+    def test_nested_mixed_collection_has_no_parent_tag(self) -> None:
+        text = "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (1 2), POINT Z (3 4 5)), POINT Z (6 7 8))"
+        expected = sh.from_wkt(text)
+        self.assertTrue(matches("encodeWKT", text, expected, True))
+        self.assertFalse(matches("encodeWKT", text.replace("GEOMETRYCOLLECTION", "GEOMETRYCOLLECTION Z", 1), expected, True))
 
     def test_readable_mixed_collection_is_accepted(self) -> None:
         text = "GEOMETRYCOLLECTION (POINT (1 2), GEOMETRYCOLLECTION (POINT Z (3 4 5), POINT M EMPTY))"

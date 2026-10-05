@@ -11,7 +11,7 @@ writes method counts and complete reproductions as JSON. Random inputs use
 the supplied seed. Unexpected differences give a nonzero exit status.
 
 Codecs retain strict member layouts, type tags, empty values, and coordinate
-bits. WKT ignores numeric spelling and omits parent collection dimension tags.
+bits. WKT ignores numeric spelling and adjusts only mixed collection tags.
 Point observers compare stored native rows, including NaN Z/M. Constructed
 planar results must be XY. Hulls compare exact XY geometry and must run
 counterclockwise. Other polygon results compare geometry independently of
@@ -105,7 +105,7 @@ METHODS: dict[str, str] = {
     "perimeter": "sum length of polygon components",
     "centroid": "centroid",
     "convexHull": "convex_hull XY geometry, plus counterclockwise output rings",
-    "encodeWKT": "native writer tokens without collection dimension tags, and exact source ordinates",
+    "encodeWKT": "native writer tokens with uniform collection tags, and exact source ordinates",
     "encodeWKB": "native writer ISO tags, structure, and coordinate bits",
     "decodeWKT": "from_wkt versus raw Haskell structure",
     "decodeWKB": "from_wkb versus raw Haskell structure",
@@ -534,6 +534,21 @@ def written_ordinates(geometry: BaseGeometry, output_layout: str | None = None) 
     return [float(row[column]).hex() for row in sh.get_coordinates(geometry, include_z=True, include_m=True) for column in columns]
 
 
+def collection_tags(geometry: BaseGeometry) -> list[str]:
+    """Select parent tags from native member layouts in WKT traversal order."""
+    def layouts(part: BaseGeometry) -> set[str]:
+        if int(get_type_id(part)) != 7:
+            return {coordinate_layout(part)}
+        return {layout for child in children(part) for layout in layouts(child)} or {"XY"}
+
+    if int(get_type_id(geometry)) != 7:
+        return []
+    distinct = layouts(geometry)
+    layout = next(iter(distinct)) if len(distinct) == 1 else "XY"
+    suffix = {"XY": "", "XYZ": " Z", "XYM": " M", "XYZM": " ZM"}[layout]
+    return ["GEOMETRYCOLLECTION" + suffix] + [tag for child in children(geometry) for tag in collection_tags(child)]
+
+
 def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
     """Use scalar tolerances only for measurements; retain exact output structure."""
     if actual.startswith("!"):
@@ -555,7 +570,8 @@ def matches(method: str, actual: str, expected: Value, strict: bool) -> bool:
         return read_structure(actual) == expected
     if method == "encodeWKT":
         expected_text = sh.to_wkt(expected, rounding_precision=-1, output_dimension=4)
-        expected_text = re.sub(r"\bGEOMETRYCOLLECTION (?:ZM|Z|M)\b", "GEOMETRYCOLLECTION", expected_text)
+        tags = iter(collection_tags(expected))
+        expected_text = re.sub(r"\bGEOMETRYCOLLECTION(?: (?:ZM|Z|M))?\b", lambda _: next(tags), expected_text)
         tokens, numbers = wkt_tokens(actual)
         return tokens == wkt_tokens(expected_text)[0] and numbers == written_ordinates(expected)
     if method == "encodeWKB":

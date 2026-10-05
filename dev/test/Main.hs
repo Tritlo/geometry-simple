@@ -283,7 +283,7 @@ samplesFor offset values coord wrap makePoint = do
     (family, name, full, emptyShape, body) <- cases
     let bytes order childOrder = if empty then emptyWKB order offset family else fullBytes order childOrder family
         label = Text.unpack (name <> suffix) ++ " little=" ++ show little ++ " empty=" ++ show empty
-    pure (label, bytes little (not little), (if empty && family >= 4 then emptyWKB True 0 family else bytes True True), (if empty then emptyShape else full), name <> (if family == 7 || (empty && family >= 4) then "" else suffix) <> " " <> if empty then "EMPTY" else body)
+    pure (label, bytes little (not little), (if empty && family >= 4 then emptyWKB True 0 family else bytes True True), (if empty then emptyShape else full), name <> (if empty && family >= 4 then "" else suffix) <> " " <> if empty then "EMPTY" else body)
 
 -- | Reject invalid encodings before allocating from untrusted counts.
 malformed :: [(String, ByteString)]

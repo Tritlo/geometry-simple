@@ -29,7 +29,7 @@ boundary geometry = case geometry of
       where
         counts = List.foldl' addEndpoint Map.empty (concatMap lineEnds (V.toList lines'))
         selected = [point | (point, count) <- Map.elems counts, odd count]
-        withZ = any (not . isNaN . pointZ) selected
+        withZ = any (not . isNaN . elevationOrNaN) selected
         endpoints = map (boundaryPoint withZ) selected
         addEndpoint table point = Map.insertWith (\(_, n) (old, m) -> (old, n + m)) (pointXY point) (point, 1 :: Int) table
     Polygon rings@(PolygonRings shell holes)
@@ -68,16 +68,16 @@ pointXY point = case withPoint coordinateComponents point of
     Nothing -> (0 / 0, 0 / 0)
 
 -- | Read elevation, with NaN for absent Z.
-pointZ :: Point -> Double
-pointZ (PointXYZ (XYZ _ _ z)) = z
-pointZ (PointXYZM (XYZM _ _ z _)) = z
-pointZ _ = 0 / 0
+elevationOrNaN :: Point -> Double
+elevationOrNaN (PointXYZ (XYZ _ _ z)) = z
+elevationOrNaN (PointXYZM (XYZM _ _ z _)) = z
+elevationOrNaN _ = 0 / 0
 
 -- | Multi-line boundaries discard M and share their output coordinate layout.
 boundaryPoint :: Bool -> Point -> Point
 boundaryPoint withZ point =
     let (x, y) = pointXY point
-     in if withZ then PointXYZ (XYZ x y (pointZ point)) else PointXY (XY x y)
+     in if withZ then PointXYZ (XYZ x y (elevationOrNaN point)) else PointXY (XY x y)
 
 {- | Whether curves have no self-intersections except their closing endpoint,
 and multi-points have no duplicate XY positions. Polygon rings are checked

@@ -79,6 +79,31 @@ tests =
             let shape = GeometryCollection (V.fromList [PointGeometry (PointXY (XY 1 2)), PointGeometry (PointXYZ (XYZ 3 4 5))])
             encodeWKT shape @?= Right "GEOMETRYCOLLECTION (POINT (1.0e0 2.0e0), POINT Z (3.0e0 4.0e0 5.0e0))"
             (encodeWKT shape >>= decodeWKT) @?= Right shape
+        , testGroup
+            "uniform collection dimension tags"
+            [ testCase (Text.unpack ("layout" <> tag)) $ do
+                let point = "POINT" <> tag <> " (" <> ordinates <> ")"
+                    empty = "POINT" <> tag <> " EMPTY"
+                    collection children = "GEOMETRYCOLLECTION" <> tag <> " (" <> Text.intercalate ", " children <> ")"
+                    input = collection [point, collection [empty, point]]
+                shape <- rightOrFail (decodeWKT input)
+                encodeWKT shape @?= Right input
+                (encodeWKT shape >>= decodeWKT) @?= Right shape
+            | (tag, ordinates) <- [("", "1.0e0 2.0e0"), (" Z", "1.0e0 2.0e0 3.0e0"), (" M", "1.0e0 2.0e0 3.0e0"), (" ZM", "1.0e0 2.0e0 3.0e0 4.0e0")]
+            ]
+        , testCase "mixed descendants prevent a parent dimension tag" $ do
+            let input = "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (1.0e0 2.0e0), POINT Z (3.0e0 4.0e0 5.0e0)), POINT Z (6.0e0 7.0e0 8.0e0))"
+            shape <- rightOrFail (decodeWKT input)
+            encodeWKT shape @?= Right input
+            (encodeWKT shape >>= decodeWKT) @?= Right shape
+        , testCase "empty collections retain their implicit XY layout" $ do
+            let input = "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION EMPTY, POINT Z EMPTY)"
+            shape <- rightOrFail (decodeWKT input)
+            encodeWKT shape @?= Right input
+            (encodeWKT shape >>= decodeWKT) @?= Right shape
+        , testCase "collection tags use promoted multi-geometry output layouts" $ do
+            let member = MultiPoint (U.fromList [PointXY (XY 1 2), PointXYZ (XYZ 3 4 5)])
+            encodeWKT (GeometryCollection (V.singleton member)) @?= Right "GEOMETRYCOLLECTION Z (MULTIPOINT Z ((1.0e0 2.0e0 NaN), (3.0e0 4.0e0 5.0e0)))"
         , testCase "nested collection output preserves empty and measured layouts" $ do
             let members =
                     [PointGeometry (EmptyPoint dimensions) | dimensions <- [DimXY, DimXYZ, DimXYM, DimXYZM]]
@@ -98,6 +123,11 @@ tests =
                 decodeWKT (nestText levels "POINT (1 2)") @?= Right (nestGeometry levels (PointGeometry (PointXY (XY 1 2))))
         , testCase "nested empty point members preserve their layout" $
             decodeWKT (nestText 1024 "MULTIPOINT Z (EMPTY)") @?= Right (nestGeometry 1024 (MultiPoint (U.singleton (EmptyPoint DimXYZ))))
+        , testCase "deep uniform collections retain tags and layouts when written" $ do
+            let shape = nestGeometry 1024 (PointGeometry (EmptyPoint DimXYZM))
+            output <- rightOrFail (encodeWKT shape)
+            Text.count "GEOMETRYCOLLECTION ZM" output @?= 1024
+            decodeWKT output @?= Right shape
         , testCase "wide collections parse" $ do
             let input = "GEOMETRYCOLLECTION (" <> Text.intercalate "," (replicate 1024 "POINT EMPTY") <> ")"
             decodeWKT input @?= Right (GeometryCollection (V.replicate 1024 (PointGeometry (EmptyPoint DimXY))))

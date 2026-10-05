@@ -14,6 +14,7 @@ description: Tests, benchmarks, and comparison tools for the repository. This pa
 category: Testing
 extra-source-files:
   test/shapely_compare.py
+  test/test_duckdb_wkt.py
   test/test_shapely_compare.py
 
 extra-doc-files:

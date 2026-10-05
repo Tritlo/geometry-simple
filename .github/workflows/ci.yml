@@ -52,7 +52,7 @@ jobs:
           --max-jobs 2 --cores 2
 
   shapely:
-    name: Shapely / GEOS differential tests
+    name: GEOS comparisons / DuckDB codecs
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -70,10 +70,14 @@ jobs:
       - name: Check Python types
         run: >-
           uv run --no-project --with shapely==2.1.2
-          --with types-shapely==2.1.0.20260728 --with pyright==1.1.414
-          pyright dev/test/shapely_compare.py dev/test/test_shapely_compare.py dev/check_sdist.py
+          --with types-shapely==2.1.0.20260728 --with pyright==1.1.414 --with duckdb==1.5.5
+          pyright dev/test/shapely_compare.py dev/test/test_shapely_compare.py dev/test/test_duckdb_wkt.py dev/check_sdist.py
       - name: Check comparison diagnostics
         run: uv run --script dev/test/test_shapely_compare.py
+      - name: Check DuckDB codec interoperability
+        run: >-
+          uv run --script dev/test/test_duckdb_wkt.py
+          --probe "$(cabal list-bin exe:geometry-simple-shapely-probe)"
       - name: Compare every operation with GEOS
         run: >-
           uv run --script dev/test/shapely_compare.py
