@@ -1010,7 +1010,7 @@ def geometry_mismatch_reason(actual: str, expected: BaseGeometry, merge_lines: b
 def operation_matches(method: str, actual: str, expected: OperationValue) -> bool:
     """Allow overlay line grouping and 1e-9 XY error; retain other metadata checks."""
     if isinstance(expected, OperationError):
-        return actual.startswith("!exception:")
+        return actual.startswith(("!exception:", "!error:"))
     if isinstance(expected, BaseGeometry):
         return not actual.startswith("!") and actual != "~" and geometry_result_matches(read_structure(actual), signature(expected), expected, method in OVERLAY_METHODS)
     if isinstance(expected, float) and math.isnan(expected):

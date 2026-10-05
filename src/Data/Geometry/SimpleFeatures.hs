@@ -17,14 +17,15 @@ Planar operations require finite X and Y. Measurements use 'Double'
 arithmetic and can overflow or underflow. Polygon measurements and binary
 spatial operations assume valid topology; use 'isValid' to check it.
 Area and perimeter close open rings. Topology uses exact rational segment
-intersections and rounds constructed coordinates to 'Double'. If an overlay
+intersections and rounds constructed coordinates to 'Double'. If an overlay or buffer
 becomes invalid during rounding, it uses up to five bounded snapping attempts.
 The first tolerance is the largest absolute ordinate in each group divided by
 10^12, with a floor of the smallest positive Double. Later attempts multiply
 that tolerance by ten. Groups have overlapping input bounds. Each attempt
 starts from the original inputs. Thin regions can collapse. If every attempt
-fails, evaluation throws 'OverlayPrecisionFailure'. Buffers approximate circular
-arcs with straight segments.
+fails, the result is 'Left' 'OverlayPrecisionFailure'. Overlays and buffers return
+@Either TopologyException Geometry@. Buffers approximate circular arcs with
+straight segments.
 
 The module covers the Simple Features core for GEOS's seven geometry families.
 The additional surface types and reference systems in OGC SFA are outside its scope.

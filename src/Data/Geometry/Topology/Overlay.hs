@@ -8,13 +8,12 @@ start from the original inputs. The schedule follows
 -}
 module Data.Geometry.Topology.Overlay where
 
-import Control.Exception (Exception, throw)
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar
 import Data.Geometry.Topology.Snapping (snapPlanars)
 import Data.Geometry.Topology.Unary (isValid)
 import qualified Data.Graph as Graph
-import Data.List (find, maximumBy, minimumBy)
+import Data.List (maximumBy, minimumBy)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -24,42 +23,40 @@ import Data.Tree (flatten)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
-{- | A rounded overlay remains invalid after the bounded snapping attempts.
-Catch this exception when evaluating an overlay result. No invalid geometry is
-returned when the available Double precision cannot represent the topology.
--}
+-- | A topology construction failure returned by overlays and buffers.
 data TopologyException
-    = -- | Exact overlay and all five snapping attempts produced invalid output.
+    = -- | Rounded output remains invalid after precision retries.
       OverlayPrecisionFailure
+    | -- | A selected boundary has no outgoing edge before the ring closes.
+      OpenBoundary
+    | -- | A hole has no containing exterior ring.
+      UncontainedHole
     deriving (Eq, Show, Read)
-
--- | Report a precision failure through the standard exception interface.
-instance Exception TopologyException
 
 {- | The points common to both geometries. Coordinates must have finite XY values.
 Line results join consecutive edges through vertices with exactly two neighbors.
 Their component count and order can differ from other implementations.
 If Double rounding changes topology, retry with bounded snapping. Thin regions
-can collapse. Throw 'OverlayPrecisionFailure' if every attempt remains invalid.
+can collapse. Return 'Left' 'OverlayPrecisionFailure' if every attempt remains invalid.
 See the module documentation for the tolerance schedule.
 -}
-intersection :: Geometry -> Geometry -> Geometry
+intersection :: Geometry -> Geometry -> Either TopologyException Geometry
 intersection a b = overlay (&&) (min (topologicalDimension a) (topologicalDimension b)) a b
 
 -- | The points in either geometry. The precision and failure rules match 'intersection'.
-union :: Geometry -> Geometry -> Geometry
+union :: Geometry -> Geometry -> Either TopologyException Geometry
 union a b = overlay (||) (max (topologicalDimension a) (topologicalDimension b)) a b
 
 {- | The closure of the points in the first geometry but not the second.
 The precision and failure rules match 'intersection'.
 -}
-difference :: Geometry -> Geometry -> Geometry
+difference :: Geometry -> Geometry -> Either TopologyException Geometry
 difference a = overlay (\x y -> x && not y) (topologicalDimension a) a
 
 {- | The closure of the points in exactly one geometry.
 The precision and failure rules match 'intersection'.
 -}
-symmetricDifference :: Geometry -> Geometry -> Geometry
+symmetricDifference :: Geometry -> Geometry -> Either TopologyException Geometry
 symmetricDifference a b = overlay (/=) (max (topologicalDimension a) (topologicalDimension b)) a b
 
 {- | Try exact overlay first. If output rounding breaks topology, retry each
@@ -67,35 +64,55 @@ connected group with five snapping tolerances from magnitude / 10^12 to
 magnitude / 10^8. Each attempt starts from the original inputs. These bounds
 follow GEOS OverlayNGRobust; separate groups keep their own precision scale.
 -}
-overlay :: (Bool -> Bool -> Bool) -> TopologicalDimension -> Geometry -> Geometry -> Geometry
+overlay :: (Bool -> Bool -> Bool) -> TopologicalDimension -> Geometry -> Geometry -> Either TopologyException Geometry
 overlay select emptyDimension first second
-    | Just unchanged <- trivialOverlay select emptyDimension a b = unchanged
-    | isValid exact = exact
-    | otherwise = assemble emptyDimension (planarPolygons result) (planarLines result) (planarPoints result)
+    | Just unchanged <- trivialOverlay select emptyDimension a b = Right unchanged
+    | otherwise = robustOperation emptyDimension 0 (overlayPlanar select emptyDimension) a b
   where
     a = planar first
     b = planar second
-    exact = overlayPlanar select emptyDimension a b
-    result = combinePlanar [planar (robust x y) | (x, y) <- overlayGroups a b]
-    robust x y = fromMaybe (throw OverlayPrecisionFailure) (find isValid attempts)
+
+{- | Validate construction before and after precision retries. Retry connected
+input groups separately so distant components do not set the local tolerance.
+Expand group bounds by the positive buffer distance when constructing buffers.
+Reuse the first result when all inputs belong to one group.
+-}
+robustOperation :: TopologicalDimension -> Rational -> (Planar -> Planar -> Either TopologyException Geometry) -> Planar -> Planar -> Either TopologyException Geometry
+robustOperation emptyDimension padding operation a b = case operation a b >>= validateResult of
+    Right result -> Right result
+    Left _ -> do
+        parts <- case overlayGroups padding a b of
+            [_] -> (: []) <$> firstValid (snappedAttempts a b)
+            groups -> traverse (\(x, y) -> firstValid (operation x y : snappedAttempts x y)) groups
+        let result = combinePlanar (map planar parts)
+        validateResult (assemble emptyDimension (planarPolygons result) (planarLines result) (planarPoints result))
+  where
+    firstValid [] = Left OverlayPrecisionFailure
+    firstValid (attempt : rest) = case attempt >>= validateResult of
+        Right result -> Right result
+        Left failure -> if null rest then Left failure else firstValid rest
+    snappedAttempts x y =
+        [ let (snappedA, snappedB) = snapPlanars (tolerance * 10 ^ attemptIndex) x y
+           in operation snappedA snappedB
+        | attemptIndex <- [0 :: Int .. 4]
+        ]
       where
         magnitude = maximum (0 : [max (abs u) (abs v) | (u, v) <- allPositions x ++ allPositions y])
         minimumSpacing = toRational (encodeFloat 1 (fst (floatRange (0 :: Double)) - floatDigits (0 :: Double)) :: Double)
         tolerance = max minimumSpacing (magnitude / 10 ^ (12 :: Int))
-        attempts =
-            overlayPlanar select emptyDimension x y
-                : [ let (snappedA, snappedB) = snapPlanars (tolerance * 10 ^ attemptIndex) x y
-                     in overlayPlanar select emptyDimension snappedA snappedB
-                  | attemptIndex <- [0 :: Int .. 4]
-                  ]
+
+-- | Reject invalid rounded output without raising an exception from pure code.
+validateResult :: Geometry -> Either TopologyException Geometry
+validateResult geometry = if isValid geometry then Right geometry else Left OverlayPrecisionFailure
 
 -- | Group atomic inputs with overlapping bounds before a precision retry.
-overlayGroups :: Planar -> Planar -> [(Planar, Planar)]
-overlayGroups first second = map group (Graph.components graph)
+overlayGroups :: Rational -> Planar -> Planar -> [(Planar, Planar)]
+overlayGroups padding first second = map group (Graph.components graph)
   where
     parts shape = [Planar [p] [] [] | p <- planarPoints shape] ++ [Planar [] [line] [] | line <- planarLines shape] ++ [Planar [] [] [polygon] | polygon <- planarPolygons shape]
     inputs = [(side, part) | (side, shape) <- [(False, first), (True, second)], part <- parts shape, not (null (allPositions part))]
-    pairs = overlappingPairs [(bounds, i) | (i, (_, part)) <- zip [0 :: Int ..] inputs, Just bounds <- [pointBounds (allPositions part)]]
+    pairs = overlappingPairs [(expand bounds, i) | (i, (_, part)) <- zip [0 :: Int ..] inputs, Just bounds <- [pointBounds (allPositions part)]]
+    expand ((x, y), (u, v)) = ((x - padding, y - padding), (u + padding, v + padding))
     adjacent = Map.fromListWith (++) [(a, [b]) | (i, j) <- pairs, (a, b) <- [(i, j), (j, i)]]
     (graph, entry, _) = Graph.graphFromEdges [(part, i, Map.findWithDefault [] i adjacent) | (i, part) <- zip [0 :: Int ..] inputs]
     group tree =
@@ -118,8 +135,18 @@ trivialOverlay select emptyDimension a b
     earlyEmpty = (firstEmpty && not (select False True)) || (secondEmpty && not (select True False)) || (firstEmpty && secondEmpty) || (separate && not (select True False) && not (select False True))
 
 -- | Evaluate a Boolean set operation on exact faces, edges, and vertices.
-overlayPlanar :: (Bool -> Bool -> Bool) -> TopologicalDimension -> Planar -> Planar -> Geometry
-overlayPlanar select emptyDimension a b = assemble emptyDimension polygons paths points
+overlayPlanar :: (Bool -> Bool -> Bool) -> TopologicalDimension -> Planar -> Planar -> Either TopologyException Geometry
+overlayPlanar select emptyDimension a b = do
+    polygons <- polygonize boundaryEdges
+    let surfaces = Planar [] [] polygons
+        (locateSurfaces, _) = prepareLocations surfaces
+        lineEdges = [edge | edge <- edges, selected (midpoint edge), locateSurfaces (midpoint edge) == Exterior]
+        paths = linePaths lineEdges
+        curves = Planar [] paths polygons
+        (locateCurves, _) = prepareLocations curves
+        nodes = unique (vertices a ++ vertices b ++ concatMap (\(u, v) -> [u, v]) edges)
+        points = [p | p <- nodes, selected p, locateCurves p == Exterior]
+    pure (assemble emptyDimension polygons paths points)
   where
     edges = nodeSegments (segments a ++ segments b) (vertices a ++ vertices b)
     queryEdges = segmentQuery edges
@@ -134,38 +161,29 @@ overlayPlanar select emptyDimension a b = assemble emptyDimension polygons paths
         , let leftInside = selectedFace left
         , leftInside /= selectedFace right
         ]
-    polygons = polygonize boundaryEdges
-    surfaces = Planar [] [] polygons
-    (locateSurfaces, _) = prepareLocations surfaces
-    lineEdges = [edge | edge <- edges, selected (midpoint edge), locateSurfaces (midpoint edge) == Exterior]
-    paths = linePaths lineEdges
-    curves = Planar [] paths polygons
-    (locateCurves, _) = prepareLocations curves
-    nodes = unique (vertices a ++ vertices b ++ concatMap (\(u, v) -> [u, v]) edges)
-    points = [p | p <- nodes, selected p, locateCurves p == Exterior]
 
 -- | Collect directed cycles with their selected region on the left.
-boundaryRings :: [Segment] -> [[Position]]
-boundaryRings edges = concatMap splitRing (collect (Set.fromList edges))
+boundaryRings :: [Segment] -> Either TopologyException [[Position]]
+boundaryRings edges = concatMap splitRing <$> collect (Set.fromList edges)
   where
     outgoingEdges = Map.fromListWith Set.union [(a, Set.singleton (a, b)) | (a, b) <- edges]
     collect remaining = case Set.minView remaining of
-        Nothing -> []
-        Just (edge@(start, _), _) ->
-            let (ring, rest) = walk start edge [] remaining
-             in ring : collect rest
+        Nothing -> Right []
+        Just (edge@(start, _), _) -> do
+            (ring, rest) <- walk start edge [] remaining
+            (ring :) <$> collect rest
     walk start edge@(a, b) accumulated remaining
-        | b == start = (reverse (b : a : accumulated), rest)
-        | otherwise = walk start next (a : accumulated) rest
+        | b == start = Right (reverse (b : a : accumulated), rest)
+        | otherwise = do
+            next <- case if null preceding then outgoing else preceding of
+                [] -> Left OpenBoundary
+                candidates -> Right (maximumBy (\(_, x) (_, y) -> compareDirection (subtractPosition x b) (subtractPosition y b)) candidates)
+            walk start next (a : accumulated) rest
       where
         rest = Set.delete edge remaining
         outgoing = Set.toList (Set.intersection (Map.findWithDefault Set.empty b outgoingEdges) rest)
         reverseDirection = subtractPosition a b
         preceding = filter (\(_, c) -> compareDirection (subtractPosition c b) reverseDirection == LT) outgoing
-        next = case if null preceding then outgoing else preceding of
-            -- A selected face boundary is closed. Failure here means its graph is inconsistent.
-            [] -> error "Open boundary in planar overlay"
-            candidates -> maximumBy (\(_, x) (_, y) -> compareDirection (subtractPosition x b) (subtractPosition y b)) candidates
 
 -- | Separate rings that touch at one vertex without joining their interiors.
 splitRing :: [Position] -> [[Position]]
@@ -193,19 +211,20 @@ ringOrientation ring = case ringSegments ring of
                 [] -> EQ
 
 -- | Group each clockwise hole with its innermost containing shell.
-polygonize :: [Segment] -> [[[Position]]]
-polygonize edges = [shell : Map.findWithDefault [] shell groupedHoles | (shell, _) <- shells]
+polygonize :: [Segment] -> Either TopologyException [[[Position]]]
+polygonize edges = do
+    rings <- map (\ring -> (ringOrientation ring, ring)) <$> boundaryRings edges
+    let shells = [(ring, prepareRing ring) | (GT, ring) <- rings]
+        holes = [ring | (LT, ring) <- rings]
+    assignments <- traverse (\hole -> do shell <- containingShell shells hole; pure (shell, [hole])) holes
+    let groupedHoles = Map.fromListWith (++) assignments
+    pure [shell : Map.findWithDefault [] shell groupedHoles | (shell, _) <- shells]
   where
-    rings = [(ringOrientation ring, ring) | ring <- boundaryRings edges]
-    shells = [(ring, prepareRing ring) | (GT, ring) <- rings]
-    holes = [ring | (LT, ring) <- rings]
-    groupedHoles = Map.fromListWith (++) [(containingShell hole, [hole]) | hole <- holes]
-    containingShell hole = case ringSegments hole of
-        [] -> []
+    containingShell shells hole = case ringSegments hole of
+        [] -> Left UncontainedHole
         edge : _ -> case filter (\(_, locate) -> locate (midpoint edge) == Interior) shells of
-            -- Every hole bounds a finite selected region inside an exterior ring.
-            [] -> error "Uncontained hole in planar overlay"
-            first : rest -> fst (List.foldl' innermost first rest)
+            [] -> Left UncontainedHole
+            first : rest -> Right (fst (List.foldl' innermost first rest))
     innermost current@(_, locate) candidate@(ring, _) = case ringSegments ring of
         edge : _ | locate (midpoint edge) == Interior -> candidate
         _ -> current
@@ -243,11 +262,12 @@ assemble emptyDimension polygons lines' points = case parts of
     _ -> GeometryCollection (V.fromList (concatMap atomic parts))
   where
     parts = pointParts ++ lineParts ++ polygonParts
-    pointParts = case map planarPoint points of
+    roundedLines = [[point | point : _ <- List.group (map rounded line)] | line <- lines']
+    pointParts = case [PointXY (XY x y) | (x, y) <- unique (map rounded points ++ [p | [p] <- roundedLines])] of
         [] -> []
         [point] -> [PointGeometry point]
         values -> [MultiPoint (U.fromList values)]
-    lineParts = case map coordinates (filter (not . null) lines') of
+    lineParts = case [CoordinatesXY (U.fromList [XY x y | (x, y) <- line]) | line@(_ : _ : _) <- roundedLines] of
         [] -> []
         [line] -> [LineString line]
         values -> [MultiLineString (V.fromList values)]
@@ -255,6 +275,7 @@ assemble emptyDimension polygons lines' points = case parts of
         [] -> []
         [rings] -> [Polygon rings]
         values -> [MultiPolygon (V.fromList values)]
+    rounded (x, y) = (fromRational x :: Double, fromRational y :: Double)
     coordinates = CoordinatesXY . U.fromList . map (\(x, y) -> XY (fromRational x) (fromRational y))
     oriented direction ring = if ringOrientation ring == direction then ring else reverse ring
 

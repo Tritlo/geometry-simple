@@ -154,11 +154,11 @@ arrangementBenchmarks count = do
         evaluate (S.distance a b)
     benchmarkTrials 3 "intersection-overlap" count 1 $ do
         (a, b) <- readIORef overlapping
-        result <- evaluate (force (S.intersection a b))
+        result <- either (fail . show) (evaluate . force) (S.intersection a b)
         evaluate (if S.area result > 0 && S.area result < S.area a then 1 else 0)
     benchmarkTrials 3 "buffer-positive" count 1 $ do
         (a, _) <- readIORef overlapping
-        result <- evaluate (force (S.buffer 0.1 a))
+        result <- either (fail . show) (evaluate . force) (S.buffer 0.1 a)
         evaluate (if S.area result > S.area a && S.area result < 4 then 1 else 0)
 
 -- | Measure seven trials for the short workloads.

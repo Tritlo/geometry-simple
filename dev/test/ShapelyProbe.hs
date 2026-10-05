@@ -72,10 +72,11 @@ topologyFields phase shape =
             ]
         else []
     )
+        ++ [("buffer.0.0", topologyResult (S.buffer 0 shape)) | phase == "buffer-zero"]
         ++ if phase `elem` ["all", "buffer"]
             then
-                [("buffer." <> shown radius, structure (S.buffer radius shape)) | radius <- [-1, 0, 0.5, 2]]
-                    ++ [("bufferWithSegments." <> shown segments <> "." <> shown radius, structure (S.bufferWithSegments segments radius shape)) | segments <- [1, 2, 8, 16], radius <- [-0.5, 0.5]]
+                [("buffer." <> shown radius, topologyResult (S.buffer radius shape)) | radius <- [-1, 0, 0.5, 2]]
+                    ++ [("bufferWithSegments." <> shown segments <> "." <> shown radius, topologyResult (S.bufferWithSegments segments radius shape)) | segments <- [1, 2, 8, 16], radius <- [-0.5, 0.5]]
             else []
 
 -- | Compare each binary predicate, relation pattern, distance, and set operation.
@@ -89,7 +90,7 @@ pairFields phase first second =
         else []
     )
         ++ if phase `elem` ["all", "overlay"]
-            then [(name, structure (operation first second)) | (name, operation) <- [("intersection", S.intersection), ("union", S.union), ("difference", S.difference), ("symmetricDifference", S.symmetricDifference)]]
+            then [(name, topologyResult (operation first second)) | (name, operation) <- [("intersection", S.intersection), ("union", S.union), ("difference", S.difference), ("symmetricDifference", S.symmetricDifference)]]
             else []
 
 -- | Decode text or ISO WKB. Named fixtures exercise direct constructors.
@@ -253,3 +254,7 @@ unhex input
     go [] = Right []
     go (a : b : rest) = (fromIntegral (16 * digitToInt a + digitToInt b) :) <$> go rest
     go _ = Left "Invalid hexadecimal input"
+
+-- | Keep explicit topology failures distinct from successful geometry results.
+topologyResult :: Either S.TopologyException Geometry -> Text
+topologyResult = either (\failure -> "!error: " <> shown failure) structure

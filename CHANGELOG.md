@@ -10,8 +10,9 @@ Initial release.
 - Coordinate and point accessors, measurements, envelopes, and convex hulls.
   Indices start at zero. Point observers preserve stored ordinates and layouts.
 - Pure Haskell topology checks, spatial predicates, DE-9IM relations, distance,
-  overlays, and round buffers. Overlays use bounded snapping when output
-  rounding changes topology; exhausted retries raise `OverlayPrecisionFailure`.
+  overlays, and round buffers. Overlays and buffers return
+  `Either TopologyException Geometry`. They use bounded snapping when output
+  rounding changes topology; exhausted retries return `Left OverlayPrecisionFailure`.
   The retry schedule follows GEOS 3.13.1. Its additional self-union and
   precision-grid attempts are omitted, so results and precision failures can
   differ. See the [overlay precision policy](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md#overlay-precision).

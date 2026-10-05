@@ -69,9 +69,10 @@ to a nonempty component of the input's highest dimension. The harness does not
 repair or snap inputs. These checks do not establish full SFA conformance.
 
 The separate precision test perturbs polygon vertices by 1 to 16 ULPs at
-several binary scales. It checks output validity and bounds area differences
-from GEOS by 1e-9 times the squared coordinate magnitude. Differences must
-also lie within 1e-8 times that magnitude of the input boundaries. A fixed
+several binary scales. It checks overlays and zero buffers. Outputs must be valid.
+Area differences from GEOS must be at most 1e-9 times the squared coordinate
+magnitude. Differences must lie within 1e-8 times that magnitude of the input
+boundaries. A fixed
 subnormal case uses rational orientation because native calculations underflow.
 These checks permit small differences from GEOS's precision choices.
 

@@ -9,7 +9,7 @@ import json
 import unittest
 
 import shapely as sh
-from shapely_compare import Shape, matches, operation_matches, point_on_surface_matches, signature, stored_point
+from shapely_compare import OperationError, Shape, matches, operation_matches, point_on_surface_matches, signature, stored_point
 
 
 def raw_geometry(wkt: str) -> str:
@@ -38,6 +38,11 @@ class PlanarResultTests(unittest.TestCase):
             if tag != "ZM":
                 native[19:23] = (2001 if tag == "Z" else 1001).to_bytes(4, "little")
                 self.assertFalse(matches("encodeWKB", native.hex(), expected, True))
+
+    def test_explicit_topology_errors_are_not_successful_geometries(self) -> None:
+        error = "!error: OverlayPrecisionFailure"
+        self.assertTrue(operation_matches("intersection", error, OperationError("precision failure")))
+        self.assertFalse(operation_matches("intersection", error, sh.Point(1, 2)))
 
     def test_extra_ordinates_are_rejected(self) -> None:
         self.assertFalse(operation_matches("intersection", raw_geometry("POINT Z (1 2 3)"), sh.from_wkt("POINT (1 2)")))

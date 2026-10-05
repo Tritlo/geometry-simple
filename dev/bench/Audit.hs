@@ -126,6 +126,9 @@ cases size = do
         apart = Polygon (PolygonRings (circle 0 3 0 (-1)) V.empty)
         rotated = Polygon (PolygonRings (circle 0.5 0 0 1) V.empty)
         outerPoints = MultiPoint (U.generate size (\i -> PointXY (XY (0.75 + 0.2 * fromIntegral i / n) 0.9)))
+        slantedFirst = slantedComb size False
+        slantedSecond = slantedComb size True
+        surroundingPoints = MultiPoint (U.generate size (\i -> let angle = 2 * pi * fromIntegral i / n in PointXY (XY (1.1 * cos angle) (1.1 * sin angle))))
         comb offset = MultiLineString (V.generate size (\i -> let y = fromIntegral (2 * i) + offset in CoordinatesXY (U.fromList [XY (-1) y, XY 1 y])))
         gridWidth = ceiling (sqrt n) :: Int
         gridHoles = V.generate size (\i -> let x = 2 * fromIntegral (i `mod` gridWidth) - fromIntegral gridWidth; y = 2 * fromIntegral (i `div` gridWidth) - fromIntegral gridWidth in rectangle x y (x + 0.5) (y + 0.5))
@@ -212,19 +215,19 @@ cases size = do
             ]
     overlays <-
         sequence
-            [ binary "construction" "intersection" S.intersection
-            , binary "construction" "union" S.union
-            , binary "construction" "difference" S.difference
-            , binary "construction" "symmetricDifference" S.symmetricDifference
+            [ binary "construction" "intersection" (\a b -> successful (S.intersection a b))
+            , binary "construction" "union" (\a b -> successful (S.union a b))
+            , binary "construction" "difference" (\a b -> successful (S.difference a b))
+            , binary "construction" "symmetricDifference" (\a b -> successful (S.symmetricDifference a b))
             ]
     buffers <-
         sequence
-            [ workload "construction" "buffer" "polygon-positive" (S.buffer 0.1) polygon
-            , workload "construction" "buffer" "polygon-negative" (S.buffer (-0.1)) polygon
-            , workload "construction" "buffer" "polygon-zero" (S.buffer 0) polygon
-            , workload "construction" "buffer" "line-positive" (S.buffer 0.1) line
-            , workload "construction" "bufferWithSegments" "polygon-2-quadrant" (S.bufferWithSegments 2 0.1) polygon
-            , workload "construction" "bufferWithSegments" "line-16-quadrant" (S.bufferWithSegments 16 0.1) line
+            [ workload "construction" "buffer" "polygon-positive" (successful . S.buffer 0.1) polygon
+            , workload "construction" "buffer" "polygon-negative" (successful . S.buffer (-0.1)) polygon
+            , workload "construction" "buffer" "polygon-zero" (successful . S.buffer 0) polygon
+            , workload "construction" "buffer" "line-positive" (successful . S.buffer 0.1) line
+            , workload "construction" "bufferWithSegments" "polygon-2-quadrant" (successful . S.bufferWithSegments 2 0.1) polygon
+            , workload "construction" "bufferWithSegments" "line-16-quadrant" (successful . S.bufferWithSegments 16 0.1) line
             ]
     measures <-
         sequence
@@ -239,10 +242,14 @@ cases size = do
     codecs <- mapM codecCases [("line-XY", line), ("line-XYZM", measuredLine), ("polygon-hole", holed), ("mixed-collection", flat), ("nested", nested)]
     difficult <-
         sequence
-            [ workload "construction" "intersection" "rotated-circle" (uncurry S.intersection) (polygon, rotated)
+            [ workload "construction" "intersection" "rotated-circle" (successful . uncurry S.intersection) (polygon, rotated)
             , workload "relations" "intersects" "points-polygon" (uncurry S.intersects) (outerPoints, polygon)
             , workload "relations" "distance" "points-polygon" (uncurry S.distance) (outerPoints, polygon)
             , workload "relations" "intersects" "interleaved-lines" (uncurry S.intersects) (comb 0, comb 1)
+            , workload "relations" "intersects" "slanted-combs" (uncurry S.intersects) (slantedFirst, slantedSecond)
+            , workload "relations" "distance" "slanted-combs" (uncurry S.distance) (slantedFirst, slantedSecond)
+            , workload "unary" "isValid" "slanted-comb" S.isValid slantedFirst
+            , workload "relations" "distance" "surrounding-points" (uncurry S.distance) (surroundingPoints, polygon)
             , workload "unary" "isValid" "holed-circle" S.isValid holedCircle
             ]
     pointRelation <- workload "relations" "relate" "multipoint-equal" (uncurry S.relate) (multiPoint, multiPoint)
@@ -265,3 +272,17 @@ codecCases (label, geometry) = do
 -- | A closed axis-aligned ring for the many-hole workload.
 rectangle :: Double -> Double -> Double -> Double -> Coordinates
 rectangle x y u v = CoordinatesXY (U.fromList [XY x y, XY u y, XY u v, XY x v, XY x y])
+
+-- | Fail a benchmark when construction fails instead of timing an error result.
+successful :: (Show e) => Either e a -> a
+successful = either (error . show) id
+
+-- | Disjoint interleaved teeth with overlapping segment bounds after a shear.
+slantedComb :: Int -> Bool -> Geometry
+slantedComb size downward = Polygon (PolygonRings (CoordinatesXY (U.fromList (map transform outline))) V.empty)
+  where
+    teeth = max 1 (size `div` 4)
+    height = fromIntegral teeth
+    tips = concat [[(x, 0), (x, height), (x + 1, height), (x + 1, 0)] | i <- [0 .. teeth - 1], let x = fromIntegral (4 * i)]
+    outline = [(0, -1), (fromIntegral (4 * teeth - 3), -1)] ++ reverse tips ++ [(0, -1)]
+    transform (x, y) = let (u, v) = if downward then (x + 2, height + 1 - y) else (x, y) in XY (u + v) v

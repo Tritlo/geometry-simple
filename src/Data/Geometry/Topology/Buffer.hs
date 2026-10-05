@@ -17,21 +17,26 @@ Positive distances expand geometry. Negative distances erode polygons and give
 empty polygons for points and lines. All results use XY coordinates.
 A zero distance extracts polygonal regions. Invalid input can lose regions,
 such as one lobe of a self-crossing bowtie. It is not a general validity repair.
-The distance and XY coordinates must be finite.
+The distance and XY coordinates must be finite. Rounded results use the same
+validation and bounded snapping as 'intersection'. Return 'Left' when construction
+fails; a 'Right' result has valid topology.
 -}
-buffer :: Double -> Geometry -> Geometry
+buffer :: Double -> Geometry -> Either TopologyException Geometry
 buffer = bufferWithSegments 8
 
 {- | Construct a round buffer with the requested number of segments per quadrant.
 Values below one use one segment. The distance and XY coordinates must be finite.
 The distance and coordinate-layout rules are the same as for 'buffer'.
 -}
-bufferWithSegments :: Int -> Double -> Geometry -> Geometry
-bufferWithSegments quadrants radius geometry = assemble SurfaceDimension (polygonize boundary) [] []
+bufferWithSegments :: Int -> Double -> Geometry -> Either TopologyException Geometry
+bufferWithSegments quadrants radius geometry =
+    robustOperation SurfaceDimension (max 0 (toRational radius)) (\source _ -> bufferPlanar (max 1 quadrants) radius source) (planar geometry) (Planar [] [] [])
+
+-- | Build buffer boundaries from source coordinates at one precision attempt.
+bufferPlanar :: Int -> Double -> Planar -> Either TopologyException Geometry
+bufferPlanar count radius source = (\polygons -> assemble SurfaceDimension polygons [] []) <$> polygonize boundary
   where
-    count = max 1 quadrants
     width = abs radius
-    source = planar geometry
     surfaces = Planar [] [] (planarPolygons source)
     rings = (if radius > 0 then concatMap (lineBuffer count width) (planarLines source) else []) ++ [circle count width (toDouble p) | radius > 0, p <- planarPoints source]
     bands = Planar [] [] [[map toExact ring] | ring <- rings]

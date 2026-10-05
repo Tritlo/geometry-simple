@@ -98,16 +98,24 @@ geometry model in OGC Simple Feature Access 1.2.1, section 6.1.2.5.
 `intersects` and `disjoint` reject separated envelopes and stop at the first
 contact. Point containment uses direct point-location tests. Full relation
 matrices, overlays, and validity checks use exact spatial indexes. Point-location
-queries reuse ring indexes and aggregated winding counts. Dense arrangements
-can still take quadratic time. Inputs with many intersections also increase the
+queries reuse ring indexes and aggregated winding counts. These indexes can
+still take quadratic time when many segment bounds overlap, even for disjoint
+shapes such as slanted interleaved combs. Many intersections also increase the
 cost of exact rational arithmetic. Measure the shapes and sizes used by your
-application; overlapping circles alone do not characterize these costs.
+application.
 For large indexed workloads, use a native library such as
 [`geos`](https://hackage.haskell.org/package/geos).
 
-Overlays validate their rounded output. If rounding changes topology, they retry
-with bounded snapping; thin regions can collapse. Exhausted retries raise
-`SF.OverlayPrecisionFailure`. The precision policy is described below.
+Overlays and buffers return `Either SF.TopologyException Geometry` and validate
+rounded output. If rounding changes topology, they retry with bounded snapping;
+thin regions can collapse. Exhausted precision retries return
+`Left SF.OverlayPrecisionFailure`. See the
+[precision policy](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md#overlay-precision).
+
+```haskell
+clippedArea :: Geometry -> Geometry -> Either SF.TopologyException Double
+clippedArea a b = SF.area <$> SF.intersection a b
+```
 
 See [Simple Features and GEOS](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md) for numerical limits,
 empty-value rules, format conversions, and deliberate differences from GEOS.

@@ -96,23 +96,30 @@ or bounds before constructing a full relation matrix.
 
 ### Overlay precision
 
-Overlays first compute an exact arrangement and round its result to `Double`.
+Overlays and buffers first compute an exact arrangement and round its result
+to `Double`. Buffer offsets approximate circular arcs with floating-point coordinates.
 A valid result keeps its coordinates. If rounding makes it invalid, the operation
 retries with vertex and segment snapping. Separate groups of overlapping input
 bounds use separate tolerances. A distant component therefore does not set the
-precision of a local operation.
+precision of a local operation. Positive buffers expand these bounds by their
+distance before grouping, because offsets from disjoint inputs can overlap.
 
 The first tolerance is the group's largest absolute ordinate divided by 10^12,
 with a floor of the smallest positive `Double`. Five attempts increase this
 tolerance tenfold, each starting from the original inputs. Nearby vertices and
 intersection nodes share coordinates. Edges also snap to nearby vertices.
-Narrow regions can collapse. If all attempts fail, evaluation throws
-`OverlayPrecisionFailure`, a `TopologyException` exported by
-`Data.Geometry.SimpleFeatures`.
+Narrow regions can collapse. These functions return
+`Either TopologyException Geometry`. If all precision attempts fail, they return
+`Left OverlayPrecisionFailure`. Ring assembly failures return `Left OpenBoundary`
+or `Left UncontainedHole`. `Data.Geometry.SimpleFeatures` exports all three
+constructors. Applications can handle failures without catching exceptions.
+The combined output is checked again after separate groups are processed.
 
 The retry count and tolerance schedule follow
 [GEOS OverlayNGRobust](https://github.com/libgeos/geos/blob/3.13.1/include/geos/operation/overlayng/OverlayNGRobust.h).
 This implementation retains exact noding and deterministic XY representatives.
+Buffers use this same retry schedule on their source coordinates; this differs
+from GEOS buffer-specific precision reduction.
 It does not reproduce GEOS's additional self-union and precision-grid attempts.
 It can therefore report a precision failure before GEOS exhausts its retry
 strategies. The two implementations do not have the same failure behavior.

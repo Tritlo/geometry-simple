@@ -62,11 +62,11 @@ suite format transform =
         , testCase "T44 Contains" $ S.contains forest ashton @?= False
         , testCase "T45 Relate" $ S.relatePattern "TTTTTTTTT" forest ashton @?= True
         , testCase "T46 Distance" $ S.distance bridge ashton @?= 12
-        , testCase "T47 Intersection" $ same (geometry "POINT (52 18)") (S.intersection stream lake)
-        , testCase "T48 Difference" $ same (geometry "POLYGON ((56 34,62 48,84 48,84 42,56 34))") (S.difference ashton forest)
-        , testCase "T49 Union" $ same lakeShell (S.union lake island)
-        , testCase "T50 SymDifference" $ same lakeShell (S.symmetricDifference lake island)
-        , testCase "T51 Buffer" $ length (filter (S.contains (S.buffer 15 bridge)) [house123, house215]) @?= 1
+        , testCase "T47 Intersection" $ same (geometry "POINT (52 18)") (successful (S.intersection stream lake))
+        , testCase "T48 Difference" $ same (geometry "POLYGON ((56 34,62 48,84 48,84 42,56 34))") (successful (S.difference ashton forest))
+        , testCase "T49 Union" $ same lakeShell (successful (S.union lake island))
+        , testCase "T50 SymDifference" $ same lakeShell (successful (S.symmetricDifference lake island))
+        , testCase "T51 Buffer" $ length (filter (S.contains (successful (S.buffer 15 bridge))) [house123, house215]) @?= 1
         , testCase "T52 ConvexHull" $ same lakeShell (S.convexHull lake)
         ]
   where
@@ -105,3 +105,7 @@ pointX _ = Nothing
 pointY :: Geometry -> Maybe Double
 pointY (PointGeometry (PointXY coordinate)) = Just (S.y coordinate)
 pointY _ = Nothing
+
+-- | Require successful construction for a fixture or generated valid input.
+successful :: (Show e) => Either e a -> a
+successful = either (error . show) id

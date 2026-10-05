@@ -3,7 +3,7 @@
 # dependencies = ["shapely==2.1.2", "types-shapely==2.1.0.20260728"]
 # ///
 # pyright: strict
-"""Compare near-coincident polygon overlays with GEOS at a stated precision."""
+"""Compare near-coincident overlays and zero buffers at a stated precision."""
 
 import argparse
 from fractions import Fraction
@@ -58,9 +58,12 @@ def cases(count: int, seed: int) -> list[tuple[str, str]]:
     return result + [(b, a) for a, b in result]
 
 
-def responses(probe: Path, pairs: list[tuple[str, str]]) -> list[dict[str, str]]:
-    """Evaluate the four operations independently through the Haskell probe."""
-    request = "".join(f"PAIR-WKT\toverlay\t{a}\t{b}\n" for a, b in pairs)
+def responses(probe: Path, pairs: list[tuple[str, str]], *, buffers: bool = False) -> list[dict[str, str]]:
+    """Evaluate overlays or zero buffers independently through the Haskell probe."""
+    if buffers:
+        request = "".join(f"TOPO-WKT\tbuffer-zero\tGEOMETRYCOLLECTION ({a},{b})\n" for a, b in pairs)
+    else:
+        request = "".join(f"PAIR-WKT\toverlay\t{a}\t{b}\n" for a, b in pairs)
     result = subprocess.run([str(probe)], input=request, capture_output=True, text=True, check=True)
     lines = result.stdout.splitlines()
     if len(lines) != len(pairs) or any(not line.startswith("OK\t") for line in lines):
@@ -99,23 +102,24 @@ def main() -> None:
     arguments = parser.parse_args()
     probe = Path(arguments.probe)
     pairs = cases(arguments.cases, arguments.seed)
-    for (wa, wb), fields in zip(pairs, responses(probe, pairs), strict=True):
+    for (wa, wb), fields, buffers in zip(pairs, responses(probe, pairs), responses(probe, pairs, buffers=True), strict=True):
         a, b = sh.from_wkt(wa), sh.from_wkt(wb)
         magnitude = max(abs(value) for value in a.bounds + b.bounds)
         area_limit = 1e-9 * magnitude * magnitude
         boundary_band = a.boundary.union(b.boundary).buffer(1e-8 * magnitude)
-        for name, operation in OPERATIONS.items():
-            context = f"{name}: {wa}; {wb}; {fields[name]}"
-            assert not fields[name].startswith("!"), context
-            actual = shape_geometry(read_structure(fields[name]))
-            expected = operation(a, b)
+        expected_results = [(name, fields[name], operation(a, b)) for name, operation in OPERATIONS.items()]
+        expected_results.append(("buffer.0.0", buffers["buffer.0.0"], sh.buffer(sh.GeometryCollection([a, b]), 0)))
+        for name, result, expected in expected_results:
+            context = f"{name}: {wa}; {wb}; {result}"
+            assert not result.startswith("!"), context
+            actual = shape_geometry(read_structure(result))
             assert actual.is_valid, context
             delta = sh.symmetric_difference(actual, expected)
             assert delta.area <= area_limit, context
             if not delta.is_empty:
                 assert boundary_band.covers(delta), context
     check_subnormal_result(probe)
-    print(f"GEOS {sh.geos_version_string}: {4 * len(pairs)} precision comparisons and one exact subnormal check passed")
+    print(f"GEOS {sh.geos_version_string}: {5 * len(pairs)} precision comparisons and one exact subnormal check passed")
 
 
 if __name__ == "__main__":
