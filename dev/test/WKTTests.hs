@@ -57,6 +57,10 @@ tests =
             let digits = Text.replicate 1000000 "1"
             decodeWKT ("POINT (" <> digits <> "e-999999 0." <> digits <> ")")
                 @?= Right (PointGeometry (PointXY (XY 1.1111111111111112 0.1111111111111111)))
+        , localOption (mkTimeout 5000000) $ testCase "bare multipoints in a large collection parse in linear time" $ do
+            let members = 50000
+                input = "GEOMETRYCOLLECTION (" <> Text.intercalate ", " (replicate members "MULTIPOINT (1 2)") <> ")"
+            fmap memberCount (decodeWKT input) @?= Right members
         , testCase "numeric components retain their order in ZM" $ do
             shape <- rightOrFail (decodeWKT "POINT ZM (-0 5e-324 -5e-324 1.7976931348623157e308)")
             case shape of
@@ -338,3 +342,8 @@ nestText count input = Text.replicate count "GEOMETRYCOLLECTION (" <> input <> T
 nestGeometry :: Int -> Geometry -> Geometry
 nestGeometry 0 geometry = geometry
 nestGeometry count geometry = GeometryCollection (V.singleton (nestGeometry (count - 1) geometry))
+
+-- | Count the direct members of a geometry collection.
+memberCount :: Geometry -> Int
+memberCount (GeometryCollection members) = V.length members
+memberCount _ = -1

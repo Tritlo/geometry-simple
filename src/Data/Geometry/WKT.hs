@@ -87,6 +87,10 @@ spaces = modify' (Text.dropWhile whitespace)
 whitespace :: Char -> Bool
 whitespace c = c == ' ' || c == '\t' || c == '\n' || c == '\r'
 
+-- | Keywords and named numbers use ASCII letters only.
+letter :: Char -> Bool
+letter c = isAsciiLower c || isAsciiUpper c
+
 -- | Require a punctuation character, with optional leading whitespace.
 symbol :: Char -> Parser ()
 symbol expected = do
@@ -101,7 +105,7 @@ word :: Parser Text
 word = do
     spaces
     input <- get
-    let (name, rest) = Text.span (\c -> isAsciiLower c || isAsciiUpper c) input
+    let (name, rest) = Text.span letter input
     when (Text.null name) (failure "expected a keyword")
     put rest
     pure (Text.toUpper name)
@@ -111,7 +115,7 @@ emptyKeyword :: Parser Bool
 emptyKeyword = do
     spaces
     input <- get
-    let (name, rest) = Text.span (\c -> isAsciiLower c || isAsciiUpper c) input
+    let (name, rest) = Text.span letter input
     if Text.toUpper name == "EMPTY"
         then put rest >> pure True
         else pure False
@@ -127,7 +131,7 @@ header = do
         Just family -> do
             spaces
             input <- get
-            let (tag, rest) = Text.span (\c -> isAsciiLower c || isAsciiUpper c) input
+            let (tag, rest) = Text.span letter input
             case lookup (Text.toUpper tag) suffixes of
                 Just dimensions -> put rest >> pure (family, Just dimensions)
                 Nothing -> pure (family, Nothing)
@@ -238,8 +242,9 @@ multiPoint :: Maybe Dimensions -> Parser (U.Vector Point, Maybe Dimensions)
 multiPoint current = do
     spaces
     input <- get
+    -- Inspect only the first token. Uppercasing the rest of the input would be quadratic.
     let first = Text.dropWhile whitespace (Text.drop 1 input)
-        parenthesized = Text.isPrefixOf "(" first || Text.isPrefixOf "EMPTY" (Text.toUpper first)
+        parenthesized = Text.isPrefixOf "(" first || Text.toUpper (Text.takeWhile letter first) == "EMPTY"
     vectorState current (point parenthesized)
 
 -- | Read a vector whose elements do not share inference state.
@@ -316,7 +321,7 @@ number = do
             Just ('-', rest) -> (True, rest)
             Just ('+', rest) -> (False, rest)
             _ -> (False, input)
-        (keyword, afterKeyword) = Text.span (\c -> isAsciiLower c || isAsciiUpper c) unsigned
+        (keyword, afterKeyword) = Text.span letter unsigned
         special = lookup (Text.toUpper keyword) [("NAN", castWord64ToDouble 0x7ff8000000000000), ("INF", 1 / 0), ("INFINITY", 1 / 0)]
     case special of
         Just value -> put afterKeyword >> pure (if negative then negate value else value)
