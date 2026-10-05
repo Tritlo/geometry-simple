@@ -71,7 +71,9 @@ jobs:
         run: >-
           uv run --no-project --with shapely==2.1.2
           --with types-shapely==2.1.0.20260728 --with pyright==1.1.414 --with duckdb==1.5.5
-          pyright dev/test/shapely_compare.py dev/test/test_shapely_compare.py dev/test/test_duckdb_wkt.py dev/check_sdist.py
+          pyright dev/test/shapely_compare.py dev/test/test_shapely_compare.py dev/test/test_duckdb_wkt.py dev/check_sdist.py dev/bench/report.py dev/test/test_dev_tools.py
+      - name: Check development tools
+        run: uv run --no-project python dev/test/test_dev_tools.py
       - name: Check comparison diagnostics
         run: uv run --script dev/test/test_shapely_compare.py
       - name: Check DuckDB codec interoperability

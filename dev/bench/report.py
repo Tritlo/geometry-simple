@@ -1,6 +1,7 @@
 # pyright: strict
 """Check public-function coverage and summarize audit CSV files as Markdown."""
 
+import argparse
 from collections import defaultdict
 import csv
 from dataclasses import dataclass
@@ -123,11 +124,11 @@ def case_row(case: Case, results: dict[Key, Result]) -> str:
 def write_report(results: dict[Key, Result], cases: list[Case], expected: set[str], before: dict[Key, Result] | None = None) -> None:
     """Write complete results plus a compact worst-case table for each function."""
     print("# Performance audit results\n")
-    print(f"Coverage: **{len(expected)} stable public functions**, **{len(cases) - 1} workloads**, at sizes 100, 400, and 1,600. The harness baseline is separate.\n")
-    print("See [CONTRIBUTING](../../CONTRIBUTING.md#full-api-audit) for the machine, source revision, commands, workload definitions, and measurement limits.\n")
+    print(f"Coverage: **{len(expected)} stable public functions**, **{sum(group != 'harness' for group, _, _ in cases)} workloads**, at sizes 100, 400, and 1,600. The harness baseline is separate.\n")
+    print("Record the source revision, compiler, hardware, and commands with these results. See CONTRIBUTING.md for the benchmark commands.\n")
     print("Times below 200 ms use the median of three measured batches after a pilot call. Slower calls have one sample. Additional invocations contribute more samples when present. Allocation is cumulative per call; it is not peak memory. `>` denotes a timeout lower bound. `†` marks completed samples accompanied by a timeout. Ratios compare the same workload at 400 and 1,600.\n")
     print("## Slowest measured workload for each function\n")
-    print("Selection uses time at size 1,600 in " + ("the previous audit" if before is not None else "this audit") + ". These are the slowest cases in that corpus, not proven worst-case bounds.\n")
+    print("Selection uses time at size 1,600 in " + ("the previous audit where available, otherwise this audit" if before is not None else "this audit") + ". These are the slowest cases in that corpus, not proven worst-case bounds.\n")
     header = "| Function | Case | 100 | 400 | 1,600 | Time ratio, 4× input | Allocation at 1,600 |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |"
     if before is None:
         print(header)
@@ -137,14 +138,15 @@ def write_report(results: dict[Key, Result], cases: list[Case], expected: set[st
         print(dividers + " ---: | ---: |")
     for operation in sorted(expected):
         choices = [case for case in cases if case[1] == operation]
-        reference = results if before is None else before
-        worst = max(choices, key=lambda case: reference[(*case, 1600)].ns)
+        common = [] if before is None else [case for case in choices if (*case, 1600) in before]
+        reference = before if common and before is not None else results
+        worst = max(common or choices, key=lambda case: reference[(*case, 1600)].ns)
         row = case_row(worst, results)
         if before is not None:
-            old = before[(*worst, 1600)]
+            old = before.get((*worst, 1600))
             current = results[(*worst, 1600)]
-            speedup = f"{old.ns / current.ns:.3g}×" if old.samples and current.samples and not (old.timeouts or current.timeouts) else "—"
-            row += f" {time_text(old)} | {speedup} |"
+            speedup = f"{old.ns / current.ns:.3g}×" if old is not None and old.samples and current.samples and current.ns > 0 and not (old.timeouts or current.timeouts) else "—"
+            row += f" {time_text(old) if old is not None else '—'} | {speedup} |"
         print(row)
     print("\n## Every workload\n")
     for group in sorted({case[0] for case in cases}):
@@ -164,17 +166,14 @@ def write_report(results: dict[Key, Result], cases: list[Case], expected: set[st
 
 def main(paths: list[str]) -> None:
     """Validate coverage before producing a report from one or more CSV files."""
-    before = None
-    if paths[:1] == ["--before"] and len(paths) >= 3:
-        before = read_results([paths[1]])
-        paths = paths[2:]
-    if not paths or paths[0].startswith("--"):
-        raise SystemExit("Usage: report.py [--before PREVIOUS.csv] AUDIT.csv [AUDIT.csv ...]")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--before", help="Previous audit CSV; missing workloads have no comparison")
+    parser.add_argument("paths", nargs="+", help="Current audit CSV files")
+    arguments = parser.parse_intermixed_args(paths)
+    before = None if arguments.before is None else read_results([arguments.before])
     root = Path(__file__).resolve().parents[2]
     expected = public_functions(root)
-    results = read_results(paths)
-    if before is not None:
-        check_coverage(before, expected)
+    results = read_results(arguments.paths)
     write_report(results, check_coverage(results, expected), expected, before)
 
 

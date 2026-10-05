@@ -126,7 +126,7 @@ geometryType geometry = case geometry of
 
 {- | The topological dimension: 0 for points, 1 for lines, and 2 for polygons.
 Empty values keep their family's dimension. A collection has the largest
-dimension of its members, or -1 when it has no members.
+dimension of its atomic members, or -1 when it has none.
 -}
 dimension :: Geometry -> Int
 dimension geometry = case topologicalDimension geometry of

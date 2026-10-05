@@ -63,7 +63,8 @@ Sources: [OGC common architecture](https://docs.ogc.org/is/06-103r4/06-103r4.pdf
   Distance to an empty geometry is NaN.
 - Buffers have round caps and joins, with eight segments per quadrant by
   default. Negative distances erode polygons and empty points and lines.
-  Zero distance repairs polygon topology. Circular arcs are approximations.
+  Zero distance extracts polygonal regions. Invalid input can lose regions,
+  such as one lobe of a self-crossing bowtie. Circular arcs are approximations.
 - Overlay line results join through vertices with exactly two neighbors.
   They stop at endpoints and branches. The point set is preserved, but line
   component counts, component order, and polygon hole order can differ from GEOS.
@@ -100,7 +101,8 @@ requires M. Untagged collection children infer their layouts independently.
 In multi-geometries, empties before the first coordinate remain XY; later
 empties use the inferred layout. Explicit parent tags require matching child
 layouts. Writers tag collections when all members share one output layout,
-including nested collections. Containers with no members have implicit XY.
+including nested collections. Empty containers inherit the containing layout;
+standalone empty containers use XY.
 
 Mixed-layout collection WKT omits the parent tag and retains each child's tag.
 This extends the OGC grammar in section 7. GEOS accepts this form, but DuckDB

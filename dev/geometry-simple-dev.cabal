@@ -15,12 +15,11 @@ category: Testing
 extra-source-files:
   bench/report.py
   test/shapely_compare.py
+  test/test_dev_tools.py
   test/test_duckdb_wkt.py
   test/test_shapely_compare.py
 
 extra-doc-files:
-  bench/CONTAINERS.md
-  bench/RESULTS.md
   test/SFA-TESTS.md
 
 test-suite geometry-simple-test

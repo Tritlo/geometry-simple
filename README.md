@@ -22,7 +22,7 @@ import qualified Data.Vector.Unboxed as U
 line = LineString (CoordinatesXY (U.fromList [XY 0 0, XY 2 2]))
 point = PointGeometry (PointXY (XY 1 1))
 
-crossesLine = SF.intersects line point
+intersectsLine = SF.intersects line point
 firstX = SF.startPoint line >>= SF.pointX
 binaryRoundTrip = encodeWKB line >>= decodeWKB
 textRoundTrip = encodeWKT line >>= decodeWKT
@@ -99,11 +99,9 @@ geometry model in OGC Simple Feature Access 1.2.1, section 6.1.2.5.
 contact. Point containment uses direct point-location tests. Full relation
 matrices, overlays, and validity checks use exact spatial indexes. Point-location
 queries reuse ring indexes and aggregated winding counts. Dense arrangements
-can still take quadratic time. Local GHC 9.14.1 `-O1` timings on 1,600-vertex
-polygons were about 0.24 s for `relate`, 0.23 s for `intersection`, and 0.014 s
-for distance between disjoint polygons. Costs depend on the input and hardware.
-The [full performance audit](https://github.com/Tritlo/geometry-simple/blob/main/dev/bench/RESULTS.md)
-covers all public functions, allocations, and scaling across input sizes.
+can still take quadratic time. Inputs with many intersections also increase the
+cost of exact rational arithmetic. Measure the shapes and sizes used by your
+application; overlapping circles alone do not characterize these costs.
 For large indexed workloads, use a native library such as
 [`geos`](https://hackage.haskell.org/package/geos).
 
