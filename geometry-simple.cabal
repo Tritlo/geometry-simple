@@ -59,6 +59,7 @@ library
 
   default-language: Haskell2010
   build-depends:
+    attoparsec >=0.14.4 && <0.15,
     base >=4.18 && <5,
     binary >=0.8 && <0.9,
     bytestring >=0.11.2 && <0.13,

@@ -137,16 +137,17 @@ not persist in those checks.
 
 ## Simpler codec primitives
 
-The codec review now favors standard readers and vector builders. WKB uses
+Revision `a0b5fde` adopted standard readers and vector builders. WKB uses
 `Data.Binary.Get.getDoublele` and `getDoublebe` for ordinates, and `U.replicateM`
 for coordinate buffers and multipoints. This removes 78 lines from the module:
 manual byte shifts, a separate multipoint reader, and its mutable buffer loop.
 Point and line decoding share one ordinate reader. Child headers use the same
 validation as other geometries.
 
-WKT uses `V.unfoldrM` to build vectors. `StateT` carries the inferred layout.
-This removes 9 lines, including the custom buffer allocation, growth, writes,
-and freeze. The two changes remove 87 library lines and add no dependencies.
+That revision used `V.unfoldrM` to build WKT vectors. `StateT` carried the inferred
+layout. This removed 9 lines, including the custom buffer allocation, growth,
+writes, and freeze. The two changes removed 87 library lines and added no
+dependencies. The Attoparsec change below replaces this WKT implementation.
 
 Measurements against `9fca2d3`, on the same machine and Nix toolchain:
 
@@ -190,3 +191,37 @@ changing only the multipoint loop to pure or mutable `replicateM` saved 6 or
 
 The exact WKT decimal conversion remains. It preserves signed zero and
 subnormals and accepts WKT's decimal syntax.
+
+## Attoparsec WKT parser
+
+WKT now uses `attoparsec` for input, errors, lookahead, optional tokens, signs,
+and comma-separated lists. Its parser replaces `StateT Text (Either String)`.
+The small `StateT` wrapper around `sepBy1'` carries only the inferred coordinate
+layout between members. Points and sequences share one ordinate reader.
+The module shrank from 433 to 349 lines. This adds one direct dependency,
+`attoparsec >=0.14.4 && <0.15`.
+
+The numeric grammar uses Attoparsec combinators with exact decimal conversion.
+It retains `.5`, `1.`, signed zero, subnormals, and compensated large exponents.
+Attoparsec's built-in `double` parser does not accept leading decimal points;
+see its [numeric parser documentation](https://hackage-content.haskell.org/package/attoparsec-0.14.4/docs/Data-Attoparsec-Text.html#v:double).
+
+Measurements against `a0b5fde` used the same Nix toolchain and machine. The API
+audit ran valid and truncated XY and XYZM lines at 1,000, 10,000, and 100,000
+coordinates. It also ran mixed collections and nested collections at size
+1,000. Two invocations per revision used before/after/after/before order.
+Each invocation used the audit's adaptive batches and forced each result.
+The table reports medians; allocation is cumulative per call.
+
+| WKT decode input | Before → after | Allocation before → after |
+| --- | ---: | ---: |
+| XY line, 1,000 coordinates | 0.647 → 1.15 ms | 3.31 → 6.14 MB |
+| XY line, 100,000 coordinates | 118 → 147 ms | 343 → 623 MB |
+| XYZM line, 100,000 coordinates | 240 → 192 ms | 545 → 1,023 MB |
+| Truncated XY line, 100,000 coordinates | 63.0 → 148 ms | 146 → 619 MB |
+| Mixed collection, 1,000 members | 0.685 → 2.00 ms | 4.30 → 9.68 MB |
+| Collection depth 1,000 | 0.215 → 0.534 ms | 1.46 → 2.73 MB |
+
+The change reduces custom parsing code. It increases allocation and most
+measured runtimes. To repeat the line workloads, use the command above with
+`--audit codecs/decodeWKT/line- 100000`.
