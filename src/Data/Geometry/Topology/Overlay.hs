@@ -31,6 +31,8 @@ data TopologyException
       OpenBoundary
     | -- | A hole has no containing exterior ring.
       UncontainedHole
+    | -- | A constructed coordinate exceeds the finite Double range.
+      CoordinateOverflow
     deriving (Eq, Show, Read)
 
 {- | The points common to both geometries. Coordinates must have finite XY values.
@@ -80,6 +82,7 @@ Reuse the first result when all inputs belong to one group.
 robustOperation :: TopologicalDimension -> Rational -> (Planar -> Planar -> Either TopologyException Geometry) -> Planar -> Planar -> Either TopologyException Geometry
 robustOperation emptyDimension padding operation a b = case operation a b >>= validateResult of
     Right result -> Right result
+    Left CoordinateOverflow -> Left CoordinateOverflow
     Left _ -> do
         parts <- case overlayGroups padding a b of
             [_] -> (: []) <$> firstValid (snappedAttempts a b)

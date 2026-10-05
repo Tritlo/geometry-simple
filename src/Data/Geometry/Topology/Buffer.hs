@@ -10,6 +10,7 @@ import Data.Geometry.Internal
 import Data.Geometry.Topology.Overlay
 import Data.Geometry.Topology.Planar
 import Data.List (group, groupBy)
+import Data.Maybe (catMaybes)
 import qualified Data.Vector as V
 
 {- | Buffer by a distance in coordinate units, with eight segments per quadrant.
@@ -19,7 +20,8 @@ A zero distance extracts polygonal regions. Invalid input can lose regions,
 such as one lobe of a self-crossing bowtie. It is not a general validity repair.
 The distance and XY coordinates must be finite. Rounded results use the same
 validation and bounded snapping as 'intersection'. Return 'Left' when construction
-fails; a 'Right' result has valid topology.
+fails; a 'Right' result has valid topology. Return 'Left' 'CoordinateOverflow'
+when an offset coordinate cannot fit in a finite Double.
 -}
 buffer :: Double -> Geometry -> Either TopologyException Geometry
 buffer = bufferWithSegments 8
@@ -34,27 +36,36 @@ bufferWithSegments quadrants radius geometry =
 
 -- | Build buffer boundaries from source coordinates at one precision attempt.
 bufferPlanar :: Int -> Double -> Planar -> Either TopologyException Geometry
-bufferPlanar count radius source = (\polygons -> assemble SurfaceDimension polygons [] []) <$> polygonize boundary
+bufferPlanar count radius source = do
+    lines' <- if radius > 0 then concat <$> traverse (lineBuffer count width) (planarLines source) else pure []
+    rings <- traverse checkedCurve (lines' ++ [circle count width (toDouble p) | radius > 0, p <- planarPoints source])
+    offsetRings <- if radius == 0 then pure [] else concat <$> traverse (offsetPolygon count radius) (planarPolygons source)
+    let surfaces = Planar [] [] (planarPolygons source)
+        bands = Planar [] [] [[map toExact ring] | ring <- rings]
+        edges = nodeSegments ((if radius /= 0 then concatMap ringSegments offsetRings else segments surfaces) ++ segments bands) []
+        queryEdges = segmentQuery edges
+        depths = map prepareDepth (planarPolygons source)
+        offsetWinding = prepareWinding (concatMap ringSegments (offsetRings ++ map (map toExact) rings))
+        selected p
+            | radius == 0 = any (\depth -> depth p > 0) depths
+            | otherwise = offsetWinding p < 0
+        boundary =
+            [ if leftInside then (a, b) else (b, a)
+            | edge@(a, b) <- edges
+            , let (left, right) = sidePoints queryEdges edge
+            , let leftInside = selected left
+            , leftInside /= selected right
+            ]
+    polygons <- polygonize boundary
+    pure (assemble SurfaceDimension polygons [] [])
   where
     width = abs radius
-    surfaces = Planar [] [] (planarPolygons source)
-    rings = (if radius > 0 then concatMap (lineBuffer count width) (planarLines source) else []) ++ [circle count width (toDouble p) | radius > 0, p <- planarPoints source]
-    bands = Planar [] [] [[map toExact ring] | ring <- rings]
-    offsetRings = concatMap (offsetPolygon count radius) (planarPolygons source)
-    edges = nodeSegments ((if radius /= 0 then concatMap ringSegments offsetRings else segments surfaces) ++ segments bands) []
-    queryEdges = segmentQuery edges
-    depths = map prepareDepth (planarPolygons source)
-    offsetWinding = prepareWinding (concatMap ringSegments (offsetRings ++ map (map toExact) rings))
-    selected p
-        | radius == 0 = any (\depth -> depth p > 0) depths
-        | otherwise = offsetWinding p < 0
-    boundary =
-        [ if leftInside then (a, b) else (b, a)
-        | edge@(a, b) <- edges
-        , let (left, right) = sidePoints queryEdges edge
-        , let leftInside = selected left
-        , leftInside /= selected right
-        ]
+
+-- | Reject nonfinite offset coordinates before conversion to exact positions.
+checkedCurve :: [FloatingPosition] -> Either TopologyException [FloatingPosition]
+checkedCurve points
+    | all (\(x, y) -> finite x && finite y) points = Right points
+    | otherwise = Left CoordinateOverflow
 
 -- | Prepare ring winding and orientation for zero-buffer queries.
 prepareDepth :: [[Position]] -> Position -> Int
@@ -73,23 +84,31 @@ GEOS discards inverted erosion curves whose samples all lie within 0.99 of
 the requested radius from the source boundary. See
 <https://github.com/libgeos/geos/blob/3.13.1/src/operation/buffer/BufferCurveSetBuilder.cpp#L418 BufferCurveSetBuilder>.
 -}
-offsetPolygon :: Int -> Double -> [[Position]] -> [[Position]]
-offsetPolygon _ _ [] = []
+offsetPolygon :: Int -> Double -> [[Position]] -> Either TopologyException [[Position]]
+offsetPolygon _ _ [] = Right []
 offsetPolygon count distance (shell : holes)
-    | distance < 0 && (eroded shell || inverted shell shellCurve) = []
-    | otherwise = shellCurve : [curve | hole <- holes, distance < 0 || not (eroded hole), let curve = offset (distance > 0) hole, distance < 0 || not (inverted hole curve)]
+    | distance < 0 && eroded shell = Right []
+    | otherwise = do
+        shellCurve <- offset (distance < 0) shell
+        if distance < 0 && inverted shell shellCurve
+            then pure []
+            else (shellCurve :) . catMaybes <$> traverse holeCurve holes
   where
     radius = abs distance
-    shellCurve = offset (distance < 0) shell
-    offset ccw ring =
+    holeCurve hole
+        | distance >= 0 && eroded hole = Right Nothing
+        | otherwise = do
+            curve <- offset (distance > 0) hole
+            pure (if distance >= 0 && inverted hole curve then Nothing else Just curve)
+    offset ccw ring = do
         let flipped = (ringArea ring > 0) /= ccw
             simplified = simplify (if flipped then LT else GT) (radius / 100) (map toDouble ring)
             input = if flipped then reverse simplified else simplified
-            curve = map toExact (offsetRing count radius flipped input)
-         in if distance < 0 then reverse curve else curve
+        curve <- map toExact <$> (offsetRing count radius flipped input >>= checkedCurve)
+        pure (if distance < 0 then reverse curve else curve)
     eroded [] = True
     eroded ring
-        | length (unique ring) == 3 = radius > fromRational (abs (ringArea ring)) / sum [let (x, y) = toDouble (subtractPosition b a) in sqrt (x * x + y * y) | (a, b) <- ringSegments ring]
+        | length (unique ring) == 3 = toRational radius * sum [vectorMagnitude (subtractPosition b a) | (a, b) <- ringSegments ring] > abs (ringArea ring)
         | otherwise =
             let xs = map fst ring
                 ys = map snd ring
@@ -101,11 +120,11 @@ offsetPolygon count distance (shell : holes)
         farEnough point@(x, y) = all ((> reach ^ (2 :: Int)) . squaredLength . segmentOffset point) (query ((x - reach, y - reach), (x + reach, y + reach)))
 
 -- | Build a connected left offset curve before resolving its self-intersections.
-offsetRing :: Int -> Double -> Bool -> [FloatingPosition] -> [FloatingPosition]
+offsetRing :: Int -> Double -> Bool -> [FloatingPosition] -> Either TopologyException [FloatingPosition]
 offsetRing count radius flipped original = case points of
-    [] -> []
-    [p] -> circle count radius p
-    _ -> close (separate radius (concatMap (offsetCorner count radius flipped) (zip3 (last points : init points) points (drop 1 points ++ take 1 points))))
+    [] -> Right []
+    [p] -> Right (circle count radius p)
+    _ -> close . separate radius . concat <$> traverse (offsetCorner count radius flipped) (zip3 (last points : init points) points (drop 1 points ++ take 1 points))
   where
     uniquePoints = [p | p : _ <- group original]
     points = case uniquePoints of
@@ -115,14 +134,18 @@ offsetRing count radius flipped original = case points of
 {- | Join two left offset segments, rounding convex turns and trimming concave turns.
 The 1e-3 relative separation and 80:1 inside-corner connector match GEOS.
 -}
-offsetCorner :: Int -> Double -> Bool -> (FloatingPosition, FloatingPosition, FloatingPosition) -> [FloatingPosition]
-offsetCorner count radius flipped (a, b, c)
-    | turn == LT && separation < radius * 1e-3 = [end]
-    | turn == LT = arc count radius b before after True
-    | turn == EQ = if (a < b) /= (b < c) then arc count radius b before after (not flipped) else []
-    | otherwise = case segmentIntersection (toExact (plus a before), toExact end) (toExact start, toExact (plus c after)) of
-        p : _ -> [toDouble p]
-        [] -> if separation < radius * 1e-3 then [end] else [end, toward end, toward start, start]
+offsetCorner :: Int -> Double -> Bool -> (FloatingPosition, FloatingPosition, FloatingPosition) -> Either TopologyException [FloatingPosition]
+offsetCorner count radius flipped (a, b, c) = do
+    _ <- checkedCurve [end, start]
+    case turn of
+        LT | separation < radius * 1e-3 -> pure [end]
+        LT -> checkedCurve (arc count radius b before after True)
+        EQ -> checkedCurve (if (a < b) /= (b < c) then arc count radius b before after (not flipped) else [])
+        GT -> do
+            _ <- checkedCurve [plus a before, plus c after]
+            checkedCurve $ case segmentIntersection (toExact (plus a before), toExact end) (toExact start, toExact (plus c after)) of
+                p : _ -> [toDouble p]
+                [] -> if separation < radius * 1e-3 then [end] else [end, toward end, toward start, start]
   where
     turn = orientation (toExact a) (toExact b) (toExact c)
     before = normal radius a b
@@ -131,16 +154,23 @@ offsetCorner count radius flipped (a, b, c)
     start = plus b after
     separation = pointDistance end start
     factor = if count >= 8 then 80 else 1
-    toward (x, y) = let (u, v) = b in ((factor * x + u) / (factor + 1), (factor * y + v) / (factor + 1))
+    toward (x, y) = let (u, v) = b in (weighted x u, weighted y v)
+    weighted x y =
+        let result = (factor * x + y) / (factor + 1)
+         in if finite result then result else fromRational ((toRational factor * toRational x + toRational y) / toRational (factor + 1))
 
 -- | Construct one connected outline for an open line, or two offsets for a ring.
-lineBuffer :: Int -> Double -> [Position] -> [[FloatingPosition]]
+lineBuffer :: Int -> Double -> [Position] -> Either TopologyException [[FloatingPosition]]
 lineBuffer count radius original = case points of
-    [] -> []
-    [point] -> [circle count radius point]
+    [] -> Right []
+    [point] -> Right [circle count radius point]
     first : _ : _
-        | first == last points -> map (map toDouble) (offsetPolygon count radius [map toExact points, map toExact points])
-        | otherwise -> [close (separate radius (leftSide leftPath ++ cap leftPath ++ leftSide rightPath ++ cap rightPath))]
+        | first == last points -> map (map toDouble) <$> offsetPolygon count radius [map toExact points, map toExact points]
+        | otherwise -> do
+            left <- leftSide leftPath
+            right <- leftSide rightPath
+            outline <- checkedCurve (left ++ cap leftPath ++ right ++ cap rightPath)
+            pure [close (separate radius outline)]
       where
         leftPath = simplify GT (radius / 100) points
         rightPath = reverse (simplify LT (radius / 100) points)
@@ -151,10 +181,10 @@ lineBuffer count radius original = case points of
              in arc count radius final endNormal (opposite endNormal) True
   where
     points = [point | point : _ <- group (map toDouble original)]
-    leftSide path@(_ : _ : _) =
-        concatMap (offsetCorner count radius False) (zip3 path (drop 1 path) (drop 2 path))
-            ++ [plus (last path) (normal radius (path !! (length path - 2)) (last path))]
-    leftSide _ = []
+    leftSide path@(_ : _ : _) = do
+        corners <- concat <$> traverse (offsetCorner count radius False) (zip3 path (drop 1 path) (drop 2 path))
+        pure (corners ++ [plus (last path) (normal radius (path !! (length path - 2)) (last path))])
+    leftSide _ = Right []
 
 -- | Match GEOS's minimum vertex separation of 1e-4 times the buffer radius.
 separate :: Double -> [FloatingPosition] -> [FloatingPosition]
@@ -162,7 +192,11 @@ separate radius points = [first | first : _ <- groupBy (\a b -> pointDistance a 
 
 -- | The Euclidean distance used by native buffer vertex thresholds.
 pointDistance :: FloatingPosition -> FloatingPosition -> Double
-pointDistance (x, y) (u, v) = sqrt ((x - u) * (x - u) + (y - v) * (y - v))
+pointDistance a@(x, y) b@(u, v)
+    | finite squared && (squared > 0 || a == b) = sqrt squared
+    | otherwise = vectorLength (subtractPosition (toExact a) (toExact b))
+  where
+    squared = (x - u) * (x - u) + (y - v) * (y - v)
 
 {- | Remove shallow concave vertices in the same directed passes as GEOS.
 GEOS uses a tolerance of radius / 100. See
@@ -204,14 +238,20 @@ opposite :: FloatingPosition -> FloatingPosition
 opposite (x, y) = (-x, -y)
 
 {- | The left perpendicular displacement at the requested distance.
-The evaluation order matches GEOS. Intermediate Double values can overflow.
+Keep the usual evaluation order. Use exact scaling when a product overflows
+or loses a nonzero displacement to underflow.
 -}
 normal :: Double -> FloatingPosition -> FloatingPosition -> FloatingPosition
-normal radius (x, y) (u, v) = (-(radius * dy / distance), radius * dx / distance)
+normal radius a@(x, y) b@(u, v)
+    | finite nx && finite ny && (nx /= 0 || dy == 0 || radius == 0) && (ny /= 0 || dx == 0 || radius == 0) = (nx, ny)
+    | otherwise = toDouble (scalePosition (toRational radius / vectorMagnitude direction) (-ey, ex))
   where
     dx = u - x
     dy = v - y
-    distance = sqrt (dx * dx + dy * dy)
+    distance = pointDistance a b
+    nx = -(radius * dy / distance)
+    ny = radius * dx / distance
+    direction@(ex, ey) = subtractPosition (toExact b) (toExact a)
 
 -- | Close a nonempty polygon ring.
 close :: [a] -> [a]

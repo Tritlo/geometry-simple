@@ -13,6 +13,7 @@ Initial release.
   overlays, and round buffers. Overlays and buffers return
   `Either TopologyException Geometry`. They use bounded snapping when output
   rounding changes topology; exhausted retries return `Left OverlayPrecisionFailure`.
+  Unrepresentable buffer offsets return `Left CoordinateOverflow`.
   The retry schedule follows GEOS 3.13.1. Its additional self-union and
   precision-grid attempts are omitted, so results and precision failures can
   differ. See the [overlay precision policy](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md#overlay-precision).

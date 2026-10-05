@@ -90,6 +90,15 @@ Hull orientation tests use a bounded `Double` calculation with an exact
 `Rational` fallback. Topology uses exact rational intersections and rounds
 constructed output coordinates to `Double`. Exact bounding-box indexes prune
 segment pairs, validity checks, point locations, and distance candidates.
+Representative points use exact scanline crossings. Their rounded X ordinate
+must stay within the selected interval. A shell vertex is used when no interval
+contains a representable point. Distance retains exact scaling until the final
+conversion, including subnormal projected distances.
+
+Buffers use scaled norms when intermediate products overflow or underflow.
+An offset outside the finite `Double` range returns `Left CoordinateOverflow`.
+These rules can differ from GEOS at extreme coordinate scales.
+
 Repeated winding queries use aggregated crossing counts. Dense arrangements
 can still take quadratic time. Predicates can reject incompatible dimensions
 or bounds before constructing a full relation matrix.
@@ -111,7 +120,7 @@ intersection nodes share coordinates. Edges also snap to nearby vertices.
 Narrow regions can collapse. These functions return
 `Either TopologyException Geometry`. If all precision attempts fail, they return
 `Left OverlayPrecisionFailure`. Ring assembly failures return `Left OpenBoundary`
-or `Left UncontainedHole`. `Data.Geometry.SimpleFeatures` exports all three
+or `Left UncontainedHole`. `Data.Geometry.SimpleFeatures` exports these
 constructors. Applications can handle failures without catching exceptions.
 The combined output is checked again after separate groups are processed.
 

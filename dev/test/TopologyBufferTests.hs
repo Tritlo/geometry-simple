@@ -8,6 +8,7 @@ import Data.Geometry.Internal
 import qualified Data.Geometry.SimpleFeatures as S
 import qualified Data.Geometry.WKT as WKT
 import Data.Text (Text)
+import qualified Data.Vector.Unboxed as U
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -38,6 +39,24 @@ tests =
             S.coordinateDimension (successful (S.buffer 0 (geometry "POLYGON ZM ((0 0 1 4,3 0 2 5,0 3 3 6,0 0 1 4))"))) @?= 2
         , testCase "zero buffer selects one bowtie lobe by winding" $
             sameXY (successful (S.buffer 0 (geometry "POLYGON ((0 0,10 10,0 10,10 0,0 0))"))) "POLYGON ((0 0,5 5,10 0,0 0))"
+        , testCase "buffers preserve very short and very long segments" $
+            forM_ [1e-200, 1e-150, 1, 1e150, 1e200] $ \size -> do
+                let line = LineString (CoordinatesXY (U.fromList [XY 0 0, XY size 0]))
+                    result = successful (S.buffer size line)
+                    point x y = PointGeometry (PointXY (XY x y))
+                assertBool "nonempty valid buffer" (not (S.isEmpty result) && S.isValid result)
+                forM_ [point 0 0, point size 0, point (size / 2) (size / 2)] $ \sample ->
+                    assertBool "buffer covers an interior sample" (S.covers result sample)
+        , testCase "long segment buffer keeps its middle" $ do
+            let source = geometry "LINESTRING (0 0,1e200 0)"
+                result = successful (S.buffer 0.5 source)
+            assertBool "buffer covers its source" (S.covers result source)
+        , testCase "large translated polygon erosion remains nonempty" $
+            sameXY
+                (successful (S.buffer (-1e307) (geometry "POLYGON ((1e308 1e308,1.6e308 1e308,1.6e308 1.6e308,1e308 1.6e308,1e308 1e308))")))
+                "POLYGON ((1.1e308 1.1e308,1.5e308 1.1e308,1.5e308 1.5e308,1.1e308 1.5e308,1.1e308 1.1e308))"
+        , testCase "unrepresentable offsets return an explicit error" $
+            S.buffer 1e308 (geometry "POINT (1e308 1e308)") @?= Left S.CoordinateOverflow
         , testCase "near-coincident polygons produce valid rounded buffers" $ do
             let source = geometry "GEOMETRYCOLLECTION (POLYGON ((-0.5 17,-18.5 1.5,40.5 35.5,-0.5 17)),POLYGON ((-0.499999999999993 17.00000000000001,-18.499999999999993 1.50000000000001,40.50000000000001 35.50000000000001,-0.499999999999993 17.00000000000001)))"
             forM_ [-1, 0, 0.5, 2] $ \radius -> do
