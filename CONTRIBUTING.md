@@ -129,18 +129,18 @@ intersection, and buffering at 100, 400, and 1,600 vertices. Add a vertex count
 to select one size. It uses three measured trials after a warmup. Results are
 fully evaluated, and input construction stays outside the timed action.
 
-Sample medians on GHC 9.14.1, `-O1`, and a Ryzen 9 7950X:
+Sample audit timings on GHC 9.14.1, `-O1`, and a Ryzen 9 7950X:
 
 | Operation and input | 400 vertices | 1,600 vertices |
 | --- | ---: | ---: |
-| `contains`, overlapping polygons | 0.25 ms | 1.27 ms |
-| `contains`, nested polygons | 291 ms | 4,426 ms |
-| `touches`, overlapping polygons | 0.37 ms | 1.81 ms |
-| `equals`, overlapping polygons | 0.20 ms | 1.06 ms |
-| `relate`, overlapping polygons | 317 ms | 4,585 ms |
-| `intersection`, overlapping polygons | 273 ms | 3,764 ms |
-| `distance`, disjoint polygons | 25 ms | 190 ms |
-| `buffer`, distance 0.1 | 113 ms | 1,412 ms |
+| `contains`, overlapping polygons | 0.080 ms | 0.29 ms |
+| `contains`, nested polygons | 52 ms | 220 ms |
+| `touches`, overlapping polygons | 0.19 ms | 0.77 ms |
+| `equals`, overlapping polygons | 0.075 ms | 0.29 ms |
+| `relate`, overlapping polygons | 51 ms | 244 ms |
+| `intersection`, overlapping polygons | 51 ms | 233 ms |
+| `distance`, disjoint polygons | 2.9 ms | 14 ms |
+| `buffer`, distance 0.1 | 36 ms | 167 ms |
 
 Inputs approximate unit circles centered at `(0,0)` and `(0.5,0)`. The nested
 circle has radius 0.5 and center `(0,0)`. The disjoint circle is centered at
@@ -164,6 +164,10 @@ geometry_bench=$(cabal list-bin bench:geometry-simple-bench)
 python3 dev/bench/report.py /tmp/geometry-audit.csv /tmp/geometry-audit-large.csv > /tmp/geometry-performance.md
 ```
 
+Add `--before PREVIOUS.csv` to the report command to compare the same workloads
+with a previous audit. The summary then selects each function's slowest case
+from that previous run. It reports current time, previous time, and speedup.
+
 Selectors match a `group/operation/case` prefix. For example,
 `--audit codecs/encodeWKB/nested 10000` selects one workload. Groups are
 `accessors`, `measurements`, `unary`, `relations`, `construction`, `measures`,
@@ -182,9 +186,10 @@ main sizes. Fast accessors approach the loop overhead; compare their scaling,
 not individual nanosecond differences. Allocation includes the harness and
 is cumulative per call. It does not measure retained or peak memory.
 
-The recorded run used library revision `5e95432`, the pinned Nix environment,
+The current run used library revision `21ae8ff`, the pinned Nix environment,
 GHC 9.14.1, `-O1`, and an AMD Ryzen 9 7950X on Linux/WSL2, on 2026-10-05.
-Six slow workloads at size 1,600 were repeated twice to check timing variation.
+The comparison uses the earlier `5e95432` audit on the same machine and
+toolchain. Six slow workloads in that baseline were repeated twice.
 These are local measurements without CPU isolation, not latency guarantees.
 
 Workload sizes have these meanings:
@@ -201,29 +206,16 @@ Workload sizes have these meanings:
   Touching boxes have `n` boundary vertices each, including subdivisions.
 - Measured lines have increasing, constant, or alternating M values. Codecs
   include XY and XYZM lines, holes, mixed collections, nesting, and truncated
-  input. Depth-100,000 codecs were not run; the largest codec cases use lines.
+  input. WKB encoding also runs at depth 100,000. Other codec cases at size
+  100,000 use line vectors.
 
-The measurements identify these remaining costs:
-
-- Most measurements scan coordinates. On 100,000-point lines, length, bounds,
-  and centroid take about 1–3 ms. The hull takes about 98 ms.
-- WKB encoding and decoding take about 1–2 ms for a 100,000-point XY line.
-  WKT takes about 31 ms to encode and 71 ms to decode that line.
-- `isSimple`, closed-line `isRing`, and polygon `isValid` still compare segment
-  pairs. Validating a polygon with two 1,600-vertex rings takes about 980 ms.
-- Full relations, successful polygon predicates, overlays, and line buffers
-  remain expensive. Many take seconds at size 1,600. Their allocation can
-  exceed 20 GiB per call. This does not measure peak memory.
-- `crosses` and `overlaps` still construct full relation matrices for cases
-  that could be rejected from dimensions or disjoint bounds.
-- WKB encoding recomputes aggregate dimensions at every collection parent.
-  Encoding a collection of depth 10,000 takes about 439 ms. This is quadratic
-  in nesting depth. Ordinary flat line encoding does not have that cost.
-
-Start with predicate rejection paths and a single traversal for nested WKB
-headers. Then target candidate filtering in validity checks and repeated
-point-location scans in relations and overlays. Reuse exact geometry tests
-and the Shapely comparisons when changing those algorithms.
+The topology indexes remove repeated full scans from these workloads. For
+example, a fourfold input increase from 400 to 1,600 now increases full relation,
+containment, validity, and buffer costs by about four to five times. Dense
+intersections can still produce quadratic work and output. Exact rational
+arithmetic also remains more expensive than native floating-point geometry.
+Reuse the exact geometry tests and Shapely comparisons when changing these
+algorithms.
 
 ## Pull requests and releases
 

@@ -71,9 +71,10 @@ respectively. Compensation cannot recover rounding already lost in products.
 Hull orientation tests use a bounded `Double` calculation with an exact
 `Rational` fallback. Topology uses exact rational intersections and rounds
 constructed output coordinates to `Double`. Exact bounding-box indexes prune
-segment and distance candidates. Dense arrangements and repeated point-location
-checks can still take quadratic time. Direct intersection queries have separate
-early exits, and containment and equality can reject incompatible bounds.
+segment pairs, validity checks, point locations, and distance candidates.
+Repeated winding queries use aggregated crossing counts. Dense arrangements
+can still take quadratic time. Predicates can reject incompatible dimensions
+or bounds before constructing a full relation matrix.
 
 ## Format rules
 

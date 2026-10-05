@@ -120,20 +120,32 @@ def case_row(case: Case, results: dict[Key, Result]) -> str:
     return f"| `{operation}` | {label} | " + " | ".join(time_text(result) for result in samples) + f" | {ratio} | {allocation_text(large)} |"
 
 
-def write_report(results: dict[Key, Result], cases: list[Case], expected: set[str]) -> None:
+def write_report(results: dict[Key, Result], cases: list[Case], expected: set[str], before: dict[Key, Result] | None = None) -> None:
     """Write complete results plus a compact worst-case table for each function."""
     print("# Performance audit results\n")
     print(f"Coverage: **{len(expected)} stable public functions**, **{len(cases) - 1} workloads**, at sizes 100, 400, and 1,600. The harness baseline is separate.\n")
     print("See [CONTRIBUTING](../../CONTRIBUTING.md#full-api-audit) for the machine, source revision, commands, workload definitions, and measurement limits.\n")
     print("Times below 200 ms use the median of three measured batches after a pilot call. Slower calls have one sample. Additional invocations contribute more samples when present. Allocation is cumulative per call; it is not peak memory. `>` denotes a timeout lower bound. `†` marks completed samples accompanied by a timeout. Ratios compare the same workload at 400 and 1,600.\n")
     print("## Slowest measured workload for each function\n")
-    print("Selection uses time at size 1,600. These are the slowest cases in this corpus, not proven worst-case bounds.\n")
+    print("Selection uses time at size 1,600 in " + ("the previous audit" if before is not None else "this audit") + ". These are the slowest cases in that corpus, not proven worst-case bounds.\n")
     header = "| Function | Case | 100 | 400 | 1,600 | Time ratio, 4× input | Allocation at 1,600 |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |"
-    print(header)
+    if before is None:
+        print(header)
+    else:
+        labels, dividers = header.splitlines()
+        print(labels + " Previous time at 1,600 | Speedup |")
+        print(dividers + " ---: | ---: |")
     for operation in sorted(expected):
         choices = [case for case in cases if case[1] == operation]
-        worst = max(choices, key=lambda case: results[(*case, 1600)].ns)
-        print(case_row(worst, results))
+        reference = results if before is None else before
+        worst = max(choices, key=lambda case: reference[(*case, 1600)].ns)
+        row = case_row(worst, results)
+        if before is not None:
+            old = before[(*worst, 1600)]
+            current = results[(*worst, 1600)]
+            speedup = f"{old.ns / current.ns:.3g}×" if old.samples and current.samples and not (old.timeouts or current.timeouts) else "—"
+            row += f" {time_text(old)} | {speedup} |"
+        print(row)
     print("\n## Every workload\n")
     for group in sorted({case[0] for case in cases}):
         print(f"### {group}\n")
@@ -143,7 +155,7 @@ def write_report(results: dict[Key, Result], cases: list[Case], expected: set[st
                 print(case_row(case, results))
         print()
     print("## Larger inputs\n")
-    print("These runs cover accessors, measurements, measured locations, and codecs. Topology remains in the smaller sweep. Depth-100,000 collection codecs were not run; size 100,000 codec rows cover line vectors.\n")
+    print("These runs cover selected accessors, measurements, measured locations, and codecs. Topology remains in the smaller sweep. The `nested` case measures collection depth; line cases measure coordinate count.\n")
     print("| Function | Case | Size | Time | Allocation | Completed samples | Timeouts |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |")
     for (group, operation, case, size), result in sorted(results.items()):
         if size not in SIZES:
@@ -152,12 +164,18 @@ def write_report(results: dict[Key, Result], cases: list[Case], expected: set[st
 
 def main(paths: list[str]) -> None:
     """Validate coverage before producing a report from one or more CSV files."""
-    if not paths:
-        raise SystemExit("Usage: report.py AUDIT.csv [AUDIT.csv ...]")
+    before = None
+    if paths[:1] == ["--before"] and len(paths) >= 3:
+        before = read_results([paths[1]])
+        paths = paths[2:]
+    if not paths or paths[0].startswith("--"):
+        raise SystemExit("Usage: report.py [--before PREVIOUS.csv] AUDIT.csv [AUDIT.csv ...]")
     root = Path(__file__).resolve().parents[2]
     expected = public_functions(root)
     results = read_results(paths)
-    write_report(results, check_coverage(results, expected), expected)
+    if before is not None:
+        check_coverage(before, expected)
+    write_report(results, check_coverage(results, expected), expected, before)
 
 
 if __name__ == "__main__":

@@ -94,11 +94,11 @@ geometry model in OGC Simple Feature Access 1.2.1, section 6.1.2.5.
 
 `intersects` and `disjoint` reject separated envelopes and stop at the first
 contact. Point containment uses direct point-location tests. Full relation
-matrices and overlays use indexed segment bounds, but repeated point-location
-checks can still take quadratic time. Local GHC 9.14.1 `-O1` medians on
-400-vertex polygons were 0.32 s for `relate`, 0.27 s for `intersection`, and
-0.025 s for distance between disjoint polygons. At 1,600 vertices, `relate`
-took 4.6 s and `intersection` took 3.8 s. Costs depend on the input and hardware.
+matrices, overlays, and validity checks use exact spatial indexes. Point-location
+queries reuse ring indexes and aggregated winding counts. Dense arrangements
+can still take quadratic time. Local GHC 9.14.1 `-O1` timings on 1,600-vertex
+polygons were about 0.24 s for `relate`, 0.23 s for `intersection`, and 0.014 s
+for distance between disjoint polygons. Costs depend on the input and hardware.
 The [full performance audit](https://github.com/Tritlo/geometry-simple/blob/main/dev/bench/RESULTS.md)
 covers all public functions, allocations, and scaling across input sizes.
 For large indexed workloads, use a native library such as
