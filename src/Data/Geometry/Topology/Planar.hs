@@ -148,11 +148,13 @@ planarDimension shape
     | not (null (segments shape)) = CurveDimension
     | not (null (allPositions shape)) = PointDimension
     | otherwise = NoDimension
-  where
-    spansArea (first : rest) = case dropWhile (== first) rest of
-        second : remaining -> any ((/= EQ) . orientation first second) remaining
-        [] -> False
-    spansArea [] = False
+
+-- | Test whether the positions do not all lie on one line.
+spansArea :: [Position] -> Bool
+spansArea (first : rest) = case dropWhile (== first) rest of
+    second : remaining -> any ((/= EQ) . orientation first second) remaining
+    [] -> False
+spansArea [] = False
 
 -- | Remove duplicates and return values in ascending order.
 unique :: (Ord a) => [a] -> [a]
