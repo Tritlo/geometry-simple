@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Simple Features accessors and planar measurements.
+{- | Simple Features accessors, planar topology, and measurements.
 
 Most names follow OGC Simple Feature Access. Indices start at zero, as in
 GEOS. The module exports short names such as 'x' and 'area', so import it
@@ -16,8 +16,13 @@ Envelopes and nonempty centroids use t'XY' coordinates. Convex hulls discard M.
 The planar operations require finite X and Y values. They use Double
 arithmetic, so results can overflow or underflow near the limits of Double.
 Polygon measurements assume valid topology, and these functions do not check
-it. Area and perimeter close open rings. For spatial predicates, validity
-checks, distance, buffers, and overlay operations, use the @geos@ package.
+it. Area and perimeter close open rings. Binary spatial operations require valid
+topology. Use 'isValid' when the input topology is not known. Topology uses exact
+rational segment intersections; constructed output coordinates round to Double.
+Buffer arcs use Double arithmetic and polygonal approximations.
+
+The module targets the seven geometry families supported by GEOS. It does not
+implement the additional surface types or reference systems in all of OGC SFA.
 -}
 module Data.Geometry.SimpleFeatures (
     geometryType,
@@ -48,9 +53,40 @@ module Data.Geometry.SimpleFeatures (
     perimeter,
     centroid,
     convexHull,
+    boundary,
+    isSimple,
+    isRing,
+    isValid,
+    pointOnSurface,
+    relate,
+    relatePattern,
+    equals,
+    disjoint,
+    intersects,
+    touches,
+    crosses,
+    within,
+    contains,
+    overlaps,
+    covers,
+    coveredBy,
+    distance,
+    intersection,
+    union,
+    difference,
+    symmetricDifference,
+    buffer,
+    bufferWithSegments,
+    locateAlong,
+    locateBetween,
 ) where
 
 import Data.Geometry.Internal
+import Data.Geometry.Topology.Buffer (buffer, bufferWithSegments)
+import Data.Geometry.Topology.Measures (locateAlong, locateBetween)
+import Data.Geometry.Topology.Overlay (difference, intersection, symmetricDifference, union)
+import Data.Geometry.Topology.Relations (contains, coveredBy, covers, crosses, disjoint, distance, equals, intersects, overlaps, relate, relatePattern, touches, within)
+import Data.Geometry.Topology.Unary (boundary, isRing, isSimple, isValid, pointOnSurface)
 import qualified Data.List as List
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))

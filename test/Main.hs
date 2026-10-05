@@ -22,11 +22,16 @@ import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 import Data.Word (Word32, Word64)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
+import qualified MeasureTests
 import Numeric (showEFloat)
 import qualified SimpleFeaturesTests
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 import Test.Tasty.QuickCheck (Gen, Property, arbitrary, chooseInt, conjoin, counterexample, elements, forAll, frequency, testProperty, vectorOf, (===))
+import qualified TopologyBufferTests
+import qualified TopologyOverlayTests
+import qualified TopologyRelationTests
+import qualified TopologyUnaryTests
 import qualified WKTTests
 
 -- | Run the pure tests without a native geometry library.
@@ -39,6 +44,11 @@ tests =
     testGroup
         "geometry-simple"
         [ SimpleFeaturesTests.tests
+        , MeasureTests.tests
+        , TopologyRelationTests.tests
+        , TopologyBufferTests.tests
+        , TopologyOverlayTests.tests
+        , TopologyUnaryTests.tests
         , WKTTests.tests
         , testGroup "fixed WKB bytes" fixedTests
         , testGroup
