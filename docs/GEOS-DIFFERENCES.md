@@ -114,6 +114,8 @@ The retry count and tolerance schedule follow
 [GEOS OverlayNGRobust](https://github.com/libgeos/geos/blob/3.13.1/include/geos/operation/overlayng/OverlayNGRobust.h).
 This implementation retains exact noding and deterministic XY representatives.
 It does not reproduce GEOS's additional self-union and precision-grid attempts.
+It can therefore report a precision failure before GEOS exhausts its retry
+strategies. The two implementations do not have the same failure behavior.
 Valid results can retain tiny regions that GEOS discards. At subnormal scales,
 GEOS's floating-point validity checks can also disagree with exact orientation.
 The precision tests include an independent rational check for such a region.
