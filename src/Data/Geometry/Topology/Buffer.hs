@@ -193,7 +193,7 @@ separate radius points = [first | first : _ <- groupBy (\a b -> pointDistance a 
 -- | The Euclidean distance used by native buffer vertex thresholds.
 pointDistance :: FloatingPosition -> FloatingPosition -> Double
 pointDistance a@(x, y) b@(u, v)
-    | finite squared && (squared > 0 || a == b) = sqrt squared
+    | finite squared && not (isDenormalized squared) && (squared > 0 || a == b) = sqrt squared
     | otherwise = vectorLength (subtractPosition (toExact a) (toExact b))
   where
     squared = (x - u) * (x - u) + (y - v) * (y - v)
@@ -239,18 +239,20 @@ opposite (x, y) = (-x, -y)
 
 {- | The left perpendicular displacement at the requested distance.
 Keep the usual evaluation order. Use exact scaling when a product overflows
-or loses a nonzero displacement to underflow.
+or enters the subnormal range and loses precision.
 -}
 normal :: Double -> FloatingPosition -> FloatingPosition -> FloatingPosition
 normal radius a@(x, y) b@(u, v)
-    | finite nx && finite ny && (nx /= 0 || dy == 0 || radius == 0) && (ny /= 0 || dx == 0 || radius == 0) = (nx, ny)
+    | not (isDenormalized distance || isDenormalized scaledX || isDenormalized scaledY) && finite nx && finite ny && (nx /= 0 || dy == 0 || radius == 0) && (ny /= 0 || dx == 0 || radius == 0) = (nx, ny)
     | otherwise = toDouble (scalePosition (toRational radius / vectorMagnitude direction) (-ey, ex))
   where
     dx = u - x
     dy = v - y
     distance = pointDistance a b
-    nx = -(radius * dy / distance)
-    ny = radius * dx / distance
+    scaledX = radius * dx
+    scaledY = radius * dy
+    nx = -(scaledY / distance)
+    ny = scaledX / distance
     direction@(ex, ey) = subtractPosition (toExact b) (toExact a)
 
 -- | Close a nonempty polygon ring.

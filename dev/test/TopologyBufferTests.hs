@@ -51,6 +51,24 @@ tests =
             let source = geometry "LINESTRING (0 0,1e200 0)"
                 result = successful (S.buffer 0.5 source)
             assertBool "buffer covers its source" (S.covers result source)
+        , testCase "gradual underflow does not shrink a thin buffer" $ do
+            let source = geometry "LINESTRING (0 0,5e-124 0)"
+                result = successful (S.buffer 1e-200 source)
+            assertBool "sample below the requested radius" (S.covers result (geometry "POINT (2.5e-124 9.95e-201)"))
+        , testCase "gradual underflow does not enlarge buffer offsets" $ do
+            let result = successful (S.buffer 1e-100 (geometry "LINESTRING (0 0,1e-160 0)"))
+            case S.envelope result of
+                Polygon (PolygonRings (CoordinatesXY points) _) ->
+                    assertBool "buffer radius" (U.all (\(XY x y) -> abs x <= 1.00000000000001e-100 && abs y <= 1.00000000000001e-100) points)
+                _ -> assertBool "nonempty polygon envelope" False
+        , testCase "a subnormal segment norm does not enlarge a large buffer" $ do
+            let radius = 1e300
+                result = successful (S.buffer radius (geometry "LINESTRING (0 0,5e-324 5e-324)"))
+                limit = toRational radius ^ (2 :: Int) * toRational (1.00000000000001 :: Double)
+            case result of
+                Polygon (PolygonRings (CoordinatesXY points) _) ->
+                    assertBool "vertices stay within the requested radius" (U.all (\(XY x y) -> toRational x ^ (2 :: Int) + toRational y ^ (2 :: Int) <= limit) points)
+                _ -> assertBool "nonempty polygon buffer" False
         , testCase "large translated polygon erosion remains nonempty" $
             sameXY
                 (successful (S.buffer (-1e307) (geometry "POLYGON ((1e308 1e308,1.6e308 1e308,1.6e308 1.6e308,1e308 1.6e308,1e308 1e308))")))
