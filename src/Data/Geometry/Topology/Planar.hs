@@ -154,10 +154,6 @@ planarDimension shape
         [] -> False
     spansArea [] = False
 
--- | Round an exact planar position to an XY point.
-planarPoint :: Position -> Point
-planarPoint (x, y) = PointXY (XY (fromRational x) (fromRational y))
-
 -- | Remove duplicates and return values in ascending order.
 unique :: (Ord a) => [a] -> [a]
 unique = Set.toAscList . Set.fromList
