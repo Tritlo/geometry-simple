@@ -9,7 +9,7 @@ import json
 import unittest
 
 import shapely as sh
-from shapely_compare import Shape, matches, operation_matches, signature, stored_point
+from shapely_compare import Shape, matches, operation_matches, point_on_surface_matches, signature, stored_point
 
 
 def raw_geometry(wkt: str) -> str:
@@ -31,6 +31,46 @@ class PlanarResultTests(unittest.TestCase):
 
     def test_changed_family_is_rejected(self) -> None:
         self.assertFalse(operation_matches("intersection", raw_geometry("MULTIPOINT ((1 2))"), sh.from_wkt("POINT (1 2)")))
+
+    def test_overlay_line_grouping_preserves_the_point_set(self) -> None:
+        joined = "LINESTRING (0 0,2 0,2 2)"
+        split = "MULTILINESTRING ((0 0,2 0),(2 0,2 2))"
+        for actual, expected in [(joined, split), (split, joined)]:
+            self.assertTrue(operation_matches("intersection", raw_geometry(actual), sh.from_wkt(expected)))
+        for actual in ["LINESTRING (0 0,2 0)", "LINESTRING (0 0,2 0,3 2)", "LINESTRING Z (0 0 1,2 0 1,2 2 1)"]:
+            self.assertFalse(operation_matches("intersection", raw_geometry(actual), sh.from_wkt(split)))
+
+    def test_overlay_collection_lines_can_join(self) -> None:
+        expected = sh.from_wkt("GEOMETRYCOLLECTION (POINT (8 8),LINESTRING (0 0,2 0),LINESTRING (2 0,2 2))")
+        actual = "GEOMETRYCOLLECTION (POINT (8 8),LINESTRING (0 0,2 0,2 2))"
+        self.assertTrue(operation_matches("union", raw_geometry(actual), expected))
+        self.assertFalse(operation_matches("union", raw_geometry(actual.replace("8 8", "9 9")), expected))
+        self.assertFalse(operation_matches("union", raw_geometry("LINESTRING (0 0,2 0,2 2)"), expected))
+
+    def test_other_structure_contracts_remain_exact(self) -> None:
+        self.assertFalse(operation_matches("intersection", raw_geometry("LINESTRING EMPTY"), sh.from_wkt("MULTILINESTRING EMPTY")))
+        self.assertFalse(operation_matches("boundary", raw_geometry("LINESTRING (0 0,2 0,2 2)"), sh.from_wkt("MULTILINESTRING ((0 0,2 0),(2 0,2 2))")))
+
+    def test_representative_point_membership_replaces_native_selection(self) -> None:
+        source = sh.from_wkt("POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2))")
+        for point in ["POINT (1 5)", "POINT (9 5)", "POINT (0 5)"]:
+            self.assertTrue(point_on_surface_matches(raw_geometry(point), source))
+        for point in ["POINT (5 5)", "POINT (11 5)", "POINT Z (1 5 3)", "POINT EMPTY", "MULTIPOINT ((1 5))"]:
+            self.assertFalse(point_on_surface_matches(raw_geometry(point), source))
+
+    def test_representative_point_uses_nonempty_dimension(self) -> None:
+        source = sh.from_wkt("GEOMETRYCOLLECTION (POINT (8 8),LINESTRING (0 0,2 0))")
+        self.assertFalse(point_on_surface_matches(raw_geometry("POINT (8 8)"), source))
+        self.assertTrue(point_on_surface_matches(raw_geometry("POINT (0 0)"), source))
+        with_empty = sh.from_wkt("GEOMETRYCOLLECTION (POINT (8 8),LINESTRING EMPTY)")
+        self.assertTrue(point_on_surface_matches(raw_geometry("POINT (8 8)"), with_empty))
+        self.assertFalse(point_on_surface_matches(raw_geometry("POINT EMPTY"), with_empty))
+        self.assertTrue(point_on_surface_matches(raw_geometry("POINT EMPTY"), sh.from_wkt("POLYGON EMPTY")))
+
+    def test_degenerate_surface_still_requires_a_finite_point(self) -> None:
+        source = sh.from_wkt("POLYGON ((1e308 0,1e308 2,1e308 0))")
+        self.assertTrue(point_on_surface_matches(raw_geometry("POINT (1e308 0)"), source))
+        self.assertFalse(point_on_surface_matches(raw_geometry("POINT (Infinity 1)"), source))
 
     def test_hull_winding_and_vertices_are_checked(self) -> None:
         expected = sh.from_wkt("POLYGON ((0 0,0 1,1 0,0 0))")

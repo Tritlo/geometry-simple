@@ -17,6 +17,10 @@ planar results must be XY. Hulls compare exact XY geometry and must run
 counterclockwise. Other polygon results compare geometry independently of
 ring starts, winding, and equivalent collinear subdivisions.
 
+Overlay line components may join through degree-two vertices. Their point sets
+must still agree. Representative points must lie on a nonempty input component
+of the highest dimension; their coordinates need not match the native selection.
+
 Topology checks predicates, DE-9IM matrices, family, layout, and validity.
 Constructed XY coordinates allow at most 1e-9 absolute error. Extra nearly
 collinear vertices also require bounded area and length differences and a
@@ -879,11 +883,20 @@ def shape_geometry(shape: Shape) -> BaseGeometry:
     return sh.from_wkb(encode(shape))
 
 
-def result_metadata(shape: Shape) -> tuple[object, ...]:
-    """Compare family, layout, empty members, and ring counts without order."""
+def result_metadata(shape: Shape, merge_lines: bool = False) -> tuple[object, ...]:
+    """Compare layout and structure, optionally ignoring nonempty line grouping."""
+    line = (1, shape.layout, True)
+    if merge_lines and shape.kind == 5 and shape.children and all(
+        child.kind == 1 and child.layout == shape.layout and child.coordinates
+        for child in shape.children
+    ):
+        return line
     if shape.kind in (0, 1):
         return shape.kind, shape.layout, bool(shape.coordinates)
-    return shape.kind, shape.layout, tuple(sorted((result_metadata(child) for child in shape.children), key=repr))
+    members = [result_metadata(child, merge_lines) for child in shape.children]
+    if merge_lines and shape.kind == 7 and line in members:
+        members = [member for member in members if member != line] + [line]
+    return shape.kind, shape.layout, tuple(sorted(members, key=repr))
 
 
 def extra_ordinates_match(actual: Shape, expected: Shape) -> bool:
@@ -928,13 +941,13 @@ def extra_ordinates_match(actual: Shape, expected: Shape) -> bool:
     return covered(actual, expected) and covered(expected, actual)
 
 
-def geometry_result_matches(shape: Shape, expected_shape: Shape, expected: BaseGeometry) -> bool:
+def geometry_result_matches(shape: Shape, expected_shape: Shape, expected: BaseGeometry, merge_lines: bool = False) -> bool:
     """Check metadata and validity before bounded geometric comparisons."""
     def finite_xy(value: Shape) -> bool:
         return all(math.isfinite(float.fromhex(ordinate)) for row in value.coordinates for ordinate in row[:2]) and all(finite_xy(child) for child in value.children)
     if not finite_xy(shape):
         return False
-    if result_metadata(shape) != result_metadata(expected_shape) or not extra_ordinates_match(shape, expected_shape):
+    if result_metadata(shape, merge_lines) != result_metadata(expected_shape, merge_lines) or not extra_ordinates_match(shape, expected_shape):
         return False
     geometry = shape_geometry(shape)
     if geometry.is_valid != expected.is_valid:
@@ -963,11 +976,11 @@ def geometry_result_matches(shape: Shape, expected_shape: Shape, expected: BaseG
 
 
 
-def geometry_mismatch_reason(actual: str, expected: BaseGeometry) -> str:
+def geometry_mismatch_reason(actual: str, expected: BaseGeometry, merge_lines: bool = False) -> str:
     """Identify the first failed geometry contract for the report."""
     try:
         shape, native = read_structure(actual), signature(expected)
-        if result_metadata(shape) != result_metadata(native):
+        if result_metadata(shape, merge_lines) != result_metadata(native, merge_lines):
             return "Geometry family, dimensions, empty members, or ring counts differ"
         if not extra_ordinates_match(shape, native):
             return "Z/M ordinates differ"
@@ -979,14 +992,38 @@ def geometry_mismatch_reason(actual: str, expected: BaseGeometry) -> str:
 
 
 def operation_matches(method: str, actual: str, expected: OperationValue) -> bool:
-    """Keep metadata exact; allow 1e-9 absolute XY error in constructed results."""
+    """Allow overlay line grouping and 1e-9 XY error; retain other metadata checks."""
     if isinstance(expected, OperationError):
         return actual.startswith("!exception:")
     if isinstance(expected, BaseGeometry):
-        return not actual.startswith("!") and actual != "~" and geometry_result_matches(read_structure(actual), signature(expected), expected)
+        return not actual.startswith("!") and actual != "~" and geometry_result_matches(read_structure(actual), signature(expected), expected, method in OVERLAY_METHODS)
     if isinstance(expected, float) and math.isnan(expected):
         return math.isnan(float(actual))
     return matches(method, actual, expected, method == "distance")
+
+
+def point_on_surface_matches(actual: str, source: BaseGeometry) -> bool:
+    """Require an XY point on a nonempty component of the highest dimension."""
+    if actual.startswith("!") or actual == "~":
+        return False
+    shape = read_structure(actual)
+    if shape.kind != 0 or shape.layout != "XY":
+        return False
+    if source.is_empty:
+        return not shape.coordinates
+    if len(shape.coordinates) != 1 or len(shape.coordinates[0]) != 2 or not all(math.isfinite(float.fromhex(value)) for value in shape.coordinates[0]):
+        return False
+    point = shape_geometry(shape)
+
+    def atoms(geometry: BaseGeometry) -> list[BaseGeometry]:
+        if get_type_id(geometry) >= 4:
+            return [atom for child in children(geometry) for atom in atoms(child)]
+        return [] if geometry.is_empty else [geometry]
+
+    members = atoms(source)
+    dimension = max(int(get_dimensions(member)) for member in members)
+    candidates = [member for member in members if get_dimensions(member) == dimension]
+    return any(bool(sh.covers(member, point)) for member in candidates)
 
 
 
@@ -1102,6 +1139,7 @@ def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_
     inputs: list[str] = []
     expected_rows: list[tuple[str, str, str, str, dict[str, OperationValue]]] = []
     input_validity: dict[str, tuple[bool, bool | None]] = {}
+    unary_inputs: dict[str, BaseGeometry] = {}
     overlay_corrections: dict[tuple[str, str], BaseGeometry] = {}
     correction_reasons: dict[tuple[str, str], str] = {}
     pairs = pair_cases(random.Random(seed ^ 0x912), count)
@@ -1119,6 +1157,7 @@ def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_
                 if case.name.startswith("random-") and not geometry.is_valid:
                     raise RuntimeError("Random generator produced invalid topology: " + case.wkt)
                 input_validity[case.name] = (geometry.is_valid, None)
+                unary_inputs[case.name] = geometry
                 values = native_unary(geometry, unary_phase)
                 for format_name in ("WKT", "WKB"):
                     first = payload(geometry, case.wkt, format_name)
@@ -1190,7 +1229,7 @@ def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_
             if method in {"intersection", "union", "difference", "symmetricDifference", "buffer", "bufferWithSegments", "pointOnSurface"} and isinstance(expected, BaseGeometry):
                 expected = force_2d(expected)
             try:
-                matched = operation_matches(method, actual, expected)
+                matched = point_on_surface_matches(actual, unary_inputs[name]) if method == "pointOnSurface" else operation_matches(method, actual, expected)
             except (ValueError, IndexError, struct.error, GEOSException) as failure:
                 matched = False
                 actual += " [invalid result: " + str(failure) + "]"
@@ -1203,7 +1242,7 @@ def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_
                 difference = context | {"method": key, "expected": expected_text, "actual": actual}
                 if isinstance(expected, BaseGeometry):
                     difference["expected_structure"] = json.dumps(asdict(signature(expected)))
-                    difference["reason"] = geometry_mismatch_reason(actual, expected)
+                    difference["reason"] = "Representative point violates membership, dimension, or XY layout" if method == "pointOnSurface" else geometry_mismatch_reason(actual, expected, method in OVERLAY_METHODS)
                 failures.append(difference)
     family_pairs = sorted({(sh.from_wkt(case.first).geom_type, sh.from_wkt(case.second).geom_type) for case in pairs}) if phases & {"relations", "overlay"} else []
     return {"requests": len(inputs), "native_operation_errors": native_errors, "family_pairs": family_pairs, "constructed_xy_absolute_tolerance": CONSTRUCTED_TOLERANCE, "out_of_contract": out_of_contract, "out_of_contract_count": len(out_of_contract)}

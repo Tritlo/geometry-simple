@@ -3,7 +3,7 @@ module Data.Geometry.Topology.Overlay where
 
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar
-import Data.List (group, minimumBy, sortBy)
+import Data.List (maximumBy, minimumBy)
 import qualified Data.Map.Strict as Map
 import Data.Ord (comparing)
 import qualified Data.Set as Set
@@ -11,8 +11,8 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
 {- | The points common to both geometries. Coordinates must have finite XY values.
-Line results retain intersection nodes. A shared polygon boundary can produce
-multiple line components even when the components are connected.
+Line results join consecutive edges through vertices with exactly two neighbors.
+Their component count and order can differ from other implementations.
 -}
 intersection :: Geometry -> Geometry -> Geometry
 intersection a b = overlay (&&) (min (topologicalDimension a) (topologicalDimension b)) a b
@@ -62,37 +62,11 @@ overlay select emptyDimension first second
     surfaces = Planar [] [] polygons
     (locateSurfaces, _) = prepareLocations surfaces
     lineEdges = [edge | edge <- edges, selected (midpoint edge), locateSurfaces (midpoint edge) == Exterior]
-    stops = lineNodes [(a, insideA), (b, insideB)]
-    paths = linePaths stops lineEdges
+    paths = linePaths lineEdges
     curves = Planar [] paths polygons
     (locateCurves, _) = prepareLocations curves
     nodes = unique (vertices a ++ vertices b ++ concatMap (\(u, v) -> [u, v]) edges)
     points = [p | p <- nodes, selected p, locateCurves p == Exterior]
-
-{- | Retain curve endpoints and nontrivial intersection nodes when joining edges.
-Adjacent segments of one curve share a vertex without splitting the curve.
-Overlapping segments and contacts between different curves create split points.
-Closing vertices share the first vertex's identity. Equal coordinates elsewhere
-keep distinct identities so self-contacts remain nodes.
-Contacts covered by polygons in a curve's own geometry do not split the result.
--}
-lineNodes :: [(Planar, Position -> Bool)] -> Set.Set Position
-lineNodes sources = Set.fromList (endpoints ++ concatMap intersections (overlappingPairs indexed))
-  where
-    curves = [(interior, curve) | (shape, interior) <- sources, curve <- planarLines shape ++ [ring ++ take 1 ring | ring <- concat (planarPolygons shape)]]
-    cleaned = [(interior, [p | p : _ <- group curve]) | (interior, curve) <- curves]
-    endpoints = [p | (interior, curve@(first : _)) <- cleaned, p <- [first, last curve], not (interior p)]
-    indexed =
-        [ (edge, ((curveIndex, i), (curveIndex, next), interior, edge))
-        | (curveIndex, (interior, curve@(first : _))) <- zip [0 :: Int ..] cleaned
-        , let final = length curve - 1
-        , let closed = first == last curve
-        , (i, edge) <- zip [0 :: Int ..] (lineSegments curve)
-        , let next = if closed && i + 1 == final then 0 else i + 1
-        ]
-    intersections ((a, b, insideFirst, first), (c, d, insideSecond, second)) = case segmentIntersection first second of
-        [_] | a == c || a == d || b == c || b == d -> []
-        points -> [p | p <- points, not (insideFirst p || insideSecond p)]
 
 -- | Collect directed cycles with their selected region on the left.
 boundaryRings :: [Segment] -> [[Position]]
@@ -109,14 +83,13 @@ boundaryRings edges = concatMap splitRing (collect (Set.fromList edges))
         | otherwise = walk start next (a : accumulated) rest
       where
         rest = Set.delete edge remaining
-        outgoing = [candidate | candidate <- Set.toList (Map.findWithDefault Set.empty b outgoingEdges), Set.member candidate rest]
+        outgoing = Set.toList (Set.intersection (Map.findWithDefault Set.empty b outgoingEdges) rest)
         reverseDirection = subtractPosition a b
-        ordered = sortBy (\(_, x) (_, y) -> compareDirection (subtractPosition x b) (subtractPosition y b)) outgoing
-        preceding = filter (\(_, c) -> compareDirection (subtractPosition c b) reverseDirection == LT) ordered
-        next = case if null preceding then ordered else preceding of
+        preceding = filter (\(_, c) -> compareDirection (subtractPosition c b) reverseDirection == LT) outgoing
+        next = case if null preceding then outgoing else preceding of
             -- A selected face boundary is closed. Failure here means its graph is inconsistent.
             [] -> error "Open boundary in planar overlay"
-            candidates -> last candidates
+            candidates -> maximumBy (\(_, x) (_, y) -> compareDirection (subtractPosition x b) (subtractPosition y b)) candidates
 
 -- | Separate rings that touch at one vertex without joining their interiors.
 splitRing :: [Position] -> [[Position]]
@@ -135,24 +108,25 @@ ringArea = sum . map (uncurry cross) . ringSegments
 
 -- | Group each clockwise hole with its smallest containing shell.
 polygonize :: [Segment] -> [[[Position]]]
-polygonize edges = [shell : [hole | hole <- holes, containingShell hole == shell] | shell <- shells]
+polygonize edges = [shell : Map.findWithDefault [] shell groupedHoles | shell <- shells]
   where
     rings = boundaryRings edges
     shells = filter ((> 0) . ringArea) rings
     holes = filter ((< 0) . ringArea) rings
+    groupedHoles = Map.fromListWith (++) [(containingShell hole, [hole]) | hole <- holes]
     containingShell [] = []
     containingShell (p : _) = case filter ((/= Exterior) . ringLocation p) shells of
         -- Every hole bounds a finite selected region inside an exterior ring.
         [] -> error "Uncontained hole in planar overlay"
         candidates -> minimumBy (comparing (abs . ringArea)) candidates
 
--- | Join degree-two edges, stopping at source endpoints and intersections.
-linePaths :: Set.Set Position -> [Segment] -> [[Position]]
-linePaths stops edges = collect (neighbors, starts)
+-- | Join edges through degree-two vertices. Stop at endpoints and branches.
+linePaths :: [Segment] -> [[Position]]
+linePaths edges = collect (neighbors, starts)
   where
     neighbors = Map.fromListWith Set.union [(a, Set.singleton b) | (p, q) <- edges, (a, b) <- [(p, q), (q, p)]]
-    starts = Map.keysSet (Map.filterWithKey isStart neighbors)
-    isStart point adjacent = not (Set.null adjacent) && (Set.size adjacent /= 2 || Set.member point stops)
+    starts = Map.keysSet (Map.filter isStart neighbors)
+    isStart adjacent = not (Set.null adjacent) && Set.size adjacent /= 2
     collect remaining@(graph, ends) = case Map.lookupMin graph of
         Nothing -> []
         Just (first, _) ->
@@ -161,14 +135,14 @@ linePaths stops edges = collect (neighbors, starts)
              in path : collect rest
     walk start current accumulated remaining@(graph, _) = case Set.lookupMin adjacent of
         Nothing -> (reverse (current : accumulated), remaining)
-        _ | not (null accumulated) && (current == start || Set.member current stops || Set.size adjacent /= 1) -> (reverse (current : accumulated), remaining)
+        _ | not (null accumulated) && (current == start || Set.size adjacent /= 1) -> (reverse (current : accumulated), remaining)
         Just next -> walk start next (current : accumulated) (removeNeighbor current next (removeNeighbor next current remaining))
       where
         adjacent = Map.findWithDefault Set.empty current graph
     removeNeighbor neighbor point (graph, ends) =
         let adjacent = Set.delete neighbor (Map.findWithDefault Set.empty point graph)
             nextGraph = if Set.null adjacent then Map.delete point graph else Map.insert point adjacent graph
-            nextEnds = if isStart point adjacent then Set.insert point ends else Set.delete point ends
+            nextEnds = if isStart adjacent then Set.insert point ends else Set.delete point ends
          in (nextGraph, nextEnds)
 
 -- | Construct the smallest XY family that holds the selected components.

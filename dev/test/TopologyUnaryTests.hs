@@ -1,8 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Fixed GEOS results for unary topology and representative points.
+-- | Unary topology regressions and representative-point contracts.
 module TopologyUnaryTests (tests) where
 
+import Control.Monad (unless)
 import Data.Geometry.Internal
 import qualified Data.Geometry.SimpleFeatures as S
 import qualified Data.Geometry.WKT as WKT
@@ -10,23 +11,33 @@ import Data.Text (Text)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 import Test.Tasty.QuickCheck (chooseInt, forAll, testProperty, (===))
 
--- | Run regressions for endpoint rules, ring contacts, and native point choices.
+-- | Check endpoint rules, ring contacts, and representative-point membership.
 tests :: TestTree
 tests =
     testGroup
         "unary topology"
         [ testGroup "predicates" [testCase name $ (S.isSimple shape, S.isRing shape, S.isValid shape) @?= expected | (name, text, expected) <- predicateCases, let shape = geometry text]
         , testGroup "boundary" [testCase name $ S.boundary (geometry input) @?= fmap geometry expected | (name, input, expected) <- boundaryCases]
-        , testGroup "point on surface" [testCase name $ PointGeometry (S.pointOnSurface (geometry input)) @?= geometry expected | (name, input, expected) <- surfaceCases]
+        , testGroup
+            "point on surface"
+            [ testCase name $ do
+                let source = geometry input
+                    result = PointGeometry (S.pointOnSurface source)
+                S.isEmpty result @?= S.isEmpty source
+                S.coordinateDimension result @?= 2
+                unless (S.isEmpty source) $ do
+                    assertBool "point lies on the input" (S.covers source result)
+            | (name, input) <- surfaceCases
+            ]
         , testCase "invalid nonfinite XY" $ do
             S.isValid (PointGeometry (PointXY (XY (0 / 0) 2))) @?= False
             S.isValid (LineString (CoordinatesXY (U.fromList [XY 0 0, XY (1 / 0) 2]))) @?= False
         , testCase "nonfinite Z and M do not change validity" $
             S.isValid (PointGeometry (PointXYZM (XYZM 1 2 (0 / 0) (1 / 0)))) @?= True
-        , testCase "point selection stays on the input when squared distances overflow" $
+        , testCase "point selection retains large finite coordinates" $
             S.pointOnSurface (MultiPoint (U.fromList [PointXY (XY 1e200 0), PointXY (XY (-1e200) 0)])) @?= PointXY (XY 1e200 0)
         , testCase "open constructor ring is invalid" $
             S.isValid (Polygon (PolygonRings (CoordinatesXY (U.fromList [XY 0 0, XY 2 0, XY 0 2])) V.empty)) @?= False
@@ -98,19 +109,20 @@ boundaryCases =
     , ("collection unsupported", "GEOMETRYCOLLECTION (POINT (0 0))", Nothing)
     ]
 
--- | Expected representative point selection and layouts from GEOS 3.13.1.
-surfaceCases :: [(String, Text, Text)]
+-- | Check membership without prescribing a particular representative point.
+surfaceCases :: [(String, Text)]
 surfaceCases =
-    [ ("points discard Z and M", "POINT ZM (1 2 3 4)", "POINT (1 2)")
-    , ("empty M projects to XY", "POINT M EMPTY", "POINT EMPTY")
-    , ("empty ZM projects to XY", "LINESTRING ZM EMPTY", "POINT EMPTY")
-    , ("line selects interior XY vertex", "LINESTRING Z (0 0 1,1 1 2,10 0 3)", "POINT (1 1)")
-    , ("line discards M", "LINESTRING M (0 0 1,1 1 2,10 0 3)", "POINT (1 1)")
-    , ("native rounding chooses first endpoint", "LINESTRING (1 4,3 1)", "POINT (1 4)")
-    , ("native rounding chooses second endpoint", "LINESTRING (5 0,2 6)", "POINT (2 6)")
-    , ("polygon point uses XY", "POLYGON Z ((0 0 1,4 0 2,4 4 3,0 4 4,0 0 1))", "POINT (2 2)")
-    , ("polygon hole splits scanline", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2))", "POINT (1 5)")
-    , ("polygon collapsed to a line", "POLYGON ((0 0,2 0,0 0))", "POINT (0 0)")
-    , ("empty highest dimension controls selection", "GEOMETRYCOLLECTION (POINT (1 2),LINESTRING EMPTY)", "POINT EMPTY")
-    , ("widest polygon interval wins", "MULTIPOLYGON (((0 0,2 0,2 8,0 8,0 0)),((5 0,10 0,10 2,5 2,5 0)))", "POINT (7.5 1)")
+    [ ("points discard Z and M", "POINT ZM (1 2 3 4)")
+    , ("empty M projects to XY", "POINT M EMPTY")
+    , ("empty ZM projects to XY", "LINESTRING ZM EMPTY")
+    , ("line selects interior XY vertex", "LINESTRING Z (0 0 1,1 1 2,10 0 3)")
+    , ("line discards M", "LINESTRING M (0 0 1,1 1 2,10 0 3)")
+    , ("two-coordinate line with negative slope", "LINESTRING (1 4,3 1)")
+    , ("two-coordinate line with positive slope", "LINESTRING (5 0,2 6)")
+    , ("polygon point uses XY", "POLYGON Z ((0 0 1,4 0 2,4 4 3,0 4 4,0 0 1))")
+    , ("polygon hole splits scanline", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2))")
+    , ("polygon collapsed to a line", "POLYGON ((0 0,2 0,0 0))")
+    , ("collapsed large polygon keeps a finite point", "POLYGON ((1e308 0,1e308 2,1e308 0))")
+    , ("empty higher-dimensional members are skipped", "GEOMETRYCOLLECTION (POINT (1 2),LINESTRING EMPTY)")
+    , ("point lies in a nonempty polygon component", "MULTIPOLYGON (((0 0,2 0,2 8,0 8,0 0)),((5 0,10 0,10 2,5 2,5 0)))")
     ]

@@ -9,7 +9,7 @@ module Data.Geometry.Topology.Buffer (buffer, bufferWithSegments) where
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Overlay
 import Data.Geometry.Topology.Planar
-import Data.List (group)
+import Data.List (group, groupBy)
 import qualified Data.Vector as V
 
 {- | Buffer by a distance in coordinate units, with eight segments per quadrant.
@@ -164,13 +164,7 @@ lineBuffer count radius original = case points of
 
 -- | Match GEOS's minimum vertex separation of 1e-4 times the buffer radius.
 separate :: Double -> [FloatingPosition] -> [FloatingPosition]
-separate _ [] = []
-separate radius (first : rest) = first : go first rest
-  where
-    go _ [] = []
-    go previous (point : points)
-        | pointDistance previous point < radius * 1e-4 = go previous points
-        | otherwise = point : go point points
+separate radius points = [first | first : _ <- groupBy (\a b -> pointDistance a b < radius * 1e-4) points]
 
 -- | The Euclidean distance used by native buffer vertex thresholds.
 pointDistance :: FloatingPosition -> FloatingPosition -> Double

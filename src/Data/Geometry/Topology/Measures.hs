@@ -53,14 +53,13 @@ select :: Double -> Double -> Geometry -> ([Point], [Coordinates])
 select lower upper geometry = case geometry of
     PointGeometry point -> ([point | selectedPoint point], [])
     LineString coordinates -> selectCoordinates lower upper coordinates
-    Polygon (PolygonRings shell holes) -> combine (map (selectCoordinates lower upper) (shell : V.toList holes))
+    Polygon (PolygonRings shell holes) -> selectCoordinates lower upper shell <> foldMap (selectCoordinates lower upper) holes
     MultiPoint points -> (filter selectedPoint (U.toList points), [])
-    MultiLineString curves -> combine (map (selectCoordinates lower upper) (V.toList curves))
-    MultiPolygon polygons -> combine (map (select lower upper . Polygon) (V.toList polygons))
-    GeometryCollection children -> combine (map (select lower upper) (V.toList children))
+    MultiLineString curves -> foldMap (selectCoordinates lower upper) curves
+    MultiPolygon polygons -> foldMap (select lower upper . Polygon) polygons
+    GeometryCollection children -> foldMap (select lower upper) children
   where
     selectedPoint point = measured (pointDimensions point) && maybe False (inRange lower upper . measure) (withPoint coordinateComponents point)
-    combine parts = (concatMap fst parts, concatMap snd parts)
 
 -- | Read the M ordinate from the common coordinate representation.
 measure :: (Double, Double, Double, Double) -> Double

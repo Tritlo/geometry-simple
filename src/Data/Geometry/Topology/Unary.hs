@@ -7,12 +7,15 @@ module Data.Geometry.Topology.Unary (
     pointOnSurface,
 ) where
 
+import Control.Applicative ((<|>))
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar
+import qualified Data.Graph as Graph
 import Data.List (group, sort)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -27,16 +30,15 @@ boundary geometry = case geometry of
     LineString line -> Just (MultiPoint (U.fromList (lineBoundary line)))
     MultiLineString lines' -> Just (MultiPoint (U.fromList endpoints))
       where
-        counts = List.foldl' addEndpoint Map.empty (concatMap lineEnds (V.toList lines'))
+        counts = Map.fromListWith (\(_, n) (old, m) -> (old, n + m)) [(pointXY point, (point, 1 :: Int)) | point <- foldMap lineEnds lines']
         selected = [point | (point, count) <- Map.elems counts, odd count]
         withZ = any (not . isNaN . elevationOrNaN) selected
         endpoints = map (boundaryPoint withZ) selected
-        addEndpoint table point = Map.insertWith (\(_, n) (old, m) -> (old, n + m)) (pointXY point) (point, 1 :: Int) table
     Polygon rings@(PolygonRings shell holes)
         | geometryEmpty (Polygon rings) -> Just (MultiLineString V.empty)
         | V.null holes -> Just (LineString shell)
         | otherwise -> Just (MultiLineString (V.cons shell holes))
-    MultiPolygon polygons -> Just (MultiLineString (V.fromList (concatMap polygonBoundary (V.toList polygons))))
+    MultiPolygon polygons -> Just (MultiLineString (V.fromList (foldMap polygonBoundary polygons)))
     GeometryCollection _ -> Nothing
 
 -- | Return the rings of a nonempty polygon.
@@ -47,9 +49,11 @@ polygonBoundary rings@(PolygonRings shell holes)
 
 -- | Return the two endpoints, also for a closed line.
 lineEnds :: Coordinates -> [Point]
-lineEnds line = case coordinatePoints line of
-    [] -> []
-    points@(first : _) -> [first, last points]
+lineEnds line = withCoordinates endpoints line
+  where
+    endpoints points = case U.uncons points of
+        Nothing -> []
+        Just (first, _) -> map (pointFromComponents (dimensionsOf line) . coordinateComponents) [first, U.last points]
 
 -- | Return the distinct endpoints of an open line.
 lineBoundary :: Coordinates -> [Point]
@@ -91,8 +95,8 @@ isSimple geometry = case geometry of
     LineString line -> simpleLines [positions line]
     MultiLineString lines' -> simpleLines (map positions (V.toList lines'))
     Polygon (PolygonRings shell holes) -> all (simpleLines . (: []) . positions) (shell : V.toList holes)
-    MultiPolygon polygons -> all (isSimple . Polygon) (V.toList polygons)
-    GeometryCollection children -> all isSimple (V.toList children)
+    MultiPolygon polygons -> V.all (isSimple . Polygon) polygons
+    GeometryCollection children -> V.all isSimple children
 
 -- | Whether a line string is both closed and simple. Other families return false.
 isRing :: Geometry -> Bool
@@ -126,12 +130,12 @@ isValid geometry =
         PointGeometry _ -> True
         MultiPoint _ -> True
         LineString line -> validLine (positions line)
-        MultiLineString lines' -> all (validLine . positions) (V.toList lines')
+        MultiLineString lines' -> V.all (validLine . positions) lines'
         Polygon rings -> validPolygon (polygonPositions rings)
         MultiPolygon polygons -> all validPolygon rings && all disjointPolygons (overlappingPairs [(bounds, polygon) | polygon <- rings, Just bounds <- [pointBounds (concat polygon)]])
           where
             rings = map polygonPositions (V.toList polygons)
-        GeometryCollection children -> all isValid (V.toList children)
+        GeometryCollection children -> V.all isValid children
 
 -- | Check XY only. Elevations and measures do not affect topology.
 finiteGeometry :: Geometry -> Bool
@@ -201,18 +205,15 @@ ringSamplesAgainst ring edges = concatMap sample (ringSegments ring)
     query = segmentQuery edges
     sample edge@(a, b) = map midpoint (lineSegments (unique (a : b : concatMap (segmentIntersection edge) (query edge))))
 
--- | A cycle through distinct contact positions disconnects a polygon interior.
+{- | A cycle through distinct contact positions disconnects a polygon interior.
+An undirected graph is acyclic when its edge count is its vertex count minus
+its connected-component count. Each tree in the DFS forest is one component.
+-}
 acyclic :: [(Either Int Position, Either Int Position)] -> Bool
-acyclic = go Map.empty
+acyclic contacts = length contacts == Map.size adjacent - length (Graph.dff graph)
   where
-    root forest x = maybe x (root forest) (Map.lookup x forest)
-    go _ [] = True
-    go forest ((a, b) : rest)
-        | ra == rb = False
-        | otherwise = go (Map.insert ra rb forest) rest
-      where
-        ra = root forest a
-        rb = root forest b
+    adjacent = Map.fromListWith (++) [(a, [b]) | (first, second) <- contacts, (a, b) <- [(first, second), (second, first)]]
+    (graph, _, _) = Graph.graphFromEdges [((), point, neighbors) | (point, neighbors) <- Map.toList adjacent]
 
 -- | Multi-polygons can touch at isolated points but cannot share interior area.
 disjointPolygons :: ([[Position]], [[Position]]) -> Bool
@@ -223,93 +224,52 @@ disjointPolygons (a, b) =
   where
     samples rings other = concatMap (\ring -> ringSamplesAgainst ring (concatMap ringSegments other)) rings
 
-{- | Choose a representative point with the GEOS selection rules.
-For polygons, use a horizontal scan line through the interior. For lines,
-choose the interior vertex nearest the centroid, or an endpoint when there
-are no interior vertices. Point collections use the point nearest their
-centroid. Results use XY coordinates.
-
-Empty input gives an empty XY point.
+{- | Choose a point on a nonempty component, preferring polygons, then lines,
+then points. For polygons, use an interior horizontal interval. For lines,
+prefer an interior stored vertex, then an endpoint. Empty components are skipped.
+Results use XY coordinates. Empty input gives an empty XY point.
+The selected point can differ from other implementations.
 -}
 pointOnSurface :: Geometry -> Point
-pointOnSurface geometry = case topologicalDimension geometry of
-    PointDimension -> choose (mapMaybe pointCoordinate (pointMembers geometry))
-    CurveDimension -> choose (if null interiors then concatMap endpoints lines' else interiors)
-    _ -> case polygonCandidates of
-        [] -> emptyResult
-        first : rest -> snd (List.foldl' (\best candidate -> if fst candidate > fst best then candidate else best) first rest)
+pointOnSurface geometry = fromMaybe (EmptyPoint DimXY) (surfacePoint <|> storedPoint)
   where
-    emptyResult = EmptyPoint DimXY
-    center = selectionCenter geometry
-    choose points = case points of
-        [] -> emptyResult
-        first : rest -> let selected = List.foldl' (\best candidate -> if distance candidate < distance best then candidate else best) first rest in boundaryPoint False selected
-    distance point = let (x, y) = pointXY point; (cx, cy) = center in sqrt ((x - cx) * (x - cx) + (y - cy) * (y - cy))
+    surfacePoint = snd <$> listToMaybe (mapMaybe polygonInterior (polygonMembers geometry))
+    storedPoint = boundaryPoint False <$> listToMaybe (interiors ++ concatMap endpoints lines' ++ mapMaybe pointCoordinate (pointMembers geometry))
     lines' = map coordinatePoints (lineMembers geometry)
     interiors = concatMap (drop 1 . takeInterior) lines'
     takeInterior [] = []
     takeInterior points = init points
     endpoints [] = []
     endpoints points@(first : _) = [first, last points]
-    polygonCandidates = mapMaybe polygonInterior (polygonMembers geometry)
     pointCoordinate (EmptyPoint _) = Nothing
     pointCoordinate point = Just point
-
-{- | Accumulate the selection centroid in GEOS evaluation order. A rounding
-difference can select a different vertex when distances are nearly equal.
--}
-selectionCenter :: Geometry -> (Double, Double)
-selectionCenter geometry
-    | total > 0 = (wx / total, wy / total)
-    | otherwise = (sx / count, sy / count)
-  where
-    (sx, sy, count, wx, wy, total) = accumulate (0, 0, 0, 0, 0, 0) geometry
-    addPoint (a, b, n, c, d, len) point = let (x, y) = pointXY point in (a + x, b + y, n + 1, c, d, len)
-    accumulate state shape = case shape of
-        PointGeometry (EmptyPoint _) -> state
-        PointGeometry point -> addPoint state point
-        MultiPoint points -> U.foldl' (\acc point -> accumulate acc (PointGeometry point)) state points
-        LineString line -> addLine state (coordinatePoints line)
-        MultiLineString lines' -> V.foldl' (\acc line -> accumulate acc (LineString line)) state lines'
-        GeometryCollection children -> V.foldl' accumulate state children
-        _ -> state
-    addLine state [] = state
-    addLine (a, b, n, c, d, len) points@(first : _) =
-        let (u, v, lineLength) = List.foldl' addSegment (c, d, 0) (zip points (drop 1 points))
-            next = (a, b, n, u, v, len + lineLength)
-         in if lineLength == 0 then addPoint next first else next
-    addSegment state@(a, b, len) (first, second) =
-        let (x, y) = pointXY first
-            (u, v) = pointXY second
-            size = sqrt ((u - x) * (u - x) + (v - y) * (v - y))
-         in if size == 0 then state else (a + size * ((x + u) / 2), b + size * ((y + v) / 2), len + size)
 
 -- | List atomic point members in input order.
 pointMembers :: Geometry -> [Point]
 pointMembers (PointGeometry point) = [point]
 pointMembers (MultiPoint points) = U.toList points
-pointMembers (GeometryCollection children) = concatMap pointMembers (V.toList children)
+pointMembers (GeometryCollection children) = foldMap pointMembers children
 pointMembers _ = []
 
 -- | List atomic line members in input order.
 lineMembers :: Geometry -> [Coordinates]
 lineMembers (LineString line) = [line]
 lineMembers (MultiLineString lines') = V.toList lines'
-lineMembers (GeometryCollection children) = concatMap lineMembers (V.toList children)
+lineMembers (GeometryCollection children) = foldMap lineMembers children
 lineMembers _ = []
 
 -- | List atomic polygon members in input order.
 polygonMembers :: Geometry -> [PolygonRings]
 polygonMembers (Polygon rings) = [rings]
 polygonMembers (MultiPolygon polygons) = V.toList polygons
-polygonMembers (GeometryCollection children) = concatMap polygonMembers (V.toList children)
+polygonMembers (GeometryCollection children) = foldMap polygonMembers children
 polygonMembers _ = []
 
 -- | Select the midpoint of the widest horizontal interior interval.
 polygonInterior :: PolygonRings -> Maybe (Double, Point)
 polygonInterior (PolygonRings shell holes) = case map pointXY (coordinatePoints shell) of
     [] -> Nothing
-    shellPoints@((x, y) : _) -> Just (List.foldl' widest (0, PointXY (XY x y)) intervals)
+    shellPoints@((x, y) : _) -> Just (List.maximumBy (comparing fst) ((0, PointXY (XY x y)) : intervals))
       where
         rings = shellPoints : map (map pointXY . coordinatePoints) (V.toList holes)
         ys = map snd (concat rings)
@@ -321,8 +281,7 @@ polygonInterior (PolygonRings shell holes) = case map pointXY (coordinatePoints 
         scanY = (below + above) / 2
         crossings = sort [crossing a b | ring <- rings, (a@(_, ay), b@(_, by)) <- zip ring (drop 1 ring), ay /= by, min ay by <= scanY, max ay by >= scanY, not (ay == scanY && by < scanY), not (by == scanY && ay < scanY)]
         crossing (ax, ay) (bx, by) = if ax == bx then ax else ax + (scanY - ay) / ((by - ay) / (bx - ax))
-        intervals = adjacentPairs crossings
-        widest best (a, b) = if b - a > fst best then (b - a, PointXY (XY ((a + b) / 2) scanY)) else best
+        intervals = [(b - a, PointXY (XY ((a + b) / 2) scanY)) | (a, b) <- adjacentPairs crossings, a < b]
 
 -- | Pair sorted crossings into interior intervals.
 adjacentPairs :: [a] -> [(a, a)]

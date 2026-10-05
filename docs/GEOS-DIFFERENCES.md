@@ -11,6 +11,8 @@ API or output convention in this package.
 | Constructed planar coordinates | Hulls, centroids, representative points, overlays, and buffers use XY, including empty results. | Some operations retain, interpolate, or discard Z/M according to operation-specific rules. |
 | Polygon construction | Exterior rings run counterclockwise; holes run clockwise. | Hulls and many constructed polygon exteriors run clockwise. |
 | Hull ordering | The first vertex and line endpoints follow lexicographic XY order. | Polygon starts use Y then X; two-point hulls can retain input order. |
+| Overlay line components | Join consecutive edges through vertices with two neighbors. | Can retain separate lines at source vertices and intersection nodes. |
+| Representative points | Use the first available polygon, interior line vertex, endpoint, or point, in that order. Empty components are skipped. | Selection can depend on centroid distance, interval width, and empty members. |
 | Point observers | Preserve the stored layout and every ordinate, including NaN Z/M. | Extracted points can lose dimensions whose ordinate is NaN. |
 | Mixed WKT collections | Each child carries its own dimension tag; the parent has none. | A parent tag can conflict with a child and make the writer's output unreadable. |
 | WKT numbers | Shortest scientific notation that decodes to the same `Double`. | Decimal formatting differs. |
@@ -25,6 +27,12 @@ standard does not prescribe them.
 
 The SQL test annex also permits either polygon winding when checking its
 expected answers. A different winding alone does not establish a topology bug.
+
+Section 6.1.2.4 defines overlays by their point sets. It does not require a
+particular grouping into line components. Sections 6.1.10.2 and 6.1.13.2 require
+`PointOnSurface` to return a point on the surface. They do not prescribe which
+point to select. The Haskell method also supports points, curves, and mixed
+collections, preferring a nonempty component of the highest dimension.
 
 Sources: [OGC common architecture](https://docs.ogc.org/is/06-103r4/06-103r4.pdf),
 [OGC SQL test examples](https://docs.ogc.org/is/06-104r4/06-104r4.pdf).
@@ -53,9 +61,12 @@ Sources: [OGC common architecture](https://docs.ogc.org/is/06-103r4/06-103r4.pdf
 - Buffers have round caps and joins, with eight segments per quadrant by
   default. Negative distances erode polygons and empty points and lines.
   Zero distance repairs polygon topology. Circular arcs are approximations.
-- Overlay line results retain nodes at contacts and overlaps. A connected
-  shared boundary can therefore produce a `MultiLineString`. Ordinary bends
-  within one input curve do not create separate components.
+- Overlay line results join through vertices with exactly two neighbors.
+  They stop at endpoints and branches. The point set is preserved, but line
+  component counts, component order, and polygon hole order can differ from GEOS.
+- `pointOnSurface` returns an XY point on a nonempty component. Polygons use
+  a horizontal interior interval. Lines prefer stored interior vertices over
+  endpoints. A collection of empty components gives an empty XY point.
 - Measured queries select points and curve portions using M. Polygon queries
   select their boundary positions, as permitted by the implementation-defined
   surface rule. Empty input gives `Nothing`; no match gives an empty point.

@@ -30,12 +30,14 @@ tests =
         , testCase "shared polygon corner is a point" $
             S.intersection (rectangle 0 0 4 4) (rectangle 4 4 8 8) @?= geometry "POINT (4 4)"
         , testGroup
-            "line components retain intersection nodes"
+            "line results preserve every selected edge"
             [ testCase name $
                 forM_ [(geometry first, geometry second), (geometry second, geometry first)] $ \(a, b) -> do
                     let actual = S.intersection a b
                         expected = geometry output
-                    lineComponents actual @?= lineComponents expected
+                    assertBool "valid line result" (S.isValid actual)
+                    S.coordinateDimension actual @?= 2
+                    lineEdges actual @?= lineEdges expected
             | (name, first, second, output) <-
                 [ ("polygon corner contact", "POLYGON ((-7 -5,-5 -5,-5 -3,-6 -3,-6 -1,-7 -1,-7 -5))", "POLYGON ZM ((-6 -3 16 34,-4 -3 20 36,-4 1 24 24,-6 1 20 22,-6 -3 16 34))", "MULTILINESTRING ((-5 -3,-6 -3),(-6 -3,-6 -1))")
                 , ("collinear polygon contact", "POLYGON ((0 0,2 0,2 1,2 2,0 2,0 0))", "POLYGON ((2 0,4 0,4 2,2 2,2 0))", "MULTILINESTRING ((2 0,2 1),(2 1,2 2))")
@@ -49,15 +51,15 @@ tests =
                 , ("line follows a hole corner", "LINESTRING (2 2,8 2,8 8)", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2))", "MULTILINESTRING ((2 2,8 2),(8 2,8 8))")
                 ]
             ]
-        , testCase "coincident bent lines retain nodes in union" $ do
+        , testCase "coincident bent lines retain their edges in union" $ do
             let line = geometry "LINESTRING (0 0,2 0,2 2)"
-            lineComponents (S.union line line) @?= lineComponents (geometry "MULTILINESTRING ((0 0,2 0),(2 0,2 2))")
+            lineEdges (S.union line line) @?= lineEdges (geometry "MULTILINESTRING ((0 0,2 0),(2 0,2 2))")
         , testProperty "coincident curves retain each source segment exactly once" $
             forAll (chooseInt (2, 64)) $ \count ->
                 let points = [(fromIntegral i, fromIntegral (i `mod` 2)) | i <- [0 .. count - 1]]
                     line = LineString (CoordinatesXY (U.fromList [XY x y | (x, y) <- points]))
                     expected = sort [[a, b] | (a, b) <- zip points (drop 1 points)]
-                 in (lineComponents (S.intersection line line), lineComponents (S.union line line)) === (expected, expected)
+                 in (lineEdges (S.intersection line line), lineEdges (S.union line line)) === (expected, expected)
         , testCase "a crossing with nonintegral coordinates is retained" $
             S.intersection (geometry "LINESTRING (0 0,3 3)") (geometry "LINESTRING (0 2,3 0)") @?= geometry "POINT (1.2 1.2)"
         , testCase "mixed output has flat atomic members" $ do
@@ -130,14 +132,13 @@ tests =
 geometry :: String -> Geometry
 geometry = either error id . decodeWKT . Text.pack
 
--- | Compare XY line members independently of their direction and member order.
-lineComponents :: Geometry -> [[(Double, Double)]]
-lineComponents shape = sort (map canonical (components shape))
+-- | Compare every XY edge, allowing different grouping into line components.
+lineEdges :: Geometry -> [[(Double, Double)]]
+lineEdges shape = sort [min [a, b] [b, a] | points <- components shape, (a, b) <- zip points (drop 1 points)]
   where
     components (LineString (CoordinatesXY points)) = [map (\(XY x y) -> (x, y)) (U.toList points)]
     components (MultiLineString lines') = concatMap (components . LineString) (V.toList lines')
     components _ = error "Expected an XY line result"
-    canonical points = min points (reverse points)
 
 -- | Construct a rectangle from independent coordinate bounds.
 rectangle :: Double -> Double -> Double -> Double -> Geometry

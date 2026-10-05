@@ -101,3 +101,43 @@ library; they are not additional supported implementations.
 Validation passed: 717 Haskell tests with 1,000 trials per property, and
 74,208 Shapely relation and predicate comparisons. There were no unexpected
 mismatches. The 14 existing documented native differences were unchanged.
+
+## Standard collection operations
+
+The next review replaced custom accumulation and selection with `foldMap`,
+`groupBy`, `Map.fromListWith`, `Set.intersection`, and `maximumBy`. Polygon
+contact checks now use `Data.Graph` to count connected components. Line
+endpoints use vector access instead of converting and traversing the sequence.
+
+Representative points no longer require a separate centroid calculation.
+Overlays join edges through degree-two vertices without reconstructing source
+intersection nodes. These choices follow the point-set and representative-point
+contracts described in [Simple Features and GEOS](../../docs/GEOS-DIFFERENCES.md).
+
+Measurements against `41c44a8` used the same Nix toolchain and machine:
+
+| Operation and input | Before | After |
+| --- | ---: | ---: |
+| Intersection of touching polygons, 1,600 vertices each | 209 ms | 148 ms |
+| Intersection of a line and polygon, 1,600 coordinates each | 162 ms | 126 ms |
+| Boundary of 50,000 two-point lines | 45.4 ms | 33.6 ms |
+| Representative point for 50,000 two-point lines | 17.5 ms | 6.71 ms |
+
+Boundary allocation in that multiline case fell from 170 MB to 69.1 MB.
+Representative-point queries for a long line, a multipoint, or disjoint polygons
+now stop at an early suitable component. Single-line boundary reads take constant
+time. At 100,000 coordinates, these cases completed below one microsecond;
+the old implementations took 0.53–39.8 ms. Timings this small approach harness
+overhead, so the useful result is the change in traversal cost.
+
+The affected audit groups ran at 100, 400, and 1,600 coordinates in both orders.
+Additional interleaved checks put buffer, polygon validity, and polygon union
+costs within about 3% of their baselines. Early larger timing differences did
+not persist in those checks.
+
+The codec builders stayed unchanged. At 100,000 elements, replacing their loops
+with pure `unfoldrM` or `replicateM` roughly doubled WKT time and increased WKB
+multipoint time about fivefold. A mutable `replicateM` variant still added
+40–60% to WKB time and several times the allocation. Those replacements removed
+loop code but had a substantial cost. The original decimal rounding and exact
+geometric predicates also remain.

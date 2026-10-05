@@ -61,9 +61,12 @@ omit parent tags for mixed collections. Point selectors compare stored source ro
 including NaN Z/M, without native point-layout conversion.
 
 Constructed planar results must be XY. Hull checks compare exact XY geometry
-and require counterclockwise winding. Other constructions retain family and
-validity checks while permitting equivalent ring starts, directions, and
-collinear subdivisions. XY coordinates have an absolute tolerance of 1e-9.
+and require counterclockwise winding. Overlay comparisons permit different
+grouping of nonempty line components. They still check the point set, validity,
+empty-result families, and non-line structure. Polygon results permit equivalent
+ring starts, directions, and collinear subdivisions. XY coordinates have an
+absolute tolerance of 1e-9. Representative points must lie on a nonempty input
+component of the highest dimension. Their coordinates need not match GEOS.
 Measurements use separate tolerances. The harness does not repair or snap inputs.
 
 Pairs cover all seven geometry families in both argument orders. Binary
