@@ -232,13 +232,14 @@ polygonize edges = do
         edge : _ | locate (midpoint edge) == Interior -> candidate
         _ -> current
 
--- | Join edges through degree-two vertices. Stop at endpoints and branches.
+{- | Join edges through degree-two vertices. Stop at original endpoints and
+junctions, even after some of their edges have been removed.
+-}
 linePaths :: [Segment] -> [[Position]]
 linePaths edges = collect (neighbors, starts)
   where
     neighbors = Map.fromListWith Set.union [(a, Set.singleton b) | (p, q) <- edges, (a, b) <- [(p, q), (q, p)]]
-    starts = Map.keysSet (Map.filter isStart neighbors)
-    isStart adjacent = not (Set.null adjacent) && Set.size adjacent /= 2
+    starts = Map.keysSet (Map.filter ((/= 2) . Set.size) neighbors)
     collect remaining@(graph, ends) = case Map.lookupMin graph of
         Nothing -> []
         Just (first, _) ->
@@ -247,15 +248,15 @@ linePaths edges = collect (neighbors, starts)
              in path : collect rest
     walk start current accumulated remaining@(graph, _) = case Set.lookupMin adjacent of
         Nothing -> (reverse (current : accumulated), remaining)
-        _ | not (null accumulated) && (current == start || Set.size adjacent /= 1) -> (reverse (current : accumulated), remaining)
+        _ | not (null accumulated) && (current == start || Set.member current starts) -> (reverse (current : accumulated), remaining)
         Just next -> walk start next (current : accumulated) (removeNeighbor current next (removeNeighbor next current remaining))
       where
         adjacent = Map.findWithDefault Set.empty current graph
     removeNeighbor neighbor point (graph, ends) =
         let adjacent = Set.delete neighbor (Map.findWithDefault Set.empty point graph)
-            nextGraph = if Set.null adjacent then Map.delete point graph else Map.insert point adjacent graph
-            nextEnds = if isStart adjacent then Set.insert point ends else Set.delete point ends
-         in (nextGraph, nextEnds)
+         in if Set.null adjacent
+                then (Map.delete point graph, Set.delete point ends)
+                else (Map.insert point adjacent graph, ends)
 
 -- | Construct the smallest XY family that holds the selected components.
 assemble :: TopologicalDimension -> [[[Position]]] -> [[Position]] -> [Position] -> Geometry

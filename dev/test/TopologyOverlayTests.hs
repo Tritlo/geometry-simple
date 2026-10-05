@@ -54,6 +54,16 @@ tests =
         , testCase "coincident bent lines retain their edges in union" $ do
             let line = geometry "LINESTRING (0 0,2 0,2 2)"
             lineEdges (successful (S.union line line)) @?= lineEdges (geometry "MULTILINESTRING ((0 0,2 0),(2 0,2 2))")
+        , testCase "line junctions stay split after each output path" $
+            forM_ [3, 4, 5] $ \count -> do
+                let arms = [XY (-2) 0, XY 0 2, XY 2 0, XY 0 (-2), XY 2 2]
+                    source = MultiLineString (V.fromList [CoordinatesXY (U.fromList [XY 0 0, endpoint]) | endpoint <- take count arms])
+                    empty = geometry "LINESTRING EMPTY"
+                forM_ [(S.intersection, source), (S.union, source), (S.difference, empty), (S.symmetricDifference, empty)] $ \(operation, other) -> do
+                    let result = successful (operation source other)
+                    S.numGeometries result @?= count
+                    assertBool "junctions remain component endpoints" (S.isSimple result)
+                    lineEdges result @?= lineEdges source
         , testProperty "coincident curves retain each source segment exactly once" $
             forAll (chooseInt (2, 64)) $ \count ->
                 let points = [(fromIntegral i, fromIntegral (i `mod` 2)) | i <- [0 .. count - 1]]
