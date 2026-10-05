@@ -39,6 +39,10 @@ tests =
         , testCase "a repeated matching coordinate remains a point" $
             S.locateAlong 3 (geometry "LINESTRING M (0 0 3,0 0 3,2 0 5)")
                 @?= Just (geometry "MULTIPOINT M ((0 0 3))")
+        , testCase "a measured ring selects its closing point once" $
+            forM_ ["LINESTRING M (0 0 0,2 0 1,0 2 1,0 0 0)", "POLYGON M ((0 0 0,2 0 1,0 2 1,0 0 0))"] $ \input -> do
+                S.locateAlong 0 (geometry input) @?= Just (geometry "MULTIPOINT M ((0 0 0))")
+                S.locateBetween 0 0.5 (geometry input) @?= Just (geometry "MULTILINESTRING M ((0 1 0.5,0 0 0,1 0 0.5))")
         , testCase "a measure reversal can create separate runs" $
             S.locateBetween 1 2 (geometry "LINESTRING M (0 0 0,3 0 3,6 0 0)")
                 @?= Just (geometry "MULTILINESTRING M ((1 0 1,2 0 2),(4 0 2,5 0 1))")

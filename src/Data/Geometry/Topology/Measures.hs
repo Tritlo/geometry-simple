@@ -86,7 +86,7 @@ selectCoordinates lower upper coordinates = case coordinates of
 selectedRuns :: (Coordinate c) => Double -> Double -> [c] -> [[c]]
 selectedRuns _ _ [] = []
 selectedRuns lower upper [value] = [[value] | inRange lower upper (measure (coordinateComponents value))]
-selectedRuns lower upper values = reverse (finish (List.foldl' append ([], []) pieces))
+selectedRuns lower upper values@(start : _) = joinEnds (reverse (finish (List.foldl' append ([], []) pieces)))
   where
     pieces = concat [clipSegment lower upper a b | (a, b) <- zip values (drop 1 values)]
     finish ([], completed) = completed
@@ -96,6 +96,11 @@ selectedRuns lower upper values = reverse (finish (List.foldl' append ([], []) p
     append state@(current@(lastValue : _), completed) piece@(firstValue : rest)
         | sameCoordinate lastValue firstValue = (reverse rest ++ current, completed)
         | otherwise = (reverse piece, finish state)
+    joinEnds runs@(initial@(first : _) : rest)
+        | sameCoordinate start (last values) = case reverse rest of
+            final : middle | sameCoordinate first (last final) -> (final ++ drop 1 initial) : reverse middle
+            _ -> runs
+    joinEnds runs = runs
 
 -- | Clip one segment in measure space and retain its original direction.
 clipSegment :: (Coordinate c) => Double -> Double -> c -> c -> [[c]]
