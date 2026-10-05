@@ -25,6 +25,11 @@ tests =
                 let result = successful (operation first second)
                 S.area result @?= expected
                 assertBool "output topology" (S.isValid result)
+        , testCase "rings that collapse during rounding do not discard the result" $ do
+            -- Near 1e15 one exact ring rounds to repeated vertices. GEOS returns area 2.921875.
+            let result = successful (S.difference (geometry "MULTIPOLYGON(((999999999999998.4 700000000000001.0,999999999999999.4 700000000000001.9,999999999999999.9 700000000000001.5,999999999999998.4 700000000000001.0)),((1000000000000005.4 699999999999998.5,1000000000000004.5 699999999999999.1,1000000000000001.8 699999999999997.4,1000000000000002.5 699999999999996.6,1000000000000005.4 699999999999998.5)))") (geometry "MULTIPOLYGON(((999999999999999.0 699999999999999.5,999999999999996.9 700000000000000.1,999999999999996.6 700000000000002.0,1000000000000001.0 700000000000002.2,999999999999999.0 699999999999999.5)),((1000000000000001.9 699999999999997.2,1000000000000000.1 699999999999999.4,1000000000000001.9 699999999999999.8,1000000000000003.0 699999999999997.4,1000000000000001.9 699999999999997.2)))"))
+            S.area result @?= 2.921875
+            assertBool "output topology" (S.isValid result)
         , testCase "shared polygon edge is a line" $
             assertBool "shared edge" (S.equals (successful (S.intersection (rectangle 0 0 4 4) (rectangle 4 0 8 4))) (geometry "LINESTRING (4 0,4 4)"))
         , testCase "shared polygon corner is a point" $

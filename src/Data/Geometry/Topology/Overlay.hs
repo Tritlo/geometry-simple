@@ -101,10 +101,9 @@ robustOperation emptyDimension padding operation a b = case operation a b >>= va
         let result = combinePlanar (map planar parts)
         validateResult (assemble emptyDimension (planarPolygons result) (planarLines result) (planarPoints result))
   where
-    firstValid [] = Left PrecisionFailure
-    firstValid (attempt : rest) = case attempt >>= validateResult of
-        Right result -> Right result
-        Left failure -> if null rest then Left failure else firstValid rest
+    firstValid attempts = case [result | Right result <- map (>>= validateResult) attempts] of
+        result : _ -> Right result
+        [] -> Left PrecisionFailure
     snappedAttempts x y =
         [ let (snappedA, snappedB) = snapPlanars (tolerance * 10 ^ attemptIndex) x y
            in operation snappedA snappedB
@@ -286,11 +285,16 @@ assemble emptyDimension polygons lines' points = case parts of
         [] -> []
         [line] -> [LineString line]
         values -> [MultiLineString (V.fromList values)]
-    polygonParts = case [PolygonRings (coordinates (oriented GT shell)) (V.fromList (map (coordinates . oriented LT) holes)) | shell : holes <- polygons, not (null shell)] of
+    polygonParts = case [PolygonRings (coordinates (oriented GT shell)) (V.fromList (map (coordinates . oriented LT) (filter enclosesArea holes))) | shell : holes <- map (map roundedRing) polygons, enclosesArea shell] of
         [] -> []
         [rings] -> [Polygon rings]
         values -> [MultiPolygon (V.fromList values)]
     rounded (x, y) = (fromRational x :: Double, fromRational y :: Double)
+    -- Rounding can merge neighbouring vertices. Remove the repeats and drop rings
+    -- that no longer enclose an area, so one collapsed sliver cannot invalidate
+    -- the whole result.
+    roundedRing ring = [(toRational x, toRational y) | (x, y) : _ <- List.group (map rounded ring)]
+    enclosesArea ring = ringOrientation ring /= EQ
     coordinates = CoordinatesXY . U.fromList . map (\(x, y) -> XY (fromRational x) (fromRational y))
     oriented direction ring = if ringOrientation ring == direction then ring else reverse ring
 
