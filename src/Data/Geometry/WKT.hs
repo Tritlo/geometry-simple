@@ -36,6 +36,24 @@ import qualified Data.Vector.Unboxed as U
 -- | The remaining text and a controlled parse error.
 type Parser = StateT Text (Either String)
 
+-- | The geometry family selected by a WKT keyword.
+data Family
+    = -- | A point or an empty point.
+      PointFamily
+    | -- | One coordinate sequence.
+      LineFamily
+    | -- | An exterior ring and holes.
+      PolygonFamily
+    | -- | A collection of points.
+      MultiPointFamily
+    | -- | A collection of line strings.
+      MultiLineFamily
+    | -- | A collection of polygons.
+      MultiPolygonFamily
+    | -- | A collection of arbitrary geometries.
+      CollectionFamily
+    deriving (Eq)
+
 {- | Decode one complete geometry and preserve each member's coordinate layout.
 Return 'Left' for malformed WKT or trailing input. See the module documentation
 for layout inference and the construction checks.
@@ -98,10 +116,10 @@ emptyKeyword = do
         else pure False
 
 -- | Read the geometry family and an attached or separate dimension suffix.
-header :: Parser (Int, Maybe Dimensions)
+header :: Parser (Family, Maybe Dimensions)
 header = do
     name <- word
-    let families = [("POINT", 1), ("LINESTRING", 2), ("POLYGON", 3), ("MULTIPOINT", 4), ("MULTILINESTRING", 5), ("MULTIPOLYGON", 6), ("GEOMETRYCOLLECTION", 7)]
+    let families = [("POINT", PointFamily), ("LINESTRING", LineFamily), ("POLYGON", PolygonFamily), ("MULTIPOINT", MultiPointFamily), ("MULTILINESTRING", MultiLineFamily), ("MULTIPOLYGON", MultiPolygonFamily), ("GEOMETRYCOLLECTION", CollectionFamily)]
         suffixes = [("ZM", DimXYZM), ("Z", DimXYZ), ("M", DimXYM)]
         attached = [(family, dimensions) | (suffix, dimensions) <- suffixes, Just base <- [Text.stripSuffix suffix name], Just family <- [lookup base families]]
     case lookup name families of
@@ -120,24 +138,24 @@ header = do
 geometryParser :: Parser (Geometry, Dimensions)
 geometryParser = do
     (family, declared) <- header
-    if family == 7
-        then do
+    case family of
+        CollectionFamily -> do
             members <- vector geometryParser
             case declared of
                 Just dimensions -> unless (V.all ((== dimensions) . snd) members) (failure "has mixed coordinate dimensions")
                 Nothing -> pure ()
             let shape = GeometryCollection (V.map fst members)
             pure (shape, fromMaybe (geometryDimensions shape) declared)
-        else do
+        _ -> do
             (shape, inferred) <- case family of
-                1 -> do (value, dimensions) <- point True declared; pure (PointGeometry value, dimensions)
-                2 -> do
+                PointFamily -> do (value, dimensions) <- point True declared; pure (PointGeometry value, dimensions)
+                LineFamily -> do
                     (values, dimensions) <- coordinates declared
                     lift (validateLine values)
                     pure (LineString values, dimensions)
-                3 -> do (rings, dimensions) <- polygon declared; pure (Polygon rings, dimensions)
-                4 -> do (values, dimensions) <- multiPoint declared; pure (MultiPoint values, dimensions)
-                5 -> do
+                PolygonFamily -> do (rings, dimensions) <- polygon declared; pure (Polygon rings, dimensions)
+                MultiPointFamily -> do (values, dimensions) <- multiPoint declared; pure (MultiPoint values, dimensions)
+                MultiLineFamily -> do
                     (values, dimensions) <-
                         vectorState
                             declared
@@ -147,7 +165,7 @@ geometryParser = do
                                 pure (line, next)
                             )
                     pure (MultiLineString values, dimensions)
-                _ -> do (values, dimensions) <- vectorState declared polygon; pure (MultiPolygon values, dimensions)
+                MultiPolygonFamily -> do (values, dimensions) <- vectorState declared polygon; pure (MultiPolygon values, dimensions)
             pure (shape, fromMaybe DimXY inferred)
 
 -- | Inspect one coordinate without consuming its text.
