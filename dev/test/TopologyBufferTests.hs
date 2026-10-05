@@ -23,6 +23,9 @@ tests =
             successful (S.bufferWithSegments 0 1 (geometry "POINT (0 0)")) @?= successful (S.bufferWithSegments 1 1 (geometry "POINT (0 0)"))
         , testCase "straight line joins its caps" $
             sameXY (successful (S.bufferWithSegments 1 1 (geometry "LINESTRING (0 0,2 0)"))) "POLYGON ((0 1,2 1,3 0,2 -1,0 -1,-1 0,0 1))"
+        , testCase "radii below the coordinate precision keep large rings" $ do
+            S.area (successful (S.buffer (-1e-12) (geometry "POLYGON ((1000001 1000000,1000002 1000000,1000002 1000001,1000003 1000001,1000003 1000002,1000002 1000002,1000002 1000003,1000001 1000003,1000001 1000002,1000000 1000002,1000000 1000001,1000001 1000001,1000001 1000000))"))) @?= 5
+            S.area (successful (S.buffer 1e-12 (geometry "POLYGON ((999990 999990,1000010 999990,1000010 1000010,999990 1000010,999990 999990),(1000001 1000000,1000002 1000000,1000002 1000001,1000003 1000001,1000003 1000002,1000002 1000002,1000002 1000003,1000001 1000003,1000001 1000002,1000000 1000002,1000000 1000001,1000001 1000001,1000001 1000000))"))) @?= 395
         , testCase "negative point buffer is empty" $
             S.isEmpty (successful (S.buffer (-1) (geometry "POINT ZM (1 2 3 4)"))) @?= True
         , testCase "negative line buffer is empty" $
