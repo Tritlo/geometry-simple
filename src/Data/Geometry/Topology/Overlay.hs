@@ -43,12 +43,13 @@ overlay select emptyDimension first second
     a = planar first
     b = planar second
     edges = nodeSegments (segments a ++ segments b) (vertices a ++ vertices b)
+    queryEdges = segmentQuery edges
     selected p = select (locate a p /= Exterior) (locate b p /= Exterior)
     selectedFace p = select (polygonContains a p) (polygonContains b p)
     boundaryEdges =
         [ if leftInside then (u, v) else (v, u)
         | edge@(u, v) <- edges
-        , let (left, right) = sidePoints edges edge
+        , let (left, right) = sidePoints queryEdges edge
         , let leftInside = selectedFace left
         , leftInside /= selectedFace right
         ]

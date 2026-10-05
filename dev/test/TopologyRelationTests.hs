@@ -10,7 +10,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase, (@?=))
-import Test.Tasty.QuickCheck (chooseInt, conjoin, forAll, testProperty, (===))
+import Test.Tasty.QuickCheck (chooseInt, conjoin, counterexample, forAll, testProperty, vectorOf, (===))
 
 -- | Cover all predicates, boundary rules, holes, collections, and empty values.
 tests :: TestTree
@@ -100,6 +100,10 @@ tests =
                     let expected = not (S.relatePattern "FF*FF****" a b)
                     S.intersects a b @?= expected
                     S.disjoint a b @?= not expected
+                    S.contains a b @?= S.relatePattern "T*****FF*" a b
+                    S.covers a b @?= (S.relatePattern "******FF*" a b && expected)
+                    S.equals a b @?= (S.relate a b == "FFFFFFFF2" || S.relatePattern "T*F**FFF*" a b)
+                    S.touches a b @?= any (\pattern -> S.relatePattern pattern a b) ["FT*******", "F**T*****", "F***T****"]
             , testCase "point queries agree with relation matrices" $
                 forM_ familyExamples $ \a ->
                     forM_ (geometry "POINT EMPTY" : [point x y | x <- [0, 1, 2, 3], y <- [0, 1, 2, 3]]) $ \b -> do
@@ -132,8 +136,20 @@ tests =
             , testCase "small finite distances do not underflow during squaring" $
                 S.distance (point 0 0) (point 3e-200 4e-200) @?= 5e-200
             , testCase "projection survives a segment whose length overflows Double" $
-                S.distance (point 0 0) (geometry "LINESTRING (-1e308 1,1e308 1)") @?= 1
+                S.distance (point 0 0) (geometry "MULTILINESTRING ((-1e308 1,1e308 1),(-1e308 2,1e308 2))") @?= 1
+            , testCase "distance search retains points beside unrelated segments" $
+                S.distance
+                    (geometry "GEOMETRYCOLLECTION (LINESTRING (1000 1000,1100 1000),POINT (0 0),LINESTRING (-100 -100,-100 -100))")
+                    (geometry "GEOMETRYCOLLECTION (LINESTRING (3 4,3 10),POINT (40 40))")
+                    @?= 5
+            , testCase "overlapping segment bounds do not imply zero distance" $
+                S.distance (point 0 0) (geometry "MULTILINESTRING ((-100 101,100 -99),(-1 0.5,1 0.5))") @?= 0.5
             ]
+        , testProperty "indexed distance agrees with exhaustive component distances" $
+            forAll (vectorOf 6 generatedLine) $ \as -> forAll (vectorOf 7 (generatedLineAt 40)) $ \bs ->
+                let actual = S.distance (GeometryCollection (V.fromList as)) (GeometryCollection (V.fromList bs))
+                    expected = minimum [S.distance a b | a <- as, b <- bs]
+                 in counterexample (show (actual, expected)) (abs (actual - expected) <= 1e-12 * expected)
         , testProperty "transposing the inputs transposes the matrix" $
             forAll generatedLine $ \a -> forAll generatedLine $ \b ->
                 S.relate b a === [S.relate a b !! index | index <- [0, 3, 6, 1, 4, 7, 2, 5, 8]]
@@ -151,12 +167,13 @@ tests =
                     ]
         ]
   where
-    generatedLine = do
+    generatedLine = generatedLineAt 0
+    generatedLineAt offset = do
         x <- chooseInt (-8, 8)
         y <- chooseInt (-8, 8)
         u <- chooseInt (-8, 8)
         v <- chooseInt (-8, 8)
-        pure (LineString (CoordinatesXY (U.fromList [XY (fromIntegral x) (fromIntegral y), XY (fromIntegral u) (fromIntegral v)])))
+        pure (LineString (CoordinatesXY (U.fromList [XY (offset + fromIntegral x) (fromIntegral y), XY (offset + fromIntegral u) (fromIntegral v)])))
 
 -- | All seven families, with holes, disconnected parts, and empty components.
 familyExamples :: [Geometry]

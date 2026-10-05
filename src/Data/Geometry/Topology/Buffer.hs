@@ -36,13 +36,14 @@ bufferWithSegments quadrants radius geometry = assemble SurfaceDimension (polygo
     bands = Planar [] [] [[map toExact ring] | ring <- rings]
     offsetRings = concatMap (offsetPolygon count radius) (planarPolygons source)
     edges = nodeSegments ((if radius /= 0 then concatMap ringSegments offsetRings else segments surfaces) ++ (if radius == 0 then [] else segments bands)) []
+    queryEdges = segmentQuery edges
     selected p
         | radius == 0 = any ((> 0) . polygonDepth p) (planarPolygons source)
         | otherwise = sum (map (winding p) (offsetRings ++ map (map toExact) rings)) < 0
     boundary =
         [ if leftInside then (a, b) else (b, a)
         | edge@(a, b) <- edges
-        , let (left, right) = sidePoints edges edge
+        , let (left, right) = sidePoints queryEdges edge
         , let leftInside = selected left
         , leftInside /= selected right
         ]
