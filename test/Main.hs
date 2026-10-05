@@ -24,6 +24,7 @@ import Data.Word (Word32, Word64)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 import qualified MeasureTests
 import Numeric (showEFloat)
+import qualified SFAConformanceTests
 import qualified SimpleFeaturesTests
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
@@ -44,6 +45,7 @@ tests =
     testGroup
         "geometry-simple"
         [ SimpleFeaturesTests.tests
+        , SFAConformanceTests.tests
         , MeasureTests.tests
         , TopologyRelationTests.tests
         , TopologyBufferTests.tests
