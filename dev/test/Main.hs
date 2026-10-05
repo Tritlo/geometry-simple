@@ -15,6 +15,7 @@ import qualified Data.Geometry.SimpleFeatures as S
 import Data.Geometry.WKB
 import Data.Geometry.WKT (encodeWKT)
 import qualified Data.Geometry.WKT as WKT
+import Data.List (isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -295,7 +296,8 @@ samplesFor offset values coord wrap makePoint = do
 -- | Reject invalid encodings before allocating from untrusted counts.
 malformed :: [(String, ByteString)]
 malformed =
-    [("byte order " ++ show marker, BS.singleton marker <> BS.drop 1 (point True 0 [1, 2])) | marker <- [2, 255]]
+    [("truncated point " ++ show size, BS.take size (point True 0 [1, 2])) | size <- [0 .. 20]]
+        ++ [("byte order " ++ show marker, BS.singleton marker <> BS.drop 1 (point True 0 [1, 2])) | marker <- [2, 255]]
         ++ [("type " ++ show tag, wkb True tag (coordinates True [1, 2])) | tag <- [0, 8, 1000, 2000, 3000, 4001, 0x80000001, 0x40000001, 0x20000001, maxBound]]
         ++ [("hostile count " ++ show family ++ " " ++ show little, wkb little family (count little maxBound)) | little <- [False, True], family <- [2 .. 7]]
         ++ [ ("line count exceeds payload", wkb True 2 (count True 2 <> coordinates True [1, 2]))
@@ -317,7 +319,7 @@ finiteWords = [0, 0x8000000000000000, 1, 0x8000000000000001, 0x000fffffffffffff,
 -- | Require a controlled parse failure.
 assertRejected :: String -> ByteString -> Assertion
 assertRejected label bytes = case decodeWKB bytes of
-    Left _ -> pure ()
+    Left message -> assertBool (label ++ ": " ++ message) ("Geometry WKB " `isPrefixOf` message)
     Right shape -> assertFailure (label ++ " accepted: " ++ show shape)
 
 -- | Require a validation error without relying on its wording.

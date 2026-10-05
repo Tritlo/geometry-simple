@@ -2,8 +2,9 @@
 
 {- | Checked ISO WKB decoding and encoding.
 
-Each point, line, ring, and collection member retains its own coordinate
-layout. Children can use different byte orders and layouts. The codecs check
+Collection members retain their own coordinate layouts. Polygon rings share
+one header; encoding pads them to their combined layout. Children can use
+different byte orders and layouts. The codecs check
 line lengths, ring closure, counts, and type codes. They accept non-finite
 ordinates and do not validate polygon topology. EWKB and SRIDs are not supported.
 -}
@@ -22,6 +23,7 @@ import qualified Data.ByteString.Builder.Prim as Prim
 import qualified Data.ByteString.Lazy as BL
 import Data.Geometry.Internal
 import Data.Int (Int64)
+import Data.List (stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import qualified Data.Vector as V
@@ -50,7 +52,9 @@ encodeWKB geometry = do
 -- | Run a decoder and require complete input consumption.
 runDecoder :: Get a -> ByteString -> Either String a
 runDecoder parser bytes = case runGetOrFail parser (BL.fromStrict bytes) of
-    Left (_, _, message) -> Left message
+    Left (_, _, message) -> Left $ case stripPrefix "Geometry WKB " message of
+        Just _ -> message
+        Nothing -> "Geometry WKB " ++ fromMaybe message (stripPrefix "Geometry " message)
     Right (remaining, _, value)
         | BL.null remaining -> Right value
         | otherwise -> Left "Geometry WKB has trailing bytes"
@@ -99,14 +103,15 @@ getGeometry total = do
             MultiPolygon <$> V.replicateM count (getChild 3 (getPolygon total))
         _ -> do
             count <- getCount total little 9
-            GeometryCollection <$> V.replicateM count (getGeometry total)
+            GeometryCollection <$> V.replicateM count (do child <- getGeometry total; pure $! child)
 
 -- | Check a multi-geometry child header before reading its typed body.
 getChild :: Word32 -> (Bool -> Dimensions -> Get a) -> Get a
 getChild expected body = do
     (little, dimensions, family) <- getHeader
     unless (family == expected) (fail "Geometry WKB multi child has the wrong family")
-    body little dimensions
+    child <- body little dimensions
+    pure $! child
 
 -- | Read a polygon's ring count and validate its shell and holes.
 getPolygon :: Int64 -> Bool -> Dimensions -> Get PolygonRings

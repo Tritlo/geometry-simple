@@ -141,10 +141,21 @@ tests =
         , testCase "wide collections parse" $ do
             let input = "GEOMETRYCOLLECTION (" <> Text.intercalate "," (replicate 1024 "POINT EMPTY") <> ")"
             decodeWKT input @?= Right (GeometryCollection (V.replicate 1024 (PointGeometry (EmptyPoint DimXY))))
-        , testCase "alternating collection tags reuse parsed child layouts" $ do
-            let depth = 16384
+        , localOption (mkTimeout 2000000) $ testCase "alternating collection tags reuse parsed child layouts" $ do
+            let depth = 65536
                 input = Text.concat [if even i then "GEOMETRYCOLLECTION Z (" else "GEOMETRYCOLLECTION (" | i <- [1 .. depth]] <> "POINT Z (0 0 0)" <> Text.replicate depth ")"
             assertBool "parsed alternating tags" (isRight (decodeWKT input))
+        , testCase "nested mixed layouts cannot satisfy an explicit parent tag" $ do
+            let mixed = "GEOMETRYCOLLECTION (POINT (1 2),POINT Z (1 2 3))"
+            assertBool "untagged mixed collection" (isRight (decodeWKT mixed))
+            forM_ [mixed, "GEOMETRYCOLLECTION (" <> mixed <> ")"] $ \child ->
+                assertBool "tagged parent rejects mixed descendants" (isLeft (decodeWKT ("GEOMETRYCOLLECTION Z (" <> child <> ")")))
+        , testCase "NaN tokens have canonical magnitude and explicit sign" $
+            forM_ [("NaN", 0x7ff8000000000000), ("+NaN", 0x7ff8000000000000), ("-NaN", 0xfff8000000000000)] $ \(token, bits) -> do
+                shape <- rightOrFail (decodeWKT ("POINT (" <> token <> " 0)"))
+                case shape of
+                    PointGeometry (PointXY (XY value _)) -> castDoubleToWord64 value @?= bits
+                    _ -> assertFailure "expected an XY point"
         , testCase "construction errors retain their cause" $
             forM_ [("MULTILINESTRING ((0 0,1 1),(2 2))", "at least two coordinates"), ("POLYGON ((0 0,1 0,1 1,0 1))", "ring is not closed"), ("POINT (0 0) trailing", "trailing input")] $ \(input, message) ->
                 case decodeWKT input of

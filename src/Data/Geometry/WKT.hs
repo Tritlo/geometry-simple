@@ -32,6 +32,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as M
 import qualified Data.Vector.Unboxed as U
+import GHC.Float (castWord64ToDouble)
 
 -- | The remaining text and a controlled parse error.
 type Parser = StateT Text (Either String)
@@ -135,36 +136,31 @@ header = do
             _ -> failure "has an unsupported geometry type"
 
 -- | Read a geometry and retain the parsed layout for an explicit parent tag.
-geometryParser :: Parser (Geometry, Dimensions)
+geometryParser :: Parser (Geometry, LayoutSummary)
 geometryParser = do
     (family, declared) <- header
-    (shape, inferred) <- case family of
+    case family of
         CollectionFamily -> do
             members <- vector geometryParser
             case declared of
-                Just dimensions -> unless (G.all ((== dimensions) . snd) members) (failure "has mixed coordinate dimensions")
+                Just dimensions -> unless (G.all ((== Uniform dimensions) . snd) members) (failure "has mixed coordinate dimensions")
                 Nothing -> pure ()
-            let shape = GeometryCollection (G.map fst members)
-            pure (shape, Just (fromMaybe (G.foldl' (\acc (_, dimensions) -> unionDimensions acc dimensions) DimXY members) declared))
-        PointFamily -> do (value, dimensions) <- point True declared; pure (PointGeometry value, dimensions)
-        LineFamily -> do
-            (values, dimensions) <- coordinates declared
-            lift (validateLine values)
-            pure (LineString values, dimensions)
-        PolygonFamily -> do (rings, dimensions) <- polygon declared; pure (Polygon rings, dimensions)
-        MultiPointFamily -> do (values, dimensions) <- multiPoint declared; pure (MultiPoint values, dimensions)
-        MultiLineFamily -> do
-            (values, dimensions) <-
-                vectorState
-                    declared
-                    ( \current -> do
-                        (line, next) <- coordinates current
-                        lift (validateLine line)
-                        pure (line, next)
-                    )
-            pure (MultiLineString values, dimensions)
-        MultiPolygonFamily -> do (values, dimensions) <- vectorState declared polygon; pure (MultiPolygon values, dimensions)
-    pure (shape, fromMaybe DimXY inferred)
+            let layout = if G.null members then Uniform (fromMaybe DimXY declared) else G.foldl' (\acc (_, child) -> combineLayout acc child) Inherited members
+            pure (GeometryCollection (G.map fst members), layout)
+        PointFamily -> known PointGeometry (point True declared)
+        LineFamily -> known LineString (line declared)
+        PolygonFamily -> known Polygon (polygon declared)
+        MultiPointFamily -> known MultiPoint (multiPoint declared)
+        MultiLineFamily -> known MultiLineString (vectorState declared line)
+        MultiPolygonFamily -> known MultiPolygon (vectorState declared polygon)
+  where
+    known wrap parser = do
+        (value, dimensions) <- parser
+        pure (wrap value, Uniform (fromMaybe DimXY dimensions))
+    line current = do
+        (values, dimensions) <- coordinates current
+        lift (validateLine values)
+        pure (values, dimensions)
 
 -- | Inspect one coordinate without consuming its text.
 lookAheadParser :: Parser a -> Parser a
@@ -321,7 +317,7 @@ number = do
             Just ('+', rest) -> (False, rest)
             _ -> (False, input)
         (keyword, afterKeyword) = Text.span (\c -> isAsciiLower c || isAsciiUpper c) unsigned
-        special = lookup (Text.toUpper keyword) [("NAN", 0 / 0), ("INF", 1 / 0), ("INFINITY", 1 / 0)]
+        special = lookup (Text.toUpper keyword) [("NAN", castWord64ToDouble 0x7ff8000000000000), ("INF", 1 / 0), ("INFINITY", 1 / 0)]
     case special of
         Just value -> put afterKeyword >> pure (if negative then negate value else value)
         Nothing -> decimalNumber negative unsigned
@@ -372,18 +368,19 @@ digitsValue digits
     half = size `div` 2
     (high, low) = Text.splitAt half digits
 
--- | Whether a WKT container has a fixed, inherited, or mixed output layout.
-data OutputLayout = Uniform Dimensions | Inherited | Mixed
+-- | Whether a WKT container has one layout, no stored layout, or mixed layouts.
+data LayoutSummary = Uniform Dimensions | Inherited | Mixed
+    deriving (Eq)
 
 -- | Combine child layouts. Containers without a stored layout are neutral.
-combineLayout :: OutputLayout -> OutputLayout -> OutputLayout
+combineLayout :: LayoutSummary -> LayoutSummary -> LayoutSummary
 combineLayout Inherited second = second
 combineLayout first Inherited = first
 combineLayout (Uniform first) (Uniform second) | first == second = Uniform first
 combineLayout _ _ = Mixed
 
 -- | Compute layouts once and give empty containers their parent's output tag.
-geometryWKT :: Geometry -> (OutputLayout, Dimensions -> Builder)
+geometryWKT :: Geometry -> (LayoutSummary, Dimensions -> Builder)
 geometryWKT geometry =
     ( layout
     , \inherited ->
