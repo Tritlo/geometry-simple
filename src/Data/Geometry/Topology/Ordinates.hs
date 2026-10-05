@@ -2,6 +2,10 @@
 module Data.Geometry.Topology.Ordinates (
     Sample,
     sourcePaths,
+    overlaySources,
+    nodeSourcePaths,
+    overlayPoint,
+    overlayCoordinates,
     interpolatedPoint,
     interpolatedCoordinateSequence,
     elevationModel,
@@ -9,12 +13,57 @@ module Data.Geometry.Topology.Ordinates (
 ) where
 
 import Data.Geometry.Internal
-import Data.Geometry.Topology.Planar (Position, pointOnSegment, position, subtractPosition, unique)
+import Data.Geometry.Topology.Planar (Position, orientation, overlapsBounds, pointOnSegment, position, positions, segmentIntersection, subtractPosition, unique)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Ord (comparing)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+
+{- | Prepare ordinates for the native overlay clipping stage.
+GEOS 3.13's RingClipper copies XYZ coordinates, so clipped rings lose M.
+Its robust envelope contains every segment that can contribute to the result.
+We retain the original XY segments and apply only this ordinate conversion.
+See <https://github.com/libgeos/geos/blob/3.13.1/src/operation/overlayng/OverlayUtil.cpp>.
+-}
+overlaySources :: (Bool -> Bool -> Bool) -> Geometry -> Geometry -> Geometry
+overlaySources select first second
+    | select False True || null firstPoints || null secondPoints = combined
+    | otherwise = visit combined
+  where
+    combined = GeometryCollection (V.fromList [first, second])
+    firstPoints = map fst (concat (sourcePaths first))
+    secondPoints = map fst (concat (sourcePaths second))
+    extent points = ((minimum (map fst points), minimum (map snd points)), (maximum (map fst points), maximum (map snd points)))
+    expand ((x, y), (u, v)) = ((x - margin, y - margin), (u + margin, v + margin))
+      where
+        width = u - x
+        height = v - y
+        margin = (if min width height > 0 then min width height else max width height) / 10
+    ((ax, ay), (au, av)) = expand (extent firstPoints)
+    ((bx, by), (bu, bv)) = expand (extent secondPoints)
+    target = if select True False then ((ax, ay), (au, av)) else ((max ax bx, max ay by), (min au bu, min av bv))
+    rings geometry = case geometry of
+        Polygon (PolygonRings shell holes) -> map positions (shell : V.toList holes)
+        MultiPolygon values -> concatMap (rings . Polygon) (V.toList values)
+        GeometryCollection values -> concatMap rings (V.toList values)
+        _ -> []
+    segments = [(a, b) | ring <- rings combined, (a, b) <- zip ring (drop 1 ring)]
+    ((lx, ly), (ux, uy)) = expand (extent (fst target : snd target : [p | (a, b) <- segments, overlapsBounds target (extent [a, b]), p <- [a, b]]))
+    inside (x, y) = lx <= x && x <= ux && ly <= y && y <= uy
+    sequenceM coordinates
+        | all (inside . fst) (concat (sourcePaths (LineString coordinates))) = coordinates
+        | otherwise = case coordinates of
+            CoordinatesXYM values -> CoordinatesXYM (U.map (\(XYM x y _) -> XYM x y (0 / 0)) values)
+            CoordinatesXYZM values -> CoordinatesXYZM (U.map (\(XYZM x y z _) -> XYZM x y z (0 / 0)) values)
+            _ -> coordinates
+    polygon (PolygonRings shell holes) = PolygonRings (sequenceM shell) (V.map sequenceM holes)
+    visit geometry = case geometry of
+        Polygon value -> Polygon (polygon value)
+        MultiPolygon values -> MultiPolygon (V.map polygon values)
+        GeometryCollection values -> GeometryCollection (V.map visit values)
+        _ -> geometry
 
 -- | A source XY position and its optional Z and M values.
 type Sample = (Position, (Maybe Double, Maybe Double))
@@ -41,6 +90,110 @@ sourcePaths geometry = case geometry of
                 )
             )
 
+{- | Split source paths at intersections and retain the ordinate provenance.
+A split edge starts with its intersection value. If its last point is an
+original vertex, it retains that vertex's original values. This distinction
+matters when adjacent edges carry different or missing Z/M values.
+Monotone chains use the native STR tree's ten-item groups to order intersections.
+See <https://github.com/libgeos/geos/blob/3.13.1/src/noding/SegmentNodeList.cpp>.
+-}
+nodeSourcePaths :: Geometry -> [[Sample]]
+nodeSourcePaths geometry = concatMap split indexed
+  where
+    indexed = zip [0 :: Int ..] (sourcePaths geometry)
+    sourceEdges (pathId, path) = [(pathId, index, a, b) | (index, (a, b)) <- zip [0 :: Int ..] (zip path (drop 1 path)), fst a /= fst b]
+    quadrant (_, _, (a, _), (b, _)) = let (x, y) = subtractPosition b a in (x >= 0, y >= 0)
+    chains = concatMap (List.groupBy (\a b -> quadrant a == quadrant b) . sourceEdges) indexed
+    center axis chain = let values = [axis point | (_, _, (a, _), (b, _)) <- chain, point <- [a, b]] in minimum values + maximum values
+    slices = max 1 (ceiling (sqrt (fromIntegral ((length chains + 9) `div` 10) :: Double)))
+    capacity = max 1 ((length chains + slices - 1) `div` slices)
+    chunks [] = []
+    chunks values = let (chunk, rest) = splitAt capacity values in chunk : chunks rest
+    ordered = concatMap (List.sortOn (center snd)) (chunks (List.sortOn (center fst) chains))
+    pairs = [(a, b) | chain : rest <- List.tails ordered, other <- rest, a <- chain, b <- other]
+    intersections =
+        [ (key, (p, extras))
+        | (first@(pathA, indexA, a, b), second@(pathB, indexB, c, d)) <- pairs
+        , let points = segmentIntersection (fst a, fst b) (fst c, fst d)
+        , not (pathA == pathB && abs (indexA - indexB) == 1 && length points == 1)
+        , p <- points
+        , let extras = intersectionExtras p (a, b) (c, d)
+        , key <- [nodeKey first p, nodeKey second p]
+        ]
+    nodeKey (pathId, index, _, b) p = (pathId, if p == fst b then index + 1 else index, p)
+    endpoints = [((pathId, index, fst sample), sample) | (pathId, path) <- indexed, (index, sample) <- take 1 (zip [0 ..] path) ++ take 1 (reverse (zip [0 ..] path))]
+    nodes = Map.fromListWith (\_ old -> old) (intersections ++ endpoints)
+    split (pathId, path) =
+        let pathNodes = List.sortBy (comparing order) [(index, sample) | ((pid, index, _), sample) <- Map.toList nodes, pid == pathId]
+            order (index, (p, _)) = (index, distanceSquared p (fst (path !! index)))
+            distanceSquared (x, y) (u, v) = (x - u) ^ (2 :: Int) + (y - v) ^ (2 :: Int)
+            piece (start, first) (end, final)
+                | start == end = [first, final]
+                | otherwise = first : take (end - start) (drop (start + 1) path) ++ [final | fst final /= fst (path !! end)]
+         in [piece a b | (a, b) <- zip pathNodes (drop 1 pathNodes)]
+
+-- | Select endpoint values or interpolate both crossing segments.
+intersectionExtras :: Position -> (Sample, Sample) -> (Sample, Sample) -> (Maybe Double, Maybe Double)
+intersectionExtras p first@(a, b) second@(c, d) = (value fst, value snd)
+  where
+    onFirst sample = pointOnSegment (fst sample) (fst a, fst b)
+    onSecond sample = pointOnSegment (fst sample) (fst c, fst d)
+    collinear = all ((== EQ) . orientation (fst a) (fst b) . fst) [c, d]
+    candidates
+        | not collinear = [a, b, c, d]
+        | onFirst c && onFirst d = [c, d, a, b]
+        | onSecond a && onSecond b = [a, b, c, d]
+        | otherwise = filter onFirst [c, d] ++ filter onSecond [a, b]
+    value select = case [sample | sample <- candidates, fst sample == p] of
+        sample : rest -> case select (snd sample) of
+            Just ordinate -> Just ordinate
+            Nothing -> case mapMaybe (select . snd) rest of
+                ordinate : _ -> Just ordinate
+                [] -> segmentOrdinate select p (if fst a == p || fst b == p then second else first)
+        [] -> case mapMaybe (segmentOrdinate select p) [first, second] of
+            [] -> Nothing
+            ordinates -> Just (average ordinates)
+
+-- | Build a graph node from the first source edge that contains it.
+overlayPoint :: Geometry -> [[Sample]] -> Position -> Point
+overlayPoint full paths p = case [sample | path <- paths, sample <- path, fst sample == p] of
+    sample : _ -> samplePoint full sample
+    [] -> interpolatedPoint full p
+
+-- | Copy output ordinates from directed source edges after noding.
+overlayCoordinates :: Geometry -> [[Sample]] -> [Position] -> Coordinates
+overlayCoordinates full paths output = packPoints (geometryDimensions full) (map build entries)
+  where
+    closed = length output > 1 && take 1 output == take 1 (reverse output)
+    previous = (if closed then take 1 (drop 1 (reverse output)) else take 1 output) ++ output
+    entries = zip3 (map Just previous) output (map Just (drop 1 output) ++ [Nothing])
+    sourceEdges = [(a, b) | path <- paths, (a, b) <- zip path (drop 1 path)]
+    choose p neighbor = listToMaybe [(a, b) | (a, b) <- sourceEdges, pointOnSegment p (fst a, fst b), pointOnSegment neighbor (fst a, fst b), p /= neighbor]
+    build (before, p, after) =
+        let edge = case before >>= choose p of
+                Just value -> Just value
+                Nothing -> after >>= choose p
+            sample = case edge of
+                Just (a, _) | p == fst a -> Just a
+                Just (_, b) | p == fst b -> Just b
+                Just pair -> Just (p, (segmentOrdinate fst p pair, segmentOrdinate snd p pair))
+                Nothing -> Nothing
+         in maybe (overlayPoint full paths p) (samplePoint full) sample
+
+-- | Fill an absent elevation without replacing a source edge's missing M.
+samplePoint :: Geometry -> Sample -> Point
+samplePoint full ((x, y), (z, m)) = pointFromComponents (geometryDimensions full) (fromRational x, fromRational y, fromMaybe (elevationModel full (x, y)) z, fromMaybe (0 / 0) m)
+
+-- | Pack a sequence with its aggregate source layout.
+packPoints :: Dimensions -> [Point] -> Coordinates
+packPoints layout points = case layout of
+    DimXY -> CoordinatesXY (U.fromList [XY x y | (x, y, _, _) <- rows])
+    DimXYZ -> CoordinatesXYZ (U.fromList [XYZ x y z | (x, y, z, _) <- rows])
+    DimXYM -> CoordinatesXYM (U.fromList [XYM x y m | (x, y, _, m) <- rows])
+    DimXYZM -> CoordinatesXYZM (U.fromList [XYZM x y z m | (x, y, z, m) <- rows])
+  where
+    rows = map (fromMaybe (0 / 0, 0 / 0, 0 / 0, 0 / 0) . withPoint coordinateComponents) points
+
 {- | Preserve source vertices and interpolate segment intersections.
 Use the mean of incident segment values at a new intersection. Fill missing
 Z values from the source elevation model. Missing M values remain NaN.
@@ -54,7 +207,7 @@ source paths that share a vertex. New intersections use the full first
 geometry. Output layouts include the ordinates present in the full source.
 -}
 interpolatedCoordinateSequence :: Geometry -> Geometry -> [Position] -> Coordinates
-interpolatedCoordinateSequence full preferred output = pack (map build entries)
+interpolatedCoordinateSequence full preferred output = packPoints (geometryDimensions full) (map build entries)
   where
     paths = sourcePaths preferred
     fallback = interpolatedPoint full
@@ -62,13 +215,6 @@ interpolatedCoordinateSequence full preferred output = pack (map build entries)
     entries = zip3 (Nothing : map Just output) output (map Just (drop 1 output) ++ [Nothing])
     build (before, point, after) =
         maybe (fallback point) (original point . snd) (preferredSample paths point (mapMaybe id [before, after]))
-    layout = geometryDimensions full
-    pack points = case layout of
-        DimXY -> CoordinatesXY (U.fromList [XY x y | (x, y, _, _) <- rows points])
-        DimXYZ -> CoordinatesXYZ (U.fromList [XYZ x y z | (x, y, z, _) <- rows points])
-        DimXYM -> CoordinatesXYM (U.fromList [XYM x y m | (x, y, _, m) <- rows points])
-        DimXYZM -> CoordinatesXYZM (U.fromList [XYZM x y z m | (x, y, z, m) <- rows points])
-    rows = map (fromMaybe (0 / 0, 0 / 0, 0 / 0, 0 / 0) . withPoint coordinateComponents)
 
 -- | Build a preferred original vertex, retaining its known ordinates.
 originalPoint :: Geometry -> Position -> (Maybe Double, Maybe Double) -> Point

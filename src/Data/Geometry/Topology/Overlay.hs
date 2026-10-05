@@ -63,7 +63,8 @@ overlay select emptyDimension first second
     isCollection _ = False
     a = planar first
     b = planar second
-    source = GeometryCollection (V.fromList [withoutCoveredPoints shape | shape <- [first, second], topologicalDimension shape /= 0])
+    source = Ordinates.overlaySources select (nonpointSource first) (nonpointSource second)
+    nonpointSource shape = if topologicalDimension shape == 0 then GeometryCollection V.empty else withoutCoveredPoints shape
     layout = geometryDimensions source
     edges = nodeSegments (segments a ++ segments b) (vertices a ++ vertices b)
     selected p = select (locate a p /= Exterior) (locate b p /= Exterior)
@@ -91,17 +92,14 @@ overlay select emptyDimension first second
     unfilled = select True False && select False True && disjointBounds (vertices a) (vertices b) && all singleNonempty [first, second]
     singleNonempty (GeometryCollection children) = length (filter singleNonempty (V.toList children)) == 1
     singleNonempty geometry = not (geometryEmpty geometry)
-    pointFor = Ordinates.interpolatedPoint source
-    lineSource = GeometryCollection (V.fromList (filter isLine (atomicGeometries source)))
-    polygonSource = GeometryCollection (V.fromList (filter isPolygon (atomicGeometries source)))
-    coordinates = Ordinates.interpolatedCoordinateSequence
-    lineCoordinates = coordinates source lineSource
-    ringCoordinates = coordinates source polygonSource . reverse
+    nodedPaths = Ordinates.nodeSourcePaths source
+    pointFor p = case Ordinates.overlayPoint source nodedPaths p of
+        PointXYM (XYM x y m) | isNaN m -> PointXY (XY x y)
+        PointXYZM (XYZM x y z m) | isNaN m -> PointXYZ (XYZ x y z)
+        point -> point
+    lineCoordinates = Ordinates.overlayCoordinates source nodedPaths
+    ringCoordinates = Ordinates.overlayCoordinates source nodedPaths . reverse
     polygonValues = [PolygonRings (ringCoordinates shell) (V.fromList (map ringCoordinates holes)) | shell : holes <- polygons]
-    isLine (LineString _) = True
-    isLine _ = False
-    isPolygon (Polygon _) = True
-    isPolygon _ = False
     inputPoints = concatMap storedPoints [shape | shape <- [first, second], topologicalDimension shape == 0]
     original point = case withPoint position point of
         Nothing -> point
