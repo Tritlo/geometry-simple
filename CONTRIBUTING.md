@@ -43,15 +43,18 @@ uv run --script test/shapely_compare.py --probe "$(cabal list-bin -fshapely-test
 
 The script pins its Python dependencies. It uses fixed edge cases and generated
 geometries with a repeatable seed. It reports each method's comparison count
-and exits with a failure status for unexpected differences. The comparison
-maps one-based indices to Shapely indices. It checks total geometry length
-directly and checks curve lengths separately from polygon perimeters.
-Hull comparisons use XY coordinates and normalize vertex order.
-Envelopes and empty geometry metadata are compared directly. Codec fixtures
-also check accepted and rejected inputs without running planar operations on
-non-finite coordinates. Empty child layouts can differ because `Geometry c`
-has one coordinate type for all children. Numeric measurements use a tolerance;
-finite coordinate round trips retain exact bits.
+and exits with a failure status for unexpected differences. It checks selectors,
+hull layouts and vertex order, envelopes, empty metadata, and total geometry
+length directly. Curve lengths and polygon perimeters have separate checks.
+Raw geometry results include every point and ring layout. This prevents writer
+normalization from hiding decoder differences. WKT comparisons check structural
+tokens and exact source ordinates separately from numeric formatting. Codec
+fixtures check accepted and rejected inputs without running planar operations
+on non-finite coordinates. Numeric measurements use a tolerance; finite
+coordinate round trips retain exact bits.
+One named hull diagnostic reports GEOS's choice of Z among duplicate XY
+positions separately. It still checks XY coordinates and vertex order. Other
+hull comparisons retain strict layout and ordinate checks.
 Use `--cases` and `--seed` to change the generated inputs.
 
 Type-check the Python script in strict mode with:
