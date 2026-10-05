@@ -33,18 +33,8 @@ description:
 
 extra-doc-files:
   CHANGELOG.md
-  CONTRIBUTING.md
+  docs/GEOS-DIFFERENCES.md
   README.md
-  test/SFA-TESTS.md
-
-extra-source-files:
-  test/shapely_compare.py
-  test/test_shapely_compare.py
-
-flag shapely-tests
-  description: Build the driver for the optional Shapely comparison tests
-  default: False
-  manual: True
 
 source-repository head
   type: git
@@ -76,57 +66,4 @@ library
     deepseq >=1.4.8 && <1.6,
     text >=2.0 && <2.2,
     transformers >=0.6 && <0.7,
-    vector >=0.13 && <0.14,
-
-test-suite geometry-simple-test
-  type: exitcode-stdio-1.0
-  main-is: Main.hs
-  other-modules:
-    MeasureTests
-    SFAConformanceTests
-    SimpleFeaturesTests
-    TopologyBufferTests
-    TopologyOverlayTests
-    TopologyRelationTests
-    TopologyUnaryTests
-    WKTTests
-
-  hs-source-dirs: test
-  default-language: Haskell2010
-  build-depends:
-    base >=4.18 && <5,
-    bytestring >=0.11.2 && <0.13,
-    geometry-simple,
-    QuickCheck >=2.14 && <2.20,
-    tasty >=1.4 && <1.6,
-    tasty-hunit >=0.10 && <0.12,
-    tasty-quickcheck >=0.10 && <0.12,
-    text >=2.0 && <2.2,
-    vector >=0.13 && <0.14,
-
-benchmark geometry-simple-bench
-  type: exitcode-stdio-1.0
-  main-is: Main.hs
-  hs-source-dirs: bench
-  default-language: Haskell2010
-  ghc-options: -rtsopts
-  build-depends:
-    base >=4.18 && <5,
-    bytestring >=0.11.2 && <0.13,
-    deepseq >=1.4.8 && <1.6,
-    geometry-simple,
-    text >=2.0 && <2.2,
-    vector >=0.13 && <0.14,
-
-executable geometry-simple-shapely-probe
-  if !flag(shapely-tests)
-    buildable: False
-  main-is: ShapelyProbe.hs
-  hs-source-dirs: test
-  default-language: Haskell2010
-  build-depends:
-    base >=4.18 && <5,
-    bytestring >=0.11.2 && <0.13,
-    geometry-simple,
-    text >=2.0 && <2.2,
     vector >=0.13 && <0.14,

@@ -32,10 +32,12 @@ jobs:
       - run: cabal build all --disable-documentation
       - run: cabal test all --disable-documentation --test-show-details=direct
       - run: cabal check
-      - run: cabal sdist
+      - run: cabal sdist .
+      - name: Check release contents
+        run: python3 dev/check_sdist.py dist-newstyle/sdist/geometry-simple-*.tar.gz
       - name: Build release documentation
         if: matrix.ghc == '9.14.1'
-        run: cabal haddock all --haddock-for-hackage
+        run: cabal haddock geometry-simple --haddock-for-hackage
 
   nix:
     name: Nix / GHC 9.14.1
@@ -45,7 +47,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
       - run: >-
-          nix-build --no-out-link
+          nix-build -A checks --no-out-link
           --option sandbox true --option sandbox-fallback false
           --max-jobs 2 --cores 2
 
@@ -64,18 +66,18 @@ jobs:
           python-version: '3.12'
       - run: python3 -m pip install uv==0.9.5
       - run: cabal update
-      - run: cabal build -fshapely-tests exe:geometry-simple-shapely-probe
+      - run: cabal build exe:geometry-simple-shapely-probe
       - name: Check Python types
         run: >-
           uv run --no-project --with shapely==2.1.2
           --with types-shapely==2.1.0.20260728 --with pyright==1.1.414
-          pyright test/shapely_compare.py test/test_shapely_compare.py
+          pyright dev/test/shapely_compare.py dev/test/test_shapely_compare.py dev/check_sdist.py
       - name: Check comparison diagnostics
-        run: uv run --script test/test_shapely_compare.py
+        run: uv run --script dev/test/test_shapely_compare.py
       - name: Compare every operation with GEOS
         run: >-
-          uv run --script test/shapely_compare.py
-          --probe "$(cabal list-bin -fshapely-tests exe:geometry-simple-shapely-probe)"
+          uv run --script dev/test/shapely_compare.py
+          --probe "$(cabal list-bin exe:geometry-simple-shapely-probe)"
           --phase all --cases 100 --buffer-cases 24
           --seed 20261005 --report shapely-report.json
       - name: Save comparison report

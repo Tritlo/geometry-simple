@@ -11,7 +11,18 @@ let
       && !(builtins.elem (builtins.baseNameOf path) [
         "dist-newstyle"
         "cabal.project.local"
+        "dev"
       ]);
   };
+  haskell = pkgs.haskell.packages.ghc9141;
+  library = haskell.callCabal2nix "geometry-simple" source { };
+  checks = haskell.callCabal2nix "geometry-simple-dev" (pkgs.lib.cleanSource ./dev) {
+    geometry-simple = library;
+  };
 in
-pkgs.haskell.packages.ghc9141.callCabal2nix "geometry-simple" source { }
+library // {
+  inherit checks;
+  env = haskell.shellFor {
+    packages = _: [ library checks ];
+  };
+}

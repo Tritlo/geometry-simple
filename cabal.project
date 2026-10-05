@@ -1,4 +1,4 @@
-packages: .
+packages: . dev
 
 tests: True
 benchmarks: True

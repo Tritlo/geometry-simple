@@ -2,8 +2,14 @@
 
 The source fixtures are from OGC 06-104r4, Copyright © 2007, 2010, 2012
 Open Geospatial Consortium, Inc. They are used under the license on page ii
-of the linked standard. This adaptation contains modifications that OGC has
+of the linked standard, reproduced in [LICENSE-OGC](../LICENSE-OGC).
+This adaptation contains modifications that OGC has
 not approved or adopted.
+
+These fixtures belong to the development package. They are excluded from the
+published MIT library archive. `MeasureTests.hs` also includes examples from
+OGC 06-103r4, Copyright © 2010 Open Geospatial Consortium, Inc., under the same
+document license.
 
 `SFAConformanceTests.hs` adapts geometry cases T6 through T52 from
 [OGC 06-104r4, Annex C.3.3](https://docs.ogc.org/is/06-104r4/06-104r4.pdf).
