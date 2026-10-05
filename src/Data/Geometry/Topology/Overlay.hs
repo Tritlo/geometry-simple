@@ -3,14 +3,17 @@ module Data.Geometry.Topology.Overlay where
 
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar
-import Data.List (minimumBy, sortBy)
+import Data.List (group, minimumBy, sortBy)
 import qualified Data.Map.Strict as Map
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
--- | The points common to both geometries. Coordinates must have finite XY values.
+{- | The points common to both geometries. Coordinates must have finite XY values.
+Line results retain intersection nodes. A shared polygon boundary can produce
+multiple line components even when the components are connected.
+-}
 intersection :: Geometry -> Geometry -> Geometry
 intersection a b = overlay (&&) (min (topologicalDimension a) (topologicalDimension b)) a b
 
@@ -59,18 +62,37 @@ overlay select emptyDimension first second
     surfaces = Planar [] [] polygons
     (locateSurfaces, _) = prepareLocations surfaces
     lineEdges = [edge | edge <- edges, selected (midpoint edge), locateSurfaces (midpoint edge) == Exterior]
-    inputLines = planarLines a ++ planarLines b
-    inputLineEdges = concatMap lineSegments inputLines
-    allDegrees = degrees (nodeSegments inputLineEdges [])
-    endpoints = [p | line@(start : _) <- inputLines, p <- [start, last line]]
-    queryLines = segmentQuery inputLineEdges
-    overlaps = [p | p <- unique (concat inputLines), any (\edge@(u, v) -> p /= u && p /= v && pointOnSegment p edge) (queryLines (p, p))]
-    stops = Set.fromList (endpoints ++ overlaps ++ [p | (p, degree) <- Map.toList allDegrees, degree /= 2])
+    stops = lineNodes [(a, insideA), (b, insideB)]
     paths = linePaths stops lineEdges
     curves = Planar [] paths polygons
     (locateCurves, _) = prepareLocations curves
     nodes = unique (vertices a ++ vertices b ++ concatMap (\(u, v) -> [u, v]) edges)
     points = [p | p <- nodes, selected p, locateCurves p == Exterior]
+
+{- | Retain curve endpoints and nontrivial intersection nodes when joining edges.
+Adjacent segments of one curve share a vertex without splitting the curve.
+Overlapping segments and contacts between different curves create split points.
+Closing vertices share the first vertex's identity. Equal coordinates elsewhere
+keep distinct identities so self-contacts remain nodes.
+Contacts covered by polygons in a curve's own geometry do not split the result.
+-}
+lineNodes :: [(Planar, Position -> Bool)] -> Set.Set Position
+lineNodes sources = Set.fromList (endpoints ++ concatMap intersections (overlappingPairs indexed))
+  where
+    curves = [(interior, curve) | (shape, interior) <- sources, curve <- planarLines shape ++ [ring ++ take 1 ring | ring <- concat (planarPolygons shape)]]
+    cleaned = [(interior, [p | p : _ <- group curve]) | (interior, curve) <- curves]
+    endpoints = [p | (interior, curve@(first : _)) <- cleaned, p <- [first, last curve], not (interior p)]
+    indexed =
+        [ (edge, ((curveIndex, i), (curveIndex, next), interior, edge))
+        | (curveIndex, (interior, curve@(first : _))) <- zip [0 :: Int ..] cleaned
+        , let final = length curve - 1
+        , let closed = first == last curve
+        , (i, edge) <- zip [0 :: Int ..] (lineSegments curve)
+        , let next = if closed && i + 1 == final then 0 else i + 1
+        ]
+    intersections ((a, b, insideFirst, first), (c, d, insideSecond, second)) = case segmentIntersection first second of
+        [_] | a == c || a == d || b == c || b == d -> []
+        points -> [p | p <- points, not (insideFirst p || insideSecond p)]
 
 -- | Collect directed cycles with their selected region on the left.
 boundaryRings :: [Segment] -> [[Position]]
@@ -124,32 +146,30 @@ polygonize edges = [shell : [hole | hole <- holes, containingShell hole == shell
         [] -> error "Uncontained hole in planar overlay"
         candidates -> minimumBy (comparing (abs . ringArea)) candidates
 
--- | Count undirected edges at each vertex.
-degrees :: [Segment] -> Map.Map Position Int
-degrees edges = Map.fromListWith (+) [(p, 1) | (a, b) <- edges, p <- [a, b]]
-
 -- | Join degree-two edges, stopping at source endpoints and intersections.
 linePaths :: Set.Set Position -> [Segment] -> [[Position]]
-linePaths stops edges = collect (Set.fromList (map canonical edges))
+linePaths stops edges = collect (neighbors, starts)
   where
-    canonical (a, b) = if a < b then (a, b) else (b, a)
-    incidentEdges = Map.fromListWith Set.union [(point, Set.singleton (canonical edge)) | edge@(a, b) <- edges, point <- [a, b]]
-    collect remaining
-        | Set.null remaining = []
-        | otherwise =
-            let counts = degrees (Set.toList remaining)
-                ends = [p | (p, degree) <- Map.toList counts, degree /= 2 || Set.member p stops]
-                start = case ends of
-                    p : _ -> p
-                    [] -> fst (Set.findMin remaining)
+    neighbors = Map.fromListWith Set.union [(a, Set.singleton b) | (p, q) <- edges, (a, b) <- [(p, q), (q, p)]]
+    starts = Map.keysSet (Map.filterWithKey isStart neighbors)
+    isStart point adjacent = not (Set.null adjacent) && (Set.size adjacent /= 2 || Set.member point stops)
+    collect remaining@(graph, ends) = case Map.lookupMin graph of
+        Nothing -> []
+        Just (first, _) ->
+            let start = maybe first id (Set.lookupMin ends)
                 (path, rest) = walk start start [] remaining
              in path : collect rest
-    walk start current accumulated remaining = case neighbors of
-        [] -> (reverse (current : accumulated), remaining)
-        _ | not (null accumulated) && (current == start || Set.member current stops || length neighbors /= 1) -> (reverse (current : accumulated), remaining)
-        next : _ -> walk start next (current : accumulated) (Set.delete (canonical (current, next)) remaining)
+    walk start current accumulated remaining@(graph, _) = case Set.lookupMin adjacent of
+        Nothing -> (reverse (current : accumulated), remaining)
+        _ | not (null accumulated) && (current == start || Set.member current stops || Set.size adjacent /= 1) -> (reverse (current : accumulated), remaining)
+        Just next -> walk start next (current : accumulated) (removeNeighbor current next (removeNeighbor next current remaining))
       where
-        neighbors = [if a == current then b else a | edge@(a, b) <- Set.toList (Map.findWithDefault Set.empty current incidentEdges), Set.member edge remaining]
+        adjacent = Map.findWithDefault Set.empty current graph
+    removeNeighbor neighbor point (graph, ends) =
+        let adjacent = Set.delete neighbor (Map.findWithDefault Set.empty point graph)
+            nextGraph = if Set.null adjacent then Map.delete point graph else Map.insert point adjacent graph
+            nextEnds = if isStart point adjacent then Set.insert point ends else Set.delete point ends
+         in (nextGraph, nextEnds)
 
 -- | Construct the smallest XY family that holds the selected components.
 assemble :: TopologicalDimension -> [[[Position]]] -> [[Position]] -> [Position] -> Geometry

@@ -53,6 +53,9 @@ Sources: [OGC common architecture](https://docs.ogc.org/is/06-103r4/06-103r4.pdf
 - Buffers have round caps and joins, with eight segments per quadrant by
   default. Negative distances erode polygons and empty points and lines.
   Zero distance repairs polygon topology. Circular arcs are approximations.
+- Overlay line results retain nodes at contacts and overlaps. A connected
+  shared boundary can therefore produce a `MultiLineString`. Ordinary bends
+  within one input curve do not create separate components.
 - Measured queries select points and curve portions using M. Polygon queries
   select their boundary positions, as permitted by the implementation-defined
   surface rule. Empty input gives `Nothing`; no match gives an empty point.

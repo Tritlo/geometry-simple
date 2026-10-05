@@ -29,6 +29,35 @@ tests =
             assertBool "shared edge" (S.equals (S.intersection (rectangle 0 0 4 4) (rectangle 4 0 8 4)) (geometry "LINESTRING (4 0,4 4)"))
         , testCase "shared polygon corner is a point" $
             S.intersection (rectangle 0 0 4 4) (rectangle 4 4 8 8) @?= geometry "POINT (4 4)"
+        , testGroup
+            "line components retain intersection nodes"
+            [ testCase name $
+                forM_ [(geometry first, geometry second), (geometry second, geometry first)] $ \(a, b) -> do
+                    let actual = S.intersection a b
+                        expected = geometry output
+                    lineComponents actual @?= lineComponents expected
+            | (name, first, second, output) <-
+                [ ("polygon corner contact", "POLYGON ((-7 -5,-5 -5,-5 -3,-6 -3,-6 -1,-7 -1,-7 -5))", "POLYGON ZM ((-6 -3 16 34,-4 -3 20 36,-4 1 24 24,-6 1 20 22,-6 -3 16 34))", "MULTILINESTRING ((-5 -3,-6 -3),(-6 -3,-6 -1))")
+                , ("collinear polygon contact", "POLYGON ((0 0,2 0,2 1,2 2,0 2,0 0))", "POLYGON ((2 0,4 0,4 2,2 2,2 0))", "MULTILINESTRING ((2 0,2 1),(2 1,2 2))")
+                , ("coincident bent lines", "LINESTRING (0 0,2 0,2 2)", "LINESTRING (2 2,2 0,0 0)", "MULTILINESTRING ((0 0,2 0),(2 0,2 2))")
+                , ("line follows polygon corner", "LINESTRING (0 0,2 0,2 2)", "POLYGON ((0 0,2 0,2 2,0 2,0 0))", "MULTILINESTRING ((0 0,2 0),(2 0,2 2))")
+                , ("interior bend stays connected", "LINESTRING (0 0,2 0,2 2)", "POLYGON ((-1 -1,3 -1,3 3,-1 3,-1 -1))", "LINESTRING (0 0,2 0,2 2)")
+                , ("closed interior line stays connected", "LINESTRING (0 0,2 0,2 2,0 0)", "POLYGON ((-1 -1,3 -1,3 3,-1 3,-1 -1))", "LINESTRING (0 0,2 0,2 2,0 0)")
+                , ("covered polygon edges do not split a line", "GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0)),POLYGON ((2 2,6 2,6 6,2 6,2 2)))", "LINESTRING (-1 3,7 3)", "LINESTRING (0 3,2 3,4 3,6 3)")
+                , ("repeated adjacent vertices do not create extra nodes", "LINESTRING (0 0,0 0,2 0,2 0,2 2)", "POLYGON ((-1 -1,3 -1,3 3,-1 3,-1 -1))", "LINESTRING (0 0,2 0,2 2)")
+                , ("self-contact retains a node inside a polygon", "LINESTRING (0 0,2 0,2 2,0 0,0 2)", "POLYGON ((-1 -1,3 -1,3 3,-1 3,-1 -1))", "MULTILINESTRING ((0 0,2 0,2 2,0 0),(0 0,0 2))")
+                , ("line follows a hole corner", "LINESTRING (2 2,8 2,8 8)", "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2))", "MULTILINESTRING ((2 2,8 2),(8 2,8 8))")
+                ]
+            ]
+        , testCase "coincident bent lines retain nodes in union" $ do
+            let line = geometry "LINESTRING (0 0,2 0,2 2)"
+            lineComponents (S.union line line) @?= lineComponents (geometry "MULTILINESTRING ((0 0,2 0),(2 0,2 2))")
+        , testProperty "coincident curves retain each source segment exactly once" $
+            forAll (chooseInt (2, 64)) $ \count ->
+                let points = [(fromIntegral i, fromIntegral (i `mod` 2)) | i <- [0 .. count - 1]]
+                    line = LineString (CoordinatesXY (U.fromList [XY x y | (x, y) <- points]))
+                    expected = sort [[a, b] | (a, b) <- zip points (drop 1 points)]
+                 in (lineComponents (S.intersection line line), lineComponents (S.union line line)) === (expected, expected)
         , testCase "a crossing with nonintegral coordinates is retained" $
             S.intersection (geometry "LINESTRING (0 0,3 3)") (geometry "LINESTRING (0 2,3 0)") @?= geometry "POINT (1.2 1.2)"
         , testCase "mixed output has flat atomic members" $ do
@@ -100,6 +129,15 @@ tests =
 -- | Decode a fixed, valid WKT fixture.
 geometry :: String -> Geometry
 geometry = either error id . decodeWKT . Text.pack
+
+-- | Compare XY line members independently of their direction and member order.
+lineComponents :: Geometry -> [[(Double, Double)]]
+lineComponents shape = sort (map canonical (components shape))
+  where
+    components (LineString (CoordinatesXY points)) = [map (\(XY x y) -> (x, y)) (U.toList points)]
+    components (MultiLineString lines') = concatMap (components . LineString) (V.toList lines')
+    components _ = error "Expected an XY line result"
+    canonical points = min points (reverse points)
 
 -- | Construct a rectangle from independent coordinate bounds.
 rectangle :: Double -> Double -> Double -> Double -> Geometry
