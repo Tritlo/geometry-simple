@@ -252,20 +252,28 @@ checkedLength count = when (toInteger count > toInteger (maxBound :: Word32)) (L
 
 -- | Write a geometry with its own aggregate header and each child's own layout.
 putGeometry :: Geometry -> Builder
-putGeometry geometry =
-    let dimensions = geometryDimensions geometry
-     in Builder.word8 1
-            <> Builder.word32LE (geometryFamily geometry + 1000 * fromIntegral (fromEnum dimensions))
-            <> case geometry of
-                PointGeometry point -> putPoint point
-                LineString points -> withCoordinates (putLine dimensions) points
-                Polygon (PolygonRings shell holes)
-                    | coordinatesEmpty shell -> putLength 0
-                    | otherwise -> putLength (1 + V.length holes) <> withCoordinates (putLine dimensions) shell <> V.foldMap (withCoordinates (putLine dimensions)) holes
-                MultiPoint points -> putLength (U.length points) <> U.foldMap (putGeometry . PointGeometry) points
-                MultiLineString lineStrings -> putLength (V.length lineStrings) <> V.foldMap (putGeometry . LineString) lineStrings
-                MultiPolygon polygons -> putLength (V.length polygons) <> V.foldMap (putGeometry . Polygon) polygons
-                GeometryCollection children -> putLength (V.length children) <> V.foldMap putGeometry children
+putGeometry = snd . geometryBuilder
+
+-- | Return the layout with the bytes so parents do not scan descendants again.
+geometryBuilder :: Geometry -> (Dimensions, Builder)
+geometryBuilder geometry = case geometry of
+    PointGeometry point -> tagged (pointDimensions point) (putPoint point)
+    LineString points -> tagged (dimensionsOf points) (withCoordinates (putLine (dimensionsOf points)) points)
+    Polygon rings@(PolygonRings shell holes) ->
+        let dimensions = polygonDimensions rings
+         in tagged dimensions $
+                if coordinatesEmpty shell
+                    then putLength 0
+                    else putLength (1 + V.length holes) <> withCoordinates (putLine dimensions) shell <> V.foldMap (withCoordinates (putLine dimensions)) holes
+    MultiPoint points -> tagged (geometryDimensions geometry) (putLength (U.length points) <> U.foldMap (putGeometry . PointGeometry) points)
+    MultiLineString lines' -> tagged (geometryDimensions geometry) (putLength (V.length lines') <> V.foldMap (putGeometry . LineString) lines')
+    MultiPolygon polygons -> tagged (geometryDimensions geometry) (putLength (V.length polygons) <> V.foldMap (putGeometry . Polygon) polygons)
+    GeometryCollection children ->
+        let parts = V.map geometryBuilder children
+            dimensions = V.foldl' (\acc (layout, _) -> unionDimensions acc layout) DimXY parts
+         in tagged dimensions (putLength (V.length children) <> V.foldMap snd parts)
+  where
+    tagged dimensions body = (dimensions, Builder.word8 1 <> Builder.word32LE (geometryFamily geometry + 1000 * fromIntegral (fromEnum dimensions)) <> body)
 
 -- | The ISO WKB family tag for a geometry.
 geometryFamily :: Geometry -> Word32

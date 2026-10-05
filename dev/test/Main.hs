@@ -160,6 +160,13 @@ tests =
         , testCase "wide empty collections round-trip" $ do
             let shape = GeometryCollection (V.replicate 4096 (GeometryCollection V.empty))
             (encodeWKB shape >>= decodeWKB) @?= Right shape
+        , testCase "deep WKB headers combine descendant layouts once" $ do
+            let leaf = GeometryCollection (V.fromList [PointGeometry (EmptyPoint DimXYZ), PointGeometry (PointXYM (XYM 1 2 3))])
+                shape = iterate (GeometryCollection . V.singleton) leaf !! 1024
+                header = BS.pack [1, 191, 11, 0, 0, 1, 0, 0, 0]
+            bytes <- rightOrFail (encodeWKB leaf)
+            encodeWKB shape @?= Right (BS.concat (replicate 1024 header) <> bytes)
+            (encodeWKB shape >>= decodeWKB) @?= Right shape
         , testProperty "mixed-layout WKB round trips" $ roundTripProperty Nothing False
         , testProperty "XY WKT round trips" $ roundTripProperty (Just DimXY) True
         , testProperty "finite point bit patterns" $
