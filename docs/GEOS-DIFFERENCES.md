@@ -94,6 +94,30 @@ Repeated winding queries use aggregated crossing counts. Dense arrangements
 can still take quadratic time. Predicates can reject incompatible dimensions
 or bounds before constructing a full relation matrix.
 
+### Overlay precision
+
+Overlays first compute an exact arrangement and round its result to `Double`.
+A valid result keeps its coordinates. If rounding makes it invalid, the operation
+retries with vertex and segment snapping. Separate groups of overlapping input
+bounds use separate tolerances. A distant component therefore does not set the
+precision of a local operation.
+
+The first tolerance is the group's largest absolute ordinate divided by 10^12,
+with a floor of the smallest positive `Double`. Five attempts increase this
+tolerance tenfold, each starting from the original inputs. Nearby vertices and
+intersection nodes share coordinates. Edges also snap to nearby vertices.
+Narrow regions can collapse. If all attempts fail, evaluation throws
+`OverlayPrecisionFailure`, a `TopologyException` exported by
+`Data.Geometry.SimpleFeatures`.
+
+The retry count and tolerance schedule follow
+[GEOS OverlayNGRobust](https://github.com/libgeos/geos/blob/3.13.1/include/geos/operation/overlayng/OverlayNGRobust.h).
+This implementation retains exact noding and deterministic XY representatives.
+It does not reproduce GEOS's additional self-union and precision-grid attempts.
+Valid results can retain tiny regions that GEOS discards. At subnormal scales,
+GEOS's floating-point validity checks can also disagree with exact orientation.
+The precision tests include an independent rational check for such a region.
+
 ## Format rules
 
 Untagged WKT infers XY, XYZ, or XYZM from two, three, or four ordinates. XYM

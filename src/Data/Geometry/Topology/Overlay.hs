@@ -1,52 +1,126 @@
--- | Planar set operations over exact segment arrangements.
+{- | Planar set operations over exact segment arrangements.
+
+Precision retries use five snapping tolerances. The first is the largest
+absolute ordinate in a group divided by 10^12. Use at least the smallest
+positive Double. Each later attempt multiplies this tolerance by ten. All attempts
+start from the original inputs. The schedule follows
+<https://github.com/libgeos/geos/blob/3.13.1/include/geos/operation/overlayng/OverlayNGRobust.h GEOS OverlayNGRobust>.
+-}
 module Data.Geometry.Topology.Overlay where
 
+import Control.Exception (Exception, throw)
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar
-import Data.List (maximumBy, minimumBy)
+import Data.Geometry.Topology.Snapping (snapPlanars)
+import Data.Geometry.Topology.Unary (isValid)
+import qualified Data.Graph as Graph
+import Data.List (find, maximumBy, minimumBy)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
+import Data.Tree (flatten)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+
+{- | A rounded overlay remains invalid after the bounded snapping attempts.
+Catch this exception when evaluating an overlay result. No invalid geometry is
+returned when the available Double precision cannot represent the topology.
+-}
+data TopologyException
+    = -- | Exact overlay and all five snapping attempts produced invalid output.
+      OverlayPrecisionFailure
+    deriving (Eq, Show, Read)
+
+-- | Report a precision failure through the standard exception interface.
+instance Exception TopologyException
 
 {- | The points common to both geometries. Coordinates must have finite XY values.
 Line results join consecutive edges through vertices with exactly two neighbors.
 Their component count and order can differ from other implementations.
+If Double rounding changes topology, retry with bounded snapping. Thin regions
+can collapse. Throw 'OverlayPrecisionFailure' if every attempt remains invalid.
+See the module documentation for the tolerance schedule.
 -}
 intersection :: Geometry -> Geometry -> Geometry
 intersection a b = overlay (&&) (min (topologicalDimension a) (topologicalDimension b)) a b
 
--- | The points in either geometry. Coordinates must have finite XY values.
+-- | The points in either geometry. The precision and failure rules match 'intersection'.
 union :: Geometry -> Geometry -> Geometry
 union a b = overlay (||) (max (topologicalDimension a) (topologicalDimension b)) a b
 
--- | The closure of the points in the first geometry but not the second.
+{- | The closure of the points in the first geometry but not the second.
+The precision and failure rules match 'intersection'.
+-}
 difference :: Geometry -> Geometry -> Geometry
 difference a = overlay (\x y -> x && not y) (topologicalDimension a) a
 
--- | The closure of the points in exactly one geometry.
+{- | The closure of the points in exactly one geometry.
+The precision and failure rules match 'intersection'.
+-}
 symmetricDifference :: Geometry -> Geometry -> Geometry
 symmetricDifference a b = overlay (/=) (max (topologicalDimension a) (topologicalDimension b)) a b
 
--- | Evaluate a Boolean set operation on faces, edges, and vertices.
+{- | Try exact overlay first. If output rounding breaks topology, retry each
+connected group with five snapping tolerances from magnitude / 10^12 to
+magnitude / 10^8. Each attempt starts from the original inputs. These bounds
+follow GEOS OverlayNGRobust; separate groups keep their own precision scale.
+-}
 overlay :: (Bool -> Bool -> Bool) -> TopologicalDimension -> Geometry -> Geometry -> Geometry
 overlay select emptyDimension first second
-    | earlyEmpty = emptyGeometry emptyDimension
+    | Just unchanged <- trivialOverlay select emptyDimension a b = unchanged
+    | isValid exact = exact
+    | otherwise = assemble emptyDimension (planarPolygons result) (planarLines result) (planarPoints result)
+  where
+    a = planar first
+    b = planar second
+    exact = overlayPlanar select emptyDimension a b
+    result = combinePlanar [planar (robust x y) | (x, y) <- overlayGroups a b]
+    robust x y = fromMaybe (throw OverlayPrecisionFailure) (find isValid attempts)
+      where
+        magnitude = maximum (0 : [max (abs u) (abs v) | (u, v) <- allPositions x ++ allPositions y])
+        minimumSpacing = toRational (encodeFloat 1 (fst (floatRange (0 :: Double)) - floatDigits (0 :: Double)) :: Double)
+        tolerance = max minimumSpacing (magnitude / 10 ^ (12 :: Int))
+        attempts =
+            overlayPlanar select emptyDimension x y
+                : [ let (snappedA, snappedB) = snapPlanars (tolerance * 10 ^ attemptIndex) x y
+                     in overlayPlanar select emptyDimension snappedA snappedB
+                  | attemptIndex <- [0 :: Int .. 4]
+                  ]
+
+-- | Group atomic inputs with overlapping bounds before a precision retry.
+overlayGroups :: Planar -> Planar -> [(Planar, Planar)]
+overlayGroups first second = map group (Graph.components graph)
+  where
+    parts shape = [Planar [p] [] [] | p <- planarPoints shape] ++ [Planar [] [line] [] | line <- planarLines shape] ++ [Planar [] [] [polygon] | polygon <- planarPolygons shape]
+    inputs = [(side, part) | (side, shape) <- [(False, first), (True, second)], part <- parts shape, not (null (allPositions part))]
+    pairs = overlappingPairs [(bounds, i) | (i, (_, part)) <- zip [0 :: Int ..] inputs, Just bounds <- [pointBounds (allPositions part)]]
+    adjacent = Map.fromListWith (++) [(a, [b]) | (i, j) <- pairs, (a, b) <- [(i, j), (j, i)]]
+    (graph, entry, _) = Graph.graphFromEdges [(part, i, Map.findWithDefault [] i adjacent) | (i, part) <- zip [0 :: Int ..] inputs]
+    group tree =
+        let members = [part | vertex <- flatten tree, let (part, _, _) = entry vertex]
+         in (combinePlanar [part | (False, part) <- members], combinePlanar [part | (True, part) <- members])
+
+-- | Handle empty or disjoint single components without new intersection coordinates.
+trivialOverlay :: (Bool -> Bool -> Bool) -> TopologicalDimension -> Planar -> Planar -> Maybe Geometry
+trivialOverlay select emptyDimension a b
+    | earlyEmpty = Just (emptyGeometry emptyDimension)
     | separate && singleComponent a && singleComponent b =
-        assemble emptyDimension (concatMap planarPolygons retained) (concatMap planarLines retained) (concatMap planarPoints retained)
-    | otherwise = assemble emptyDimension polygons paths points
+        Just (assemble emptyDimension (concatMap planarPolygons retained) (concatMap planarLines retained) (concatMap planarPoints retained))
+    | otherwise = Nothing
   where
     separate = disjointBounds (allPositions a) (allPositions b)
     retained = [shape | (keep, shape) <- [(select True False, a), (select False True, b)], keep]
     singleComponent shape = length (componentPoints shape) <= 1
-    firstEmpty = geometryEmpty first
-    secondEmpty = geometryEmpty second
-    a = planar first
-    b = planar second
+    firstEmpty = null (allPositions a)
+    secondEmpty = null (allPositions b)
     earlyEmpty = (firstEmpty && not (select False True)) || (secondEmpty && not (select True False)) || (firstEmpty && secondEmpty) || (separate && not (select True False) && not (select False True))
+
+-- | Evaluate a Boolean set operation on exact faces, edges, and vertices.
+overlayPlanar :: (Bool -> Bool -> Bool) -> TopologicalDimension -> Planar -> Planar -> Geometry
+overlayPlanar select emptyDimension a b = assemble emptyDimension polygons paths points
+  where
     edges = nodeSegments (segments a ++ segments b) (vertices a ++ vertices b)
     queryEdges = segmentQuery edges
     (locateA, insideA) = prepareLocations a

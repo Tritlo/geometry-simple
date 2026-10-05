@@ -17,6 +17,7 @@ extra-source-files:
   test/shapely_compare.py
   test/test_dev_tools.py
   test/test_duckdb_wkt.py
+  test/test_overlay_precision.py
   test/test_shapely_compare.py
 
 extra-doc-files:

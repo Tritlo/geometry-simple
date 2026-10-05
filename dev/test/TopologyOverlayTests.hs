@@ -11,7 +11,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import Test.Tasty.QuickCheck (chooseInt, forAll, testProperty, (===))
+import Test.Tasty.QuickCheck (chooseInt, conjoin, counterexample, elements, forAll, testProperty, (===))
 
 -- | Check output structure, intersections of every dimension, and set laws.
 tests :: TestTree
@@ -62,6 +62,41 @@ tests =
                  in (lineEdges (S.intersection line line), lineEdges (S.union line line)) === (expected, expected)
         , testCase "a crossing with nonintegral coordinates is retained" $
             S.intersection (geometry "LINESTRING (0 0,3 3)") (geometry "LINESTRING (0 2,3 0)") @?= geometry "POINT (1.2 1.2)"
+        , testCase "near-coincident triangles do not produce crossing slivers" $ do
+            let first = geometry "POLYGON ((-0.5 17,-18.5 1.5,40.5 35.5,-0.5 17))"
+                second = geometry "POLYGON ((-0.499999999999993 17.00000000000001,-18.499999999999993 1.50000000000001,40.50000000000001 35.50000000000001,-0.499999999999993 17.00000000000001))"
+            forM_ [(first, second), (second, first)] $ \(a, b) ->
+                forM_ [S.union, S.intersection, S.difference, S.symmetricDifference] $ \operation ->
+                    assertBool "valid rounded overlay" (S.isValid (operation a b))
+            S.difference first second @?= geometry "POLYGON EMPTY"
+            S.symmetricDifference first second @?= geometry "POLYGON EMPTY"
+            let far = geometry "POINT (1e100 1e100)"
+                mixed = S.union (GeometryCollection (V.fromList [first, far])) second
+            assertBool "unrelated point does not set the rounding scale" (abs (S.area mixed - 151.25) < 1e-10)
+            assertBool "unrelated point remains present" (S.covers mixed far)
+        , testCase "valid sub-tolerance detail keeps its exact coordinates" $ do
+            let width = 2 ** (-50)
+                result = S.difference (rectangle 0 0 1 1) (rectangle width 0 1 1)
+            S.area result @?= width
+            assertBool "valid narrow rectangle" (S.isValid result)
+            assertBool "same point set" (S.equals result (rectangle 0 0 width 1))
+        , testCase "a separate polygon keeps its vertices during a local retry" $ do
+            let first = geometry "POLYGON ((-0.5 17,-18.5 1.5,40.5 35.5,-0.5 17))"
+                second = geometry "POLYGON ((-0.499999999999993 17.00000000000001,-18.499999999999993 1.50000000000001,40.50000000000001 35.50000000000001,-0.499999999999993 17.00000000000001))"
+                distant = rectangle 1e100 1e100 (1e100 + 1e86) (1e100 + 1e86)
+                result = S.union (GeometryCollection (V.fromList [first, distant])) second
+            assertBool "distant component retained" (S.covers result distant)
+            assertBool "local component retained" (S.covers result first)
+            assertBool "valid separate polygons" (S.isValid result)
+        , testProperty "near-coincident overlays stay valid across translations and scales" $
+            forAll (elements [-40, -10, 0, 10, 40 :: Int]) $ \power ->
+                forAll (chooseInt (-8, 8)) $ \dx -> forAll (chooseInt (-8, 8)) $ \dy ->
+                    let scale = 2 ** fromIntegral power
+                        polygon points = Polygon (PolygonRings (CoordinatesXY (U.fromList [XY (scale * (x + fromIntegral dx)) (scale * (y + fromIntegral dy)) | (x, y) <- points])) V.empty)
+                        first = polygon [(-0.5, 17), (-18.5, 1.5), (40.5, 35.5), (-0.5, 17)]
+                        second = polygon [(-0.499999999999993, 17.00000000000001), (-18.499999999999993, 1.50000000000001), (40.50000000000001, 35.50000000000001), (-0.499999999999993, 17.00000000000001)]
+                        outcomes = [operation a b | (a, b) <- [(first, second), (second, first)], operation <- [S.intersection, S.union, S.difference, S.symmetricDifference]]
+                     in conjoin [counterexample (show result) (S.isValid result) | result <- outcomes]
         , testCase "mixed output has flat atomic members" $ do
             let result = S.union (geometry "LINESTRING (0 0,4 4)") (geometry "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((5 5,7 5,7 7,5 7,5 5)))")
             case result of

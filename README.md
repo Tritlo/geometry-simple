@@ -105,6 +105,10 @@ application; overlapping circles alone do not characterize these costs.
 For large indexed workloads, use a native library such as
 [`geos`](https://hackage.haskell.org/package/geos).
 
+Overlays validate their rounded output. If rounding changes topology, they retry
+with bounded snapping; thin regions can collapse. Exhausted retries raise
+`SF.OverlayPrecisionFailure`. The precision policy is described below.
+
 See [Simple Features and GEOS](https://github.com/Tritlo/geometry-simple/blob/main/docs/GEOS-DIFFERENCES.md) for numerical limits,
 empty-value rules, format conversions, and deliberate differences from GEOS.
 The package implements the seven-family core; it does not claim full OGC SFA

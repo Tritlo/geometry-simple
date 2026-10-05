@@ -127,12 +127,14 @@ planar geometry = case geometry of
     PointGeometry point -> Planar (fromMaybe [] (withPoint ((: []) . position) point)) [] []
     LineString line -> Planar [] [positions line] []
     Polygon (PolygonRings shell holes) -> Planar [] [] [map positions (shell : V.toList holes)]
-    MultiPoint points -> combine (map (planar . PointGeometry) (U.toList points))
-    MultiLineString lines' -> combine (map (planar . LineString) (V.toList lines'))
-    MultiPolygon polygons -> combine (map (planar . Polygon) (V.toList polygons))
-    GeometryCollection children -> combine (map planar (V.toList children))
-  where
-    combine parts = Planar (concatMap planarPoints parts) (concatMap planarLines parts) (concatMap planarPolygons parts)
+    MultiPoint points -> combinePlanar (map (planar . PointGeometry) (U.toList points))
+    MultiLineString lines' -> combinePlanar (map (planar . LineString) (V.toList lines'))
+    MultiPolygon polygons -> combinePlanar (map (planar . Polygon) (V.toList polygons))
+    GeometryCollection children -> combinePlanar (map planar (V.toList children))
+
+-- | Concatenate atomic components without changing their coordinates.
+combinePlanar :: [Planar] -> Planar
+combinePlanar parts = Planar (concatMap planarPoints parts) (concatMap planarLines parts) (concatMap planarPolygons parts)
 
 {- | Find the dimension of a valid point set, ignoring empty components.
 Collapsed lines and collinear rings contribute only their stored point set.

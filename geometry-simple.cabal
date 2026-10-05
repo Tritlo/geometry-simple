@@ -55,6 +55,7 @@ library
     Data.Geometry.Topology.Overlay
     Data.Geometry.Topology.Planar
     Data.Geometry.Topology.Relations
+    Data.Geometry.Topology.Snapping
     Data.Geometry.Topology.Unary
 
   default-language: Haskell2010
