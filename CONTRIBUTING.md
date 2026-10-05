@@ -147,6 +147,84 @@ circle has radius 0.5 and center `(0,0)`. The disjoint circle is centered at
 `(3,0)` and rotated by half a turn. Compare identical inputs and compiler
 settings before attributing a timing change to an implementation change.
 
+### Full API audit
+
+The audit covers all 64 functions exported by the four stable public modules.
+It excludes derived instances and the unstable `Internal` module. The
+[complete results](dev/bench/RESULTS.md) include 304 workloads at sizes 100,
+400, and 1,600. Selected groups also run at 10,000 and 100,000.
+
+Build once, then run the executable so build output does not enter the CSV:
+
+```sh
+cabal build -O1 bench:geometry-simple-bench
+geometry_bench=$(cabal list-bin bench:geometry-simple-bench)
+"$geometry_bench" --audit +RTS -T -RTS > /tmp/geometry-audit.csv
+"$geometry_bench" --audit measurements 100000 +RTS -T -RTS > /tmp/geometry-audit-large.csv
+python3 dev/bench/report.py /tmp/geometry-audit.csv /tmp/geometry-audit-large.csv > /tmp/geometry-performance.md
+```
+
+Selectors match a `group/operation/case` prefix. For example,
+`--audit codecs/encodeWKB/nested 10000` selects one workload. Groups are
+`accessors`, `measurements`, `unary`, `relations`, `construction`, `measures`,
+and `codecs`; `harness` measures loop overhead. An optional final integer
+sets the time limit in seconds for each measured batch. The default is 10.
+Timeouts appear in the CSV and report. Fixture preparation and GC between
+batches are outside this limit and outside the measured time.
+
+Inputs are prepared once. Each call reads an input from an `IORef` and fully
+evaluates the output. This prevents reuse of a previous call's result. Calls
+below 200 ms use three batches after a pilot call. Each batch targets 10 ms
+and contains between 1 and 100,000 calls. Slower calls retain the pilot as one
+sample. The report combines repeated
+invocations and checks that every public function and workload has all three
+main sizes. Fast accessors approach the loop overhead; compare their scaling,
+not individual nanosecond differences. Allocation includes the harness and
+is cumulative per call. It does not measure retained or peak memory.
+
+The recorded run used library revision `5e95432`, the pinned Nix environment,
+GHC 9.14.1, `-O1`, and an AMD Ryzen 9 7950X on Linux/WSL2, on 2026-10-05.
+Six slow workloads at size 1,600 were repeated twice to check timing variation.
+These are local measurements without CPU isolation, not latency guarantees.
+
+Workload sizes have these meanings:
+
+- Lines contain `n` coordinates. Circles have `n` vertices plus closure.
+- The holed circle has `n` vertices in each of two rings. The many-hole
+  polygon has `n / 4` square holes and a four-corner shell.
+- Multi-lines contain `n / 2` two-point lines. Multi-polygons contain `n / 4`
+  disjoint triangles. Flat and empty-member collections contain `n` points.
+  The closed-multiline accessor case has `n / 4` closed square rings.
+- Nested collections have depth `n`. Scalar accessors always receive one value.
+- Binary cases include overlap, containment in both orders, disjointness,
+  equality, touching boxes, crossing lines, and a line crossing a polygon.
+  Touching boxes have `n` boundary vertices each, including subdivisions.
+- Measured lines have increasing, constant, or alternating M values. Codecs
+  include XY and XYZM lines, holes, mixed collections, nesting, and truncated
+  input. Depth-100,000 codecs were not run; the largest codec cases use lines.
+
+The measurements identify these remaining costs:
+
+- Most measurements scan coordinates. On 100,000-point lines, length, bounds,
+  and centroid take about 1–3 ms. The hull takes about 98 ms.
+- WKB encoding and decoding take about 1–2 ms for a 100,000-point XY line.
+  WKT takes about 31 ms to encode and 71 ms to decode that line.
+- `isSimple`, closed-line `isRing`, and polygon `isValid` still compare segment
+  pairs. Validating a polygon with two 1,600-vertex rings takes about 980 ms.
+- Full relations, successful polygon predicates, overlays, and line buffers
+  remain expensive. Many take seconds at size 1,600. Their allocation can
+  exceed 20 GiB per call. This does not measure peak memory.
+- `crosses` and `overlaps` still construct full relation matrices for cases
+  that could be rejected from dimensions or disjoint bounds.
+- WKB encoding recomputes aggregate dimensions at every collection parent.
+  Encoding a collection of depth 10,000 takes about 439 ms. This is quadratic
+  in nesting depth. Ordinary flat line encoding does not have that cost.
+
+Start with predicate rejection paths and a single traversal for nested WKB
+headers. Then target candidate filtering in validity checks and repeated
+point-location scans in relations and overlays. Reuse exact geometry tests
+and the Shapely comparisons when changing those algorithms.
+
 ## Pull requests and releases
 
 Explain the behavior change, its reason, and the checks that passed. Keep the

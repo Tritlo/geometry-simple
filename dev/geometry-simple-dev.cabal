@@ -13,11 +13,13 @@ synopsis: Development checks for geometry-simple
 description: Tests, benchmarks, and comparison tools for the repository. This package is not published.
 category: Testing
 extra-source-files:
+  bench/report.py
   test/shapely_compare.py
   test/test_duckdb_wkt.py
   test/test_shapely_compare.py
 
 extra-doc-files:
+  bench/RESULTS.md
   test/SFA-TESTS.md
 
 test-suite geometry-simple-test
@@ -49,6 +51,7 @@ test-suite geometry-simple-test
 benchmark geometry-simple-bench
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  other-modules: Audit
   hs-source-dirs: bench
   default-language: Haskell2010
   ghc-options: -rtsopts

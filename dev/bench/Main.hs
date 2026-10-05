@@ -1,6 +1,7 @@
--- | Measure codecs, coordinate containers, and common spatial predicates.
+-- | Measure public geometry operations and coordinate containers.
 module Main (main) where
 
+import qualified Audit
 import Control.DeepSeq (force)
 import Control.Exception (evaluate)
 import Control.Monad (forM_, unless)
@@ -27,15 +28,22 @@ main = do
     enabled <- getRTSStatsEnabled
     unless enabled (fail "Enable allocation statistics with +RTS -T -RTS")
     args <- getArgs
-    putStrLn "workload,points,run,milliseconds,allocated_bytes,checksum"
     case args of
-        [] -> codecBenchmarks 1000000
-        [arg] | Just n <- readMaybe arg, n >= 2 -> codecBenchmarks n
-        ["--topology"] -> forM_ [100, 200, 400, 1000] topologyBenchmarks
-        ["--topology", arg] | Just n <- readMaybe arg, n >= 4 -> topologyBenchmarks n
-        ["--arrangements"] -> forM_ [100, 400, 1600] arrangementBenchmarks
-        ["--arrangements", arg] | Just n <- readMaybe arg, n >= 4 -> arrangementBenchmarks n
-        _ -> fail "Usage: geometry-simple-bench [point count >= 2 | --topology [vertices >= 4] | --arrangements [vertices >= 4]] +RTS -T -RTS"
+        "--audit" : rest -> Audit.runAudit rest
+        _ -> do
+            putStrLn "workload,points,run,milliseconds,allocated_bytes,checksum"
+            runBenchmarks args
+
+-- | Dispatch the smaller codec and topology benchmark sets.
+runBenchmarks :: [String] -> IO ()
+runBenchmarks args = case args of
+    [] -> codecBenchmarks 1000000
+    [arg] | Just n <- readMaybe arg, n >= 2 -> codecBenchmarks n
+    ["--topology"] -> forM_ [100, 200, 400, 1000] topologyBenchmarks
+    ["--topology", arg] | Just n <- readMaybe arg, n >= 4 -> topologyBenchmarks n
+    ["--arrangements"] -> forM_ [100, 400, 1600] arrangementBenchmarks
+    ["--arrangements", arg] | Just n <- readMaybe arg, n >= 4 -> arrangementBenchmarks n
+    _ -> fail "Usage: geometry-simple-bench [point count >= 2 | --topology [vertices >= 4] | --arrangements [vertices >= 4] | --audit [size | selection size [seconds]]] +RTS -T -RTS"
 
 -- | Compare codec and vector costs with the same prepared coordinate sequence.
 codecBenchmarks :: Int -> IO ()
