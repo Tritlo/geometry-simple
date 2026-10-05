@@ -27,11 +27,70 @@ main :: IO ()
 main = do
     requests <- T.lines <$> T.getContents
     forM_ requests $ \request -> do
-        let output = response request
+        output <- case T.splitOn "\t" request of
+            [format, phase, first, second]
+                | "PAIR-" `T.isPrefixOf` format ->
+                    operationResponse (pairFields phase) (decodeInput (T.drop 5 format) first) (decodeInput (T.drop 5 format) second)
+            [format, phase, payload]
+                | "TOPO-" `T.isPrefixOf` format ->
+                    operationResponse (\shape _ -> topologyFields phase shape) (decodeInput (T.drop 5 format) payload) (Right (GeometryCollection V.empty))
+            _ -> pure (response request)
         forced <- try (evaluate (T.length output)) :: IO (Either SomeException Int)
         T.putStrLn $ case forced of
             Left failure -> "ERROR\t" <> T.pack (show failure)
             Right _ -> output
+
+-- | Decode each operand before evaluating any operation.
+decodeInput :: Text -> Text -> Either String Geometry
+decodeInput "WKT" = WKT.decodeWKT
+decodeInput "WKB" = \payload -> unhex payload >>= WKB.decodeWKB
+decodeInput _ = const (Left "Expected WKT or WKB")
+
+-- | Isolate operation exceptions so one failure does not hide other results.
+operationResponse :: (Geometry -> Geometry -> [(Text, Text)]) -> Either String Geometry -> Either String Geometry -> IO Text
+operationResponse operations first second = case (first, second) of
+    (Right a, Right b) -> do
+        results <- mapM forceField (operations a b)
+        pure (T.intercalate "\t" ("OK" : results))
+    (Left failure, _) -> pure ("ERROR\tfirst: " <> T.pack failure)
+    (_, Left failure) -> pure ("ERROR\tsecond: " <> T.pack failure)
+  where
+    forceField (key, value) = do
+        forced <- try (evaluate (T.length value)) :: IO (Either SomeException Int)
+        pure (key <> "=" <> either (\failure -> "!exception: " <> T.replace "\n" " " (T.pack (show failure))) (const value) forced)
+
+-- | Evaluate unary topology and round buffers with explicit parameters.
+topologyFields :: Text -> Geometry -> [(Text, Text)]
+topologyFields phase shape =
+    ( if phase `elem` ["all", "unary"]
+        then
+            [ ("boundary", optional structure (S.boundary shape))
+            , ("isSimple", shown (S.isSimple shape))
+            , ("isRing", shown (S.isRing shape))
+            , ("isValid", shown (S.isValid shape))
+            , ("pointOnSurface", structure (PointGeometry (S.pointOnSurface shape)))
+            ]
+        else []
+    )
+        ++ if phase `elem` ["all", "buffer"]
+            then
+                [("buffer." <> shown radius, structure (S.buffer radius shape)) | radius <- [-1, 0, 0.5, 2]]
+                    ++ [("bufferWithSegments." <> shown segments <> "." <> shown radius, structure (S.bufferWithSegments segments radius shape)) | segments <- [1, 2, 8, 16], radius <- [-0.5, 0.5]]
+            else []
+
+-- | Compare each binary predicate, relation pattern, distance, and set operation.
+pairFields :: Text -> Geometry -> Geometry -> [(Text, Text)]
+pairFields phase first second =
+    ( if phase `elem` ["all", "relations"]
+        then
+            [("relate", T.pack (S.relate first second)), ("distance", shown (S.distance first second))]
+                ++ [(name, shown (predicate first second)) | (name, predicate) <- [("equals", S.equals), ("disjoint", S.disjoint), ("intersects", S.intersects), ("touches", S.touches), ("crosses", S.crosses), ("within", S.within), ("contains", S.contains), ("overlaps", S.overlaps), ("covers", S.covers), ("coveredBy", S.coveredBy)]]
+                ++ [("relatePattern." <> T.pack patternText, shown (S.relatePattern patternText first second)) | patternText <- ["*********", "T********", "FF*FF****", "T*F**F***", "T*****FF*", "0********", "1********", "2********", "F********", "FT*******", "F**T*****", "F***T****"]]
+        else []
+    )
+        ++ if phase `elem` ["all", "overlay"]
+            then [(name, structure (operation first second)) | (name, operation) <- [("intersection", S.intersection), ("union", S.union), ("difference", S.difference), ("symmetricDifference", S.symmetricDifference)]]
+            else []
 
 -- | Decode text or ISO WKB. Named fixtures exercise direct constructors.
 response :: Text -> Text

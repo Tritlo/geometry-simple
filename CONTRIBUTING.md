@@ -32,8 +32,9 @@ the documentation with the pinned Nix environment.
 
 ### Shapely comparison
 
-The optional comparison tests check every Simple Features function and both
-codec formats against Shapely. Python and GEOS are test dependencies only.
+The comparison tests check GEOS-compatible operations and both codec formats
+against Shapely. Python and GEOS are test dependencies only. Measured-location
+queries use the OGC examples because Shapely does not expose those operations.
 Use `nix-shell -A env` for the pinned Haskell environment, then run:
 
 ```sh
@@ -56,6 +57,19 @@ One named hull diagnostic reports GEOS's choice of Z among duplicate XY
 positions separately. It still checks XY coordinates and vertex order. Other
 hull comparisons retain strict layout and ordinate checks.
 Use `--cases` and `--seed` to change the generated inputs.
+
+Paired cases cover every ordered pair of geometry families. They check
+DE-9IM matrices, predicates, distance, and overlays. Buffer cases have a
+separate `--buffer-cases` count because their segment arrangements are larger.
+`--phase` selects `existing`, `unary`, `relations`, `overlay`, or `buffer`
+during development. The default and CI run every phase.
+
+Constructed results retain exact family and layout checks. XY comparisons
+allow an absolute error of `1e-9`; scalar measurements retain their separate
+tolerance. The report keeps known native discrepancies and invalid-input
+outcomes separate from successful comparisons. Binary operations require
+valid topology. Invalid binary inputs remain diagnostic cases and do not
+count as passed comparisons. Unexpected differences fail the command.
 
 Type-check the Python script in strict mode with:
 

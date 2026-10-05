@@ -16,17 +16,44 @@ are compared directly. WKT checks use native writer structure and original
 coordinate bits, with NaN padding where GEOS requires it. WKB checks include
 every type tag. Codec-only requests omit measurements on nonfinite inputs.
 
+Topology requests compare exact predicates, DE-9IM matrices, and output
+metadata. Constructed XY coordinates allow at most 1e-9 absolute error after
+ordering normalization; no snapping or geometry repair is used. Z/M checks
+use native output vertices or linear interpolation along native output edges.
+Additional nearly-collinear vertices require discrete Hausdorff distance below
+1e-9 with each segment split into quarters, plus bounded length and area
+differences. Output validity must also agree.
+Distance uses relative tolerance only, so a small positive distance cannot
+match zero through an absolute error allowance.
+GeometryCollection simplicity calls GEOSisSimple_r because Shapely overrides
+that native result. --phase selects explicit groups during development; the
+default and CI run every group. Operation exceptions are separate from decode
+failures and do not prevent the other methods from being checked.
+Binary operations require valid input topology. Invalid binary inputs remain
+in the report as out_of_contract outcomes, outside the pass/failure counts.
+
 Only hull-duplicate-z-51 permits a different input Z at duplicate XY. GEOS
 can select another duplicate when sorting. Both hulls must remain XYZ lines
 with two vertices and identical XY coordinates and order. The report retains
 both results under known_differences. Every other hull comparison is strict.
+Named native relation and symmetric-difference fixtures retain known GEOS
+defects as diagnostics. They require the specified corrected matrix or an
+independent result from atomic set operations. Exact fixture operands guard
+these exceptions. Native assertions on specified valid empty operations
+require the exact expected empty family and layout. Other collection
+differences remain failures.
+Native loss of M at a polygon's repeated closing vertex is reported separately.
+Only that ordinate may differ; all other geometry checks must still pass.
+Specified uniform-M case/method pairs also retain source M=4 when native output
+replaces it with NaN. These require exact operands and exact actual M values.
 """
 
 from __future__ import annotations
 
 import argparse
 from collections import Counter
-from dataclasses import dataclass
+import ctypes
+from dataclasses import asdict, dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -58,6 +85,8 @@ get_geometry = cast(Callable[[BaseGeometry, int], BaseGeometry | None], getattr(
 get_point = cast(Callable[[BaseGeometry, int], BaseGeometry | None], getattr(sh, "get_point"))
 get_interior_ring = cast(Callable[[BaseGeometry, int], BaseGeometry | None], getattr(sh, "get_interior_ring"))
 get_exterior_ring = cast(Callable[[BaseGeometry], BaseGeometry | None], getattr(sh, "get_exterior_ring"))
+hausdorff_distance = cast(Callable[[BaseGeometry, BaseGeometry, float], float], getattr(sh, "hausdorff_distance"))
+force_2d = cast(Callable[[BaseGeometry], BaseGeometry], getattr(sh, "force_2d"))
 
 Value: TypeAlias = str | int | float | bool | BaseGeometry | None
 
@@ -407,9 +436,11 @@ def read_structure(text: str) -> Shape:
                 if not isinstance(row, list):
                     raise ValueError("Expected a coordinate row")
                 ordinates = cast(list[object], row)
-                if not all(isinstance(v, str) for v in ordinates):
-                    raise ValueError("Expected decimal ordinate strings")
+                if len(ordinates) != len(layout) or not all(isinstance(v, str) for v in ordinates):
+                    raise ValueError("Expected one decimal string per declared ordinate")
                 rows.append(tuple(float(cast(str, v)).hex() for v in ordinates))
+            if kind == 0 and len(rows) > 1:
+                raise ValueError("A point cannot contain multiple coordinate rows")
             return Shape(kind, layout, coordinates=tuple(rows))
         return Shape(kind, layout, children=tuple(node(child) for child in values))
     return node(cast(object, json.loads(text)))
@@ -563,6 +594,656 @@ def describe(value: Value) -> str:
     return str(sh.to_wkt(value, rounding_precision=-1, output_dimension=4)) if isinstance(value, BaseGeometry) else repr(value)
 
 
+
+# The metadata checks are exact. Only newly computed XY coordinates use this
+# absolute tolerance; codec and accessor checks never use it.
+CONSTRUCTED_TOLERANCE = 1e-9
+UNARY_METHODS = {
+    "boundary": "boundary (None for GeometryCollection)",
+    "isSimple": "is_simple; direct GEOSisSimple_r for GeometryCollection",
+    "isRing": "is_ring",
+    "isValid": "is_valid",
+    "pointOnSurface": "point_on_surface",
+}
+RELATION_METHODS = {
+    "relate": "relate (exact DE-9IM matrix)",
+    "relatePattern": "relate_pattern with exact, boolean, and wildcard patterns",
+    "equals": "equals", "disjoint": "disjoint", "intersects": "intersects",
+    "touches": "touches", "crosses": "crosses", "within": "within",
+    "contains": "contains", "overlaps": "overlaps", "covers": "covers",
+    "coveredBy": "covered_by", "distance": "distance",
+}
+OVERLAY_METHODS = {
+    "intersection": "intersection", "union": "union", "difference": "difference",
+    "symmetricDifference": "symmetric_difference",
+}
+BUFFER_METHODS = {
+    "buffer": "buffer (quad_segs=8, round caps and joins)",
+    "bufferWithSegments": "buffer (explicit quad_segs, round caps and joins)",
+}
+METHODS.update(UNARY_METHODS | RELATION_METHODS | OVERLAY_METHODS | BUFFER_METHODS)
+PATTERNS = ("*********", "T********", "FF*FF****", "T*F**F***", "T*****FF*", "0********", "1********", "2********", "F********", "FT*******", "F**T*****", "F***T****")
+
+
+@dataclass(frozen=True)
+class PairCase:
+    """Two exact inputs and a name used in every mismatch report."""
+
+    name: str
+    first: str
+    second: str
+
+
+@dataclass(frozen=True)
+class OperationError:
+    """A native operation failed after both inputs decoded successfully."""
+
+    message: str
+
+
+OperationValue: TypeAlias = Value | OperationError
+OrdinateRow: TypeAlias = tuple[float, float, float | None, float | None]
+
+
+def topology_cases(rng: random.Random, count: int) -> list[Case]:
+    """Cover valid and invalid unary topology without nonfinite coordinates."""
+    fixtures = [
+        ("point", "POINT (1 2)"),
+        ("duplicate-points", "MULTIPOINT ((0 0),(1 1),(0 0))"),
+        ("simple-line", "LINESTRING (0 0,3 4,6 0)"),
+        ("closed-line", "LINESTRING (0 0,4 0,4 4,0 0)"),
+        ("crossed-line", "LINESTRING (0 0,4 4,0 4,4 0)"),
+        ("retraced-line", "LINESTRING (0 0,4 0,2 0)"),
+        ("zero-line", "LINESTRING (2 3,2 3)"),
+        ("node-lines", "MULTILINESTRING ((0 0,2 2),(2 2,4 0))"),
+        ("crossed-lines", "MULTILINESTRING ((0 0,4 4),(0 4,4 0))"),
+        ("overlap-lines", "MULTILINESTRING ((0 0,4 0),(2 0,6 0))"),
+        ("t-junction", "MULTILINESTRING ((0 0,4 0),(2 0,2 3))"),
+        ("parity-boundary", "MULTILINESTRING ((0 0,2 0),(0 0,0 2),(0 0,-2 0))"),
+        ("square", "POLYGON ((0 0,6 0,6 6,0 6,0 0))"),
+        ("hole", "POLYGON ((0 0,6 0,6 6,0 6,0 0),(1 1,1 5,5 5,5 1,1 1))"),
+        ("concave", "POLYGON ((0 0,6 0,6 1,1 1,1 6,0 6,0 0))"),
+        ("bowtie", "POLYGON ((0 0,4 4,0 4,4 0,0 0))"),
+        ("outside-hole", "POLYGON ((0 0,4 0,4 4,0 4,0 0),(5 5,6 5,6 6,5 5))"),
+        ("nested-holes", "POLYGON ((0 0,9 0,9 9,0 9,0 0),(1 1,8 1,8 8,1 8,1 1),(2 2,3 2,3 3,2 3,2 2))"),
+        ("touching-hole", "POLYGON ((0 0,6 0,6 6,0 6,0 0),(0 3,2 2,2 4,0 3))"),
+        ("overlap-polygons", "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((2 2,6 2,6 6,2 6,2 2)))"),
+        ("vertex-polygons", "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 2,4 2,4 4,2 4,2 2)))"),
+        ("nested-collection", "GEOMETRYCOLLECTION (POINT (2 2),GEOMETRYCOLLECTION (LINESTRING (0 0,4 4),POLYGON ((0 0,4 0,4 4,0 4,0 0))))"),
+        ("overlap-collection", "GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0)),POLYGON ((2 2,6 2,6 6,2 6,2 2)))"),
+        ("empty-members", "GEOMETRYCOLLECTION (POINT EMPTY,LINESTRING EMPTY,POLYGON EMPTY)"),
+    ]
+    fixtures += [("empty-" + family, family + " EMPTY") for family in ("POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION")]
+    return [Case("topology-" + name + "-" + layout, lift_layout(text, layout)) for name, text in fixtures for layout in LAYOUTS] + [random_case(rng, index) for index in range(count)]
+
+
+def pair_cases(rng: random.Random, count: int) -> list[PairCase]:
+    """Exercise every ordered family pair, empty operands, and exact contacts."""
+    families = [
+        "POINT (2 2)", "LINESTRING (0 0,4 4)", "POLYGON ((0 0,4 0,4 4,0 4,0 0))",
+        "MULTIPOINT ((0 0),(2 2),(8 8))", "MULTILINESTRING ((0 0,4 4),(0 4,4 0))",
+        "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((5 5,7 5,7 7,5 7,5 5)))",
+        "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))",
+    ]
+    cases = [PairCase(f"family-{i}-{j}-{layout}", lift_layout(a, layout), lift_layout(b, layout)) for i, a in enumerate(families) for j, b in enumerate(families) for layout in LAYOUTS]
+    empty = [text.split(" ", 1)[0] + " EMPTY" for text in families]
+    cases += [PairCase(f"empty-{i}-{j}", a, b) for i, a in enumerate(families + empty) for j, b in enumerate(families + empty) if i >= 7 or j >= 7]
+    square = families[2]
+    hole = "POLYGON ((0 0,8 0,8 8,0 8,0 0),(2 2,6 2,6 6,2 6,2 2))"
+    special = [
+        ("hole-crossing", hole, "LINESTRING (-1 4,9 4)"),
+        ("hole-boundary", hole, "LINESTRING (2 2,6 2)"),
+        ("hole-interior", hole, "POINT (3 3)"),
+        ("shared-edge", square, "POLYGON ((4 0,8 0,8 4,4 4,4 0))"),
+        ("shared-vertex", square, "POLYGON ((4 4,8 4,8 8,4 8,4 4))"),
+        ("partial-overlap", square, "POLYGON ((2 2,6 2,6 6,2 6,2 2))"),
+        ("contained", square, "POLYGON ((1 1,3 1,3 3,1 3,1 1))"),
+        ("collinear-overlap", "LINESTRING (0 0,6 0)", "LINESTRING (2 0,8 0)"),
+        ("collinear-reversed", "LINESTRING (0 0,2 0,6 0)", "LINESTRING (6 0,0 0)"),
+        ("proper-crossing", "LINESTRING (0 0,7 5)", "LINESTRING (0 4,8 0)"),
+        ("endpoint-contact", "LINESTRING (0 0,2 2)", "LINESTRING (2 2,5 0)"),
+        ("t-junction", "LINESTRING (0 0,4 0)", "LINESTRING (2 0,2 3)"),
+        ("point-on-segment", "POINT (1 1)", "LINESTRING (0 0,3 3)"),
+        ("point-near-segment", "POINT (1 1.000000000001)", "LINESTRING (0 0,3 3)"),
+        ("near-parallel", "LINESTRING (0 0,10 0.000000000001)", "LINESTRING (0 0.000000000001,10 0)"),
+        ("nested-overlap", "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (" + square + "),LINESTRING (-1 2,5 2))", "GEOMETRYCOLLECTION (" + square + ",POINT (2 2))"),
+        ("overlap-members", "GEOMETRYCOLLECTION (" + square + ",POLYGON ((2 2,6 2,6 6,2 6,2 2)))", "LINESTRING (-1 3,7 3)"),
+        ("invalid-bowtie", "POLYGON ((0 0,4 4,0 4,4 0,0 0))", square),
+    ]
+    for name, a, b in special:
+        for layout in LAYOUTS:
+            first, second = lift_layout(a, layout), lift_layout(b, layout)
+            cases += [PairCase(name + "-" + layout, first, second), PairCase(name + "-reverse-" + layout, second, first)]
+    cases += [
+        PairCase("interpolate-z", "LINESTRING Z (0 0 0,4 4 8)", "LINESTRING Z (0 4 20,4 0 40)"),
+        PairCase("interpolate-m", "LINESTRING M (0 0 0,4 4 8)", "LINESTRING M (0 4 20,4 0 40)"),
+        PairCase("interpolate-zm", "LINESTRING ZM (0 0 0 10,4 4 8 20)", "LINESTRING ZM (0 4 20 100,4 0 40 200)"),
+        PairCase("coincident-z", "POINT Z (1 2 3)", "POINT Z (1 2 9)"),
+        PairCase("coincident-m", "POINT M (1 2 3)", "POINT M (1 2 9)"),
+        PairCase("mixed-z-m", "LINESTRING Z (0 0 0,4 4 8)", "LINESTRING M (0 4 20,4 0 40)"),
+        PairCase("mixed-collection", "GEOMETRYCOLLECTION (POINT Z (2 2 9),LINESTRING M (0 0 4,4 4 8))", "LINESTRING ZM (0 4 20 100,4 0 40 200)"),
+    ]
+    for index in range(count):
+        # Nearby integer rectangles exercise positive-area overlap as well as
+        # disjoint cases. Small rational shears create non-axis-aligned edges.
+        x, y = rng.randint(-8, 8), rng.randint(-8, 8)
+        w, h = rng.randint(1, 8), rng.randint(1, 8)
+        dx, dy = rng.randint(-w, w), rng.randint(-h, h)
+        slope = rng.choice([0.0, 0.25, -0.5, 1.0])
+        def rectangle(a: int, b: int) -> str:
+            points = [(a, b), (a + w, b), (a + w, b + h), (a, b + h), (a, b)]
+            return "POLYGON ((" + ",".join(f"{px + slope * py:.17g} {py}" for px, py in points) + "))"
+        first = rectangle(x, y)
+        second = rectangle(x + dx, y + dy)
+        if index % 5 == 0:
+            second = f"LINESTRING ({x-w} {y+h/2},{x+2*w} {y+h/2})"
+        elif index % 5 == 1:
+            first = f"LINESTRING ({x} {y},{x+w} {y+h})"
+            second = f"LINESTRING ({x} {y+h},{x+w} {y})"
+        elif index % 5 == 2:
+            second = f"POINT ({x+dx} {y+dy})"
+        elif index % 5 == 3:
+            hole = [(x + w / 4, y + h / 4), (x + 3 * w / 4, y + h / 4), (x + 3 * w / 4, y + 3 * h / 4), (x + w / 4, y + 3 * h / 4), (x + w / 4, y + h / 4)]
+            hole_text = ",".join(f"{px + slope * py:.17g} {py:.17g}" for px, py in hole)
+            first = first[:-1] + ",(" + hole_text + "))"
+        else:
+            concave = [(x, y), (x + w, y), (x + w, y + h / 2), (x + w / 2, y + h / 2), (x + w / 2, y + h), (x, y + h), (x, y)]
+            first = "POLYGON ((" + ",".join(f"{px + slope * py:.17g} {py:.17g}" for px, py in concave) + "))"
+        cases.append(PairCase(f"pair-random-{index}", lift_varying_ordinates(first, LAYOUTS[index % 4], 7), lift_varying_ordinates(second, LAYOUTS[(index // 4) % 4], 31)))
+    cases += [
+        PairCase("native-collection-contained", "GEOMETRYCOLLECTION (POINT (10 10),POLYGON ((0 0,4 0,4 4,0 4,0 0)))", "POLYGON ((1 1,2 1,2 2,1 2,1 1))"),
+        PairCase("native-collection-boundary", "GEOMETRYCOLLECTION (POLYGON ((4 4,4 5,-1 5,-1 4,4 4)),POLYGON ((6 3,6 8,3 8,3 3,6 3)))", "LINESTRING (-1 3,-1 -2)"),
+        PairCase("native-closed-line-boundary", "MULTILINESTRING ((0 0,1 0,0 0),(0 2,1 2))", "POINT (10 10)"),
+    ]
+    return cases
+
+
+def lift_varying_ordinates(wkt: str, layout: str, offset: int) -> str:
+    """Use different planar Z/M slopes to expose incorrect interpolation."""
+    def coordinate(match: re.Match[str]) -> str:
+        x, y = float(match[1]), float(match[2])
+        extra = ([2 * x + y + offset] if "Z" in layout else []) + ([x - 3 * y + offset] if "M" in layout else [])
+        return match[0] + "".join(f" {value:.17g}" for value in extra)
+    text = re.sub(f"({NUMBER})\\s+({NUMBER})", coordinate, wkt)
+    suffix = {"XY": "", "XYZ": " Z", "XYM": " M", "XYZM": " ZM"}[layout]
+    return re.sub(FAMILY, lambda match: match[0] + suffix, text)
+
+
+def native_operation(operation: Callable[[], Value]) -> OperationValue:
+    """Keep native operation errors distinct from input parsing errors."""
+    try:
+        return operation()
+    except GEOSException as failure:
+        return OperationError(str(failure))
+
+
+def native_is_simple(geometry: BaseGeometry) -> bool:
+    """Bypass Shapely's always-False collection policy; call native GEOS."""
+    if get_type_id(geometry) != 7:
+        return bool(sh.is_simple(geometry))
+    library = ctypes.CDLL(str(getattr(getattr(sh, "lib"), "__file__")))
+    library.GEOS_init_r.restype = ctypes.c_void_p
+    library.GEOS_finish_r.argtypes = [ctypes.c_void_p]
+    library.GEOSisSimple_r.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    library.GEOSisSimple_r.restype = ctypes.c_byte
+    context = library.GEOS_init_r()
+    try:
+        result = int(library.GEOSisSimple_r(context, int(getattr(geometry, "_geom"))))
+        if result == 2:
+            raise GEOSException("GEOSisSimple_r reported an exception")
+        return result == 1
+    finally:
+        library.GEOS_finish_r(context)
+
+
+def native_unary(geometry: BaseGeometry, phase: str) -> dict[str, OperationValue]:
+    """Evaluate each native unary operation separately."""
+    values: dict[str, OperationValue] = {}
+    if phase in ("all", "unary"):
+        for name, method in [("boundary", "boundary"), ("isSimple", "is_simple"), ("isRing", "is_ring"), ("isValid", "is_valid"), ("pointOnSurface", "point_on_surface")]:
+            operation = cast(Callable[[BaseGeometry], Value], getattr(sh, method))
+            values[name] = native_operation(lambda operation=operation, name=name: bool(operation(geometry)) if name.startswith("is") else operation(geometry))
+        values["isSimple"] = native_operation(lambda: native_is_simple(geometry))
+    if phase in ("all", "buffer"):
+        for radius in (-1.0, 0.0, 0.5, 2.0):
+            values[f"buffer.{radius}"] = native_operation(lambda radius=radius: sh.buffer(geometry, radius, quad_segs=8))
+        for segments in (1, 2, 8, 16):
+            for radius in (-0.5, 0.5):
+                values[f"bufferWithSegments.{segments}.{radius}"] = native_operation(lambda segments=segments, radius=radius: sh.buffer(geometry, radius, quad_segs=segments))
+    return values
+
+
+def native_pair(first: BaseGeometry, second: BaseGeometry, phase: str) -> dict[str, OperationValue]:
+    """Evaluate matrices, predicates, metrics, and overlays independently."""
+    values: dict[str, OperationValue] = {}
+    if phase in ("all", "relations"):
+        for name in RELATION_METHODS:
+            if name == "relatePattern":
+                continue
+            native_name = "covered_by" if name == "coveredBy" else name
+            operation = cast(Callable[[BaseGeometry, BaseGeometry], Value], getattr(sh, native_name))
+            values[name] = native_operation(lambda operation=operation, name=name: operation(first, second) if name in ("relate", "distance") else bool(operation(first, second)))
+        for pattern in PATTERNS:
+            values["relatePattern." + pattern] = native_operation(lambda pattern=pattern: bool(sh.relate_pattern(first, second, pattern)))
+    if phase in ("all", "overlay"):
+        for name in OVERLAY_METHODS:
+            native_name = "symmetric_difference" if name == "symmetricDifference" else name
+            values[name] = native_operation(lambda native_name=native_name: cast(Value, getattr(sh, native_name)(first, second)))
+    return values
+
+
+def shape_geometry(shape: Shape) -> BaseGeometry:
+    """Read raw XY for topology. Check layouts and Z/M separately before this."""
+    def encode(value: Shape) -> bytes:
+        family = {0: 1, 1: 2}.get(value.kind, value.kind)
+        head = b"\x01" + struct.pack("<I", family)
+        def count(n: int) -> bytes:
+            return struct.pack("<I", n)
+        def rows(points: tuple[tuple[str, ...], ...]) -> bytes:
+            return b"".join(struct.pack("<2d", *(float.fromhex(v) for v in row[:2])) for row in points)
+        if value.kind == 0:
+            coordinates = value.coordinates or (("nan", "nan"),)
+            return head + rows(coordinates)
+        if value.kind == 1:
+            return head + count(len(value.coordinates)) + rows(value.coordinates)
+        if value.kind == 3:
+            return head + count(len(value.children)) + b"".join(count(len(ring.coordinates)) + rows(ring.coordinates) for ring in value.children)
+        return head + count(len(value.children)) + b"".join(encode(child) for child in value.children)
+    return sh.from_wkb(encode(shape))
+
+
+def result_metadata(shape: Shape) -> tuple[object, ...]:
+    """Compare family, layout, empty members, and ring counts without order."""
+    if shape.kind in (0, 1):
+        return shape.kind, shape.layout, bool(shape.coordinates)
+    return shape.kind, shape.layout, tuple(sorted((result_metadata(child) for child in shape.children), key=repr))
+
+
+def extra_ordinates_match(actual: Shape, expected: Shape) -> bool:
+    """Check Z/M at vertices and interpolate only along native output edges."""
+    def leaves(shape: Shape) -> list[Shape]:
+        return [shape] if shape.kind in (0, 1) else [leaf for child in shape.children for leaf in leaves(child)]
+    def rows(shape: Shape) -> list[OrdinateRow]:
+        result: list[OrdinateRow] = []
+        for encoded in shape.coordinates:
+            values = [float.fromhex(value) for value in encoded]
+            z = values[2] if "Z" in shape.layout else None
+            m = values[-1] if "M" in shape.layout else None
+            result.append((values[0], values[1], z, m))
+        return result
+    def close(a: float | None, b: float | None) -> bool:
+        if a is None or b is None:
+            return a is b
+        return (math.isnan(a) and math.isnan(b)) or a == b or math.isclose(a, b, rel_tol=0.0, abs_tol=CONSTRUCTED_TOLERANCE)
+    def matches_row(row: OrdinateRow, samples: list[OrdinateRow], segments: list[tuple[OrdinateRow, OrdinateRow]]) -> bool:
+        if row[2:] == (None, None):
+            return True
+        for sample in samples:
+            if math.hypot(row[0] - sample[0], row[1] - sample[1]) <= CONSTRUCTED_TOLERANCE and all(close(a, b) for a, b in zip(row[2:], sample[2:], strict=True)):
+                return True
+        for a, b in segments:
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            squared = dx * dx + dy * dy
+            if squared == 0:
+                continue
+            t = ((row[0] - a[0]) * dx + (row[1] - a[1]) * dy) / squared
+            if not 0 <= t <= 1 or math.hypot(row[0] - (a[0] + t * dx), row[1] - (a[1] + t * dy)) > CONSTRUCTED_TOLERANCE:
+                continue
+            interpolated = tuple(None if p is None or q is None else p + t * (q - p) for p, q in zip(a[2:], b[2:], strict=True))
+            if all(close(p, q) for p, q in zip(row[2:], interpolated, strict=True)):
+                return True
+        return False
+    def covered(source: Shape, target: Shape) -> bool:
+        target_leaves = leaves(target)
+        target_rows = [row for leaf in target_leaves for row in rows(leaf)]
+        target_segments = [pair for leaf in target_leaves if leaf.kind == 1 for pair in zip(rows(leaf), rows(leaf)[1:])]
+        return all(matches_row(row, target_rows, target_segments) for leaf in leaves(source) for row in rows(leaf))
+    return covered(actual, expected) and covered(expected, actual)
+
+
+def geometry_result_matches(shape: Shape, expected_shape: Shape, expected: BaseGeometry) -> bool:
+    """Check metadata and validity before bounded geometric comparisons."""
+    def finite_xy(value: Shape) -> bool:
+        return all(math.isfinite(float.fromhex(ordinate)) for row in value.coordinates for ordinate in row[:2]) and all(finite_xy(child) for child in value.children)
+    if not finite_xy(shape):
+        return False
+    if result_metadata(shape) != result_metadata(expected_shape) or not extra_ordinates_match(shape, expected_shape):
+        return False
+    geometry = shape_geometry(shape)
+    if geometry.is_valid != expected.is_valid:
+        return False
+    # Equality permits different ring starts and exact collinear subdivisions.
+    if bool(sh.equals(geometry, expected)):
+        return True
+    if bool(sh.equals_exact(sh.normalize(geometry), sh.normalize(expected), tolerance=CONSTRUCTED_TOLERANCE)):
+        return True
+    # Additional nearly-collinear vertices can defeat equals_exact. Require a
+    # small displacement and small measurement changes, without modifying input.
+    displacement = hausdorff_distance(geometry, expected, 0.25)
+    if not math.isfinite(displacement) or displacement > CONSTRUCTED_TOLERANCE:
+        return False
+    coordinate_count = len(coordinate_rows(geometry)) + len(coordinate_rows(expected))
+    if abs(length(geometry) - length(expected)) > CONSTRUCTED_TOLERANCE * max(1, coordinate_count):
+        return False
+    if max(get_dimensions(geometry), get_dimensions(expected)) == 2:
+        return float(area(sh.symmetric_difference(geometry, expected))) <= CONSTRUCTED_TOLERANCE * (1 + length(geometry) + length(expected))
+    return True
+
+
+def closing_m_difference(actual: str, expected: BaseGeometry) -> bool:
+    """Permit only native loss of M at a ring's repeated closing coordinate."""
+    def corrected(shape: Shape) -> Shape:
+        if shape.kind == 3:
+            rings: list[Shape] = []
+            for ring in shape.children:
+                rows = ring.coordinates
+                if "M" in ring.layout and len(rows) >= 2 and rows[0][:2] == rows[-1][:2] and math.isfinite(float.fromhex(rows[0][-1])) and math.isnan(float.fromhex(rows[-1][-1])):
+                    closing = rows[-1][:-1] + (rows[0][-1],)
+                    ring = replace(ring, coordinates=rows[:-1] + (closing,))
+                rings.append(ring)
+            return replace(shape, children=tuple(rings))
+        return replace(shape, children=tuple(corrected(child) for child in shape.children))
+    original = signature(expected)
+    repaired = corrected(original)
+    return repaired != original and geometry_result_matches(read_structure(actual), repaired, expected)
+
+
+def geometry_mismatch_reason(actual: str, expected: BaseGeometry) -> str:
+    """Identify the first failed geometry contract for the report."""
+    try:
+        shape, native = read_structure(actual), signature(expected)
+        if result_metadata(shape) != result_metadata(native):
+            return "Geometry family, dimensions, empty members, or ring counts differ"
+        if not extra_ordinates_match(shape, native):
+            return "Z/M ordinates differ"
+        if shape_geometry(shape).is_valid != expected.is_valid:
+            return "Output validity differs"
+        return "XY geometry differs beyond the stated tolerance"
+    except (ValueError, IndexError, struct.error, GEOSException):
+        return "Invalid geometry result"
+
+
+def operation_matches(method: str, actual: str, expected: OperationValue) -> bool:
+    """Keep metadata exact; allow 1e-9 absolute XY error in constructed results."""
+    if isinstance(expected, OperationError):
+        return actual.startswith("!exception:")
+    if isinstance(expected, BaseGeometry):
+        return not actual.startswith("!") and actual != "~" and geometry_result_matches(read_structure(actual), signature(expected), expected)
+    if isinstance(expected, float) and math.isnan(expected):
+        return math.isnan(float(actual))
+    return matches(method, actual, expected, method == "distance")
+
+
+
+
+# Only these exact fixed operands have an independently verified native defect.
+NATIVE_SYMDIFF_FIXTURES: dict[str, tuple[str, str]] = {
+    "family-0-6": ("POINT (2 2)", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "family-1-6": ("LINESTRING (0 0,4 4)", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "family-2-6": ("POLYGON ((0 0,4 0,4 4,0 4,0 0))", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "family-3-6": ("MULTIPOINT ((0 0),(2 2),(8 8))", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "family-4-6": ("MULTILINESTRING ((0 0,4 4),(0 4,4 0))", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "family-5-6": ("MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((5 5,7 5,7 7,5 7,5 5)))", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "family-6-1": ("GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))", "LINESTRING (0 0,4 4)"),
+    "family-6-3": ("GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))", "MULTIPOINT ((0 0),(2 2),(8 8))"),
+    "family-6-4": ("GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))", "MULTILINESTRING ((0 0,4 4),(0 4,4 0))"),
+    "family-6-5": ("GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))", "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((5 5,7 5,7 7,5 7,5 5)))"),
+    "empty-7-6": ("POINT EMPTY", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "empty-8-6": ("LINESTRING EMPTY", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "empty-9-6": ("POLYGON EMPTY", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "empty-10-6": ("MULTIPOINT EMPTY", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "empty-11-6": ("MULTILINESTRING EMPTY", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "empty-12-6": ("MULTIPOLYGON EMPTY", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "empty-13-6": ("GEOMETRYCOLLECTION EMPTY", "GEOMETRYCOLLECTION (POINT (6 6),LINESTRING (0 2,4 2),POLYGON ((0 0,2 0,2 2,0 2,0 0)))"),
+    "nested-overlap": ("GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0))),LINESTRING (-1 2,5 2))", "GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0)),POINT (2 2))"),
+    "nested-overlap-reverse": ("GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0)),POINT (2 2))", "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0))),LINESTRING (-1 2,5 2))"),
+    "overlap-members": ("GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0)),POLYGON ((2 2,6 2,6 6,2 6,2 2)))", "LINESTRING (-1 3,7 3)"),
+    "mixed-collection": ("GEOMETRYCOLLECTION (POINT Z (2 2 9),LINESTRING M (0 0 4,4 4 8))", "LINESTRING ZM (0 4 20 100,4 0 40 200)"),
+    "native-collection-boundary": ("GEOMETRYCOLLECTION (POLYGON ((4 4,4 5,-1 5,-1 4,4 4)),POLYGON ((6 3,6 8,3 8,3 3,6 3)))", "LINESTRING (-1 3,-1 -2)"),
+}
+
+
+def known_symdiff_reference(case: PairCase, first: BaseGeometry, second: BaseGeometry) -> BaseGeometry | None:
+    """Use the set identity only for named, unchanged, verified fixture operands."""
+    key, _, layout = case.name.rpartition("-")
+    if layout not in LAYOUTS:
+        key, layout = case.name, ""
+    fixture = NATIVE_SYMDIFF_FIXTURES.get(key)
+    if fixture is None:
+        return None
+    a, b = fixture
+    if layout:
+        a, b = lift_layout(a, layout), lift_layout(b, layout)
+    if (case.first, case.second) != (a, b):
+        return None
+    def atoms(geometry: BaseGeometry) -> list[BaseGeometry]:
+        if get_type_id(geometry) >= 4:
+            return [atom for child in children(geometry) for atom in atoms(child)]
+        return [] if geometry.is_empty else [geometry]
+    def difference_parts(left: list[BaseGeometry], right: list[BaseGeometry]) -> list[BaseGeometry]:
+        result: list[BaseGeometry] = []
+        for part in left:
+            for cutter in right:
+                part = sh.difference(part, cutter)
+            result.append(part)
+        return result
+    first_parts, second_parts = atoms(first), atoms(second)
+    result = sh.union_all(difference_parts(first_parts, second_parts) + difference_parts(second_parts, first_parts))
+    if layout:
+        # The guarded lifted fixtures have constant Z=3 and M=4. Interpolation
+        # must retain these constants, even when native intermediate steps lose M.
+        text = str(sh.to_wkt(force_2d(result), rounding_precision=-1))
+        return sh.from_wkt(lift_layout(text, layout))
+    return result
+
+
+def uniform_m_reference(case: PairCase | None, method: str, expected: BaseGeometry) -> Shape | None:
+    """Restore only proven constant M loss in named, unchanged overlay fixtures."""
+    if case is None:
+        return None
+    key, _, layout = case.name.rpartition("-")
+    methods = {
+        "family-5-6": {"intersection", "union", "difference"},
+        "family-6-5": {"union"},
+        "overlap-members": {"union", "difference"},
+        "overlap-members-reverse": {"union", "symmetricDifference"},
+    }
+    if layout not in ("XYM", "XYZM") or method not in methods.get(key, set()):
+        return None
+    fixture = NATIVE_SYMDIFF_FIXTURES["overlap-members"][::-1] if key == "overlap-members-reverse" else NATIVE_SYMDIFF_FIXTURES[key]
+    if (case.first, case.second) != tuple(lift_layout(text, layout) for text in fixture):
+        return None
+    measures = [row[3] for row in coordinate_rows(expected)]
+    if not measures or any(value is None or (value != 4 and not math.isnan(value)) for value in measures):
+        return None
+    if not any(value is not None and math.isnan(value) for value in measures):
+        return None
+    def restored(shape: Shape) -> Shape:
+        rows = tuple(row[:-1] + (float(4).hex(),) for row in shape.coordinates) if "M" in shape.layout else shape.coordinates
+        return replace(shape, coordinates=rows, children=tuple(restored(child) for child in shape.children))
+    return restored(signature(expected))
+
+
+def constant_measure(shape: Shape, value: float) -> bool:
+    """Require exact present M values, including repeated closing vertices."""
+    return ("M" not in shape.layout or all(float.fromhex(row[-1]) == value for row in shape.coordinates)) and all(constant_measure(child, value) for child in shape.children)
+
+
+def known_empty_reference(case: PairCase, method: str, first: BaseGeometry, second: BaseGeometry) -> BaseGeometry | None:
+    """Require the declared empty family where named native cases assert."""
+    collection = NATIVE_SYMDIFF_FIXTURES["empty-7-6"][1]
+    families = ("POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION")
+    for index, family in enumerate(families, 7):
+        empty = family + " EMPTY"
+        forward = case.name == f"empty-6-{index}" and (case.first, case.second) == (collection, empty)
+        reverse = case.name == f"empty-{index}-6" and (case.first, case.second) == (empty, collection)
+        if method == "intersection" and (forward or reverse):
+            dimension = min(get_dimensions(first), get_dimensions(second))
+        elif method == "difference" and reverse:
+            dimension = get_dimensions(first)
+        else:
+            continue
+        expected_family = {-1: "GEOMETRYCOLLECTION", 0: "POINT", 1: "LINESTRING", 2: "POLYGON"}[dimension]
+        return sh.from_wkt(expected_family + " EMPTY")
+    return None
+
+
+def known_collection_result(case: PairCase | None, key: str) -> str | None:
+    """Require exact corrected values for documented native relation bugs."""
+    if case is None:
+        return None
+    fixtures = {
+        "native-collection-contained": ("GEOMETRYCOLLECTION (POINT (10 10),POLYGON ((0 0,4 0,4 4,0 4,0 0)))", "POLYGON ((1 1,2 1,2 2,1 2,1 1))", "212FF1FF2"),
+        "native-collection-boundary": ("GEOMETRYCOLLECTION (POLYGON ((4 4,4 5,-1 5,-1 4,4 4)),POLYGON ((6 3,6 8,3 8,3 3,6 3)))", "LINESTRING (-1 3,-1 -2)", "FF2FF1102"),
+        "native-closed-line-boundary": ("MULTILINESTRING ((0 0,1 0,0 0),(0 2,1 2))", "POINT (10 10)", "FF1FF00F2"),
+    }
+    fixture = fixtures.get(case.name)
+    if fixture is None or (case.first, case.second) != fixture[:2]:
+        return None
+    matrix = fixture[2]
+    if key == "relate":
+        return matrix
+    if key.startswith("relatePattern."):
+        pattern = key.split(".", 1)[1]
+        return str(all(p == "*" or p == c or (p == "T" and c != "F") for p, c in zip(pattern, matrix, strict=True)))
+    if case.name == "native-collection-contained":
+        return {"contains": "True", "covers": "True", "overlaps": "False"}.get(key)
+    return None
+
+def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_count: int, checked: Counter[str], failures: list[dict[str, str]], known_differences: list[dict[str, str]]) -> dict[str, object]:
+    """Run topology requests and retain exact operands for each disagreement."""
+    inputs: list[str] = []
+    expected_rows: list[tuple[str, str, str, str, dict[str, OperationValue]]] = []
+    input_validity: dict[str, tuple[bool, bool | None]] = {}
+    overlay_corrections: dict[tuple[str, str], BaseGeometry] = {}
+    correction_reasons: dict[tuple[str, str], str] = {}
+    pairs = pair_cases(random.Random(seed ^ 0x912), count)
+    pair_inputs = {case.name: case for case in pairs}
+    pair_phase = "all" if {"relations", "overlay"} <= phases else "relations" if "relations" in phases else "overlay"
+    def payload(geometry: BaseGeometry, text: str, format_name: str) -> str:
+        return text if format_name == "WKT" else sh.to_wkb(geometry, byte_order=1, output_dimension=4, flavor="iso").hex()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for unary_phase, generated in [("unary", count), ("buffer", buffer_count)]:
+            if unary_phase not in phases:
+                continue
+            for case in topology_cases(random.Random(seed ^ 0x541), generated):
+                geometry = sh.from_wkt(case.wkt)
+                if case.name.startswith("random-") and not geometry.is_valid:
+                    raise RuntimeError("Random generator produced invalid topology: " + case.wkt)
+                input_validity[case.name] = (geometry.is_valid, None)
+                values = native_unary(geometry, unary_phase)
+                for format_name in ("WKT", "WKB"):
+                    first = payload(geometry, case.wkt, format_name)
+                    inputs.append(f"TOPO-{format_name}\t{unary_phase}\t{first}")
+                    expected_rows.append((case.name, format_name, first, "", values))
+        if phases & {"relations", "overlay"}:
+            for case in pairs:
+                first_geometry, second_geometry = sh.from_wkt(case.first), sh.from_wkt(case.second)
+                if case.name.startswith("pair-random-") and not (first_geometry.is_valid and second_geometry.is_valid):
+                    raise RuntimeError("Random pair generator produced invalid topology: " + case.first + " / " + case.second)
+                input_validity[case.name] = (first_geometry.is_valid, second_geometry.is_valid)
+                values = native_pair(first_geometry, second_geometry, pair_phase)
+                if "symmetricDifference" in values:
+                    reference = known_symdiff_reference(case, first_geometry, second_geometry)
+                    if reference is not None:
+                        overlay_corrections[case.name, "symmetricDifference"] = reference
+                        correction_reasons[case.name, "symmetricDifference"] = "Named native symmetricDifference loses components; require union of atomic differences in both directions"
+                for method in ("intersection", "difference"):
+                    if isinstance(values.get(method), OperationError):
+                        reference = known_empty_reference(case, method, first_geometry, second_geometry)
+                        if reference is not None:
+                            overlay_corrections[case.name, method] = reference
+                            correction_reasons[case.name, method] = "Named native operation asserts on a valid empty operand; require exact declared empty family and XY layout"
+                for format_name in ("WKT", "WKB"):
+                    first, second = payload(first_geometry, case.first, format_name), payload(second_geometry, case.second, format_name)
+                    inputs.append(f"PAIR-{format_name}\t{pair_phase}\t{first}\t{second}")
+                    expected_rows.append((case.name, format_name, first, second, values))
+    if not inputs:
+        return {"requests": 0, "native_operation_errors": 0, "family_pairs": [], "out_of_contract": [], "out_of_contract_count": 0}
+    completed = subprocess.run([str(probe.resolve())], input="\n".join(inputs) + ("\n" if inputs else ""), text=True, capture_output=True, check=True)
+    lines = completed.stdout.splitlines()
+    if len(lines) != len(inputs):
+        raise RuntimeError(f"Topology probe returned {len(lines)} responses for {len(inputs)} inputs: {completed.stderr}")
+    native_errors = 0
+    out_of_contract: list[dict[str, str]] = []
+    for (name, format_name, first, second, values), line in zip(expected_rows, lines, strict=True):
+        context = {"case": name, "format": format_name, "input": first, "second_input": second}
+        first_valid, second_valid = input_validity[name]
+        context["input_valid"] = str(first_valid)
+        if second_valid is not None:
+            context["second_input_valid"] = str(second_valid)
+        if not line.startswith("OK\t"):
+            failures.append(context | {"method": "operation-decode", "expected": "both native inputs decoded", "actual": line})
+            continue
+        actual_values = dict(field.split("=", 1) for field in line.split("\t")[1:])
+        if actual_values.keys() != values.keys():
+            failures.append(context | {"method": "operation-protocol", "expected": str(sorted(values)), "actual": str(sorted(actual_values))})
+        for key, expected in values.items():
+            method = key.split(".", 1)[0]
+            actual = actual_values.get(key, "!missing field")
+            if second_valid is not None and not (first_valid and second_valid):
+                expected_text = expected.message if isinstance(expected, OperationError) else describe(expected)
+                out_of_contract.append(context | {"method": key, "native": expected_text, "actual": actual, "reason": "Binary operations require valid topology"})
+                continue
+            checked[method] += 1
+            native_errors += isinstance(expected, OperationError)
+            original_expected = expected
+            if (name, key) in overlay_corrections:
+                expected = overlay_corrections[name, key]
+            corrected = known_collection_result(pair_inputs.get(name), key)
+            if corrected is not None:
+                native_text = describe(expected) if not isinstance(expected, OperationError) else expected.message
+                difference = context | {"method": key, "expected": corrected, "native_expected": native_text, "actual": actual}
+                if actual != corrected:
+                    failures.append(difference)
+                elif actual != str(expected):
+                    known_differences.append(difference | {"reason": "Named GEOS 3.13.1 collection relation defect; exact corrected result required"})
+                continue
+            uniform_m: Shape | None = None
+            try:
+                uniform_m = uniform_m_reference(pair_inputs.get(name), key, expected) if isinstance(expected, BaseGeometry) else None
+                if uniform_m is not None and isinstance(expected, BaseGeometry):
+                    actual_shape = read_structure(actual)
+                    matched = constant_measure(actual_shape, 4) and geometry_result_matches(actual_shape, uniform_m, expected)
+                    closing_m = False
+                else:
+                    matched = operation_matches(method, actual, expected)
+                    closing_m = isinstance(expected, BaseGeometry) and not matched and not actual.startswith("!") and actual != "~" and closing_m_difference(actual, expected)
+            except (ValueError, IndexError, struct.error, GEOSException) as failure:
+                matched = False
+                closing_m = False
+                actual += " [invalid result: " + str(failure) + "]"
+            if closing_m or ((uniform_m is not None or (name, key) in overlay_corrections) and matched):
+                reason = "Native polygon closing M is NaN; require its finite opening M and retain all other values"
+                if uniform_m is not None:
+                    reason = "Named uniform-M fixture: native loses nonclosing M values; require exact M=4 and retain XY, Z, and metadata"
+                if (name, key) in overlay_corrections:
+                    reason = correction_reasons[name, key]
+                native_text = original_expected.message if isinstance(original_expected, OperationError) else describe(original_expected)
+                expected_text = expected.message if isinstance(expected, OperationError) else describe(expected)
+                difference = context | {"method": key, "expected": expected_text, "native_expected": native_text, "actual": actual, "reason": reason}
+                if uniform_m is not None:
+                    difference["expected"] = "Exact M=4; see expected_structure"
+                    difference["expected_structure"] = json.dumps(asdict(uniform_m))
+                if isinstance(original_expected, BaseGeometry):
+                    difference["native_structure"] = json.dumps(asdict(signature(original_expected)))
+                known_differences.append(difference)
+                continue
+            if not matched:
+                expected_text = "operation exception: " + expected.message if isinstance(expected, OperationError) else describe(expected)
+                difference = context | {"method": key, "expected": expected_text, "actual": actual}
+                if isinstance(expected, BaseGeometry):
+                    difference["expected_structure"] = json.dumps(asdict(uniform_m if uniform_m is not None else signature(expected)))
+                    difference["reason"] = geometry_mismatch_reason(actual, expected)
+                    if uniform_m is not None:
+                        difference["native_expected"] = expected_text
+                        difference["expected"] = "Exact M=4; see expected_structure"
+                        difference["reason"] = "Named constant-M fixture requires exact M=4; other geometry checks also apply"
+                failures.append(difference)
+    family_pairs = sorted({(sh.from_wkt(case.first).geom_type, sh.from_wkt(case.second).geom_type) for case in pairs}) if phases & {"relations", "overlay"} else []
+    return {"requests": len(inputs), "native_operation_errors": native_errors, "family_pairs": family_pairs, "constructed_xy_absolute_tolerance": CONSTRUCTED_TOLERANCE, "out_of_contract": out_of_contract, "out_of_contract_count": len(out_of_contract)}
+
 def main() -> int:
     """Run a bounded deterministic comparison and report every unexpected mismatch."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -570,15 +1251,21 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20261003)
     parser.add_argument("--cases", type=int, default=1000, help="random shapes in addition to fixed fixtures")
     parser.add_argument("--report", type=Path, help="write counts and complete mismatch repros as JSON")
+    parser.add_argument("--buffer-cases", type=int, default=24, help="random buffer shapes in addition to fixed fixtures; buffering costs more than predicates")
+    parser.add_argument("--phase", nargs="+", choices=["all", "existing", "unary", "relations", "overlay", "buffer"], default=["all"], help="explicit operation groups; default checks every export")
     args = parser.parse_args()
     probe = cast(Path, args.probe)
     seed = cast(int, args.seed)
     case_count = cast(int, args.cases)
+    buffer_count = cast(int, args.buffer_cases)
     report = cast(Path | None, args.report)
-    if case_count < 0:
-        parser.error("--cases must be nonnegative")
+    phases = set(cast(list[str], args.phase))
+    if "all" in phases:
+        phases = {"existing", "unary", "relations", "overlay", "buffer"}
+    if min(case_count, buffer_count) < 0:
+        parser.error("--cases and --buffer-cases must be nonnegative")
     rng = random.Random(seed)
-    cases = fixed_cases() + codec_cases() + [random_case(rng, i) for i in range(case_count)]
+    cases = fixed_cases() + codec_cases() + [random_case(rng, i) for i in range(case_count)] if "existing" in phases else []
     requests: list[Request] = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -595,10 +1282,11 @@ def main() -> int:
             for byte_order in (0, 1):
                 blob = sh.to_wkb(geometry, byte_order=byte_order, output_dimension=4, flavor="iso")
                 requests.append(read_request(case, "WKB", blob.hex()))
-        requests.extend(binary_requests())
-        requests.extend(constructor_requests())
+        if "existing" in phases:
+            requests.extend(binary_requests())
+            requests.extend(constructor_requests())
     inputs = [("CODEC-" if codec_only(request) else "") + request.format_name + "\t" + request.payload for request in requests]
-    completed = subprocess.run([str(probe.resolve())], input="\n".join(inputs) + "\n", text=True, capture_output=True, check=True)
+    completed = subprocess.run([str(probe.resolve())], input="\n".join(inputs) + ("\n" if inputs else ""), text=True, capture_output=True, check=True)
     lines = completed.stdout.splitlines()
     if len(lines) != len(requests):
         raise RuntimeError(f"Probe returned {len(lines)} responses for {len(requests)} requests: {completed.stderr}")
@@ -643,18 +1331,27 @@ def main() -> int:
                     known_differences.append(difference)
                 else:
                     failures.append(difference)
-    missing = METHODS.keys() - checked.keys()
+    topology_summary = run_operations(probe, phases, seed, case_count, buffer_count, checked, failures, known_differences)
+    selected_methods: set[str] = set()
+    groups = {"unary": UNARY_METHODS, "relations": RELATION_METHODS, "overlay": OVERLAY_METHODS, "buffer": BUFFER_METHODS}
+    for phase, methods in groups.items():
+        if phase in phases:
+            selected_methods.update(methods)
+    if "existing" in phases:
+        selected_methods.update(METHODS.keys() - (UNARY_METHODS.keys() | RELATION_METHODS.keys() | OVERLAY_METHODS.keys() | BUFFER_METHODS.keys()))
+    missing = selected_methods - checked.keys()
     if missing:
         raise RuntimeError("Methods were not exercised: " + ", ".join(sorted(missing)))
     mismatch_counts = Counter(failure["method"].split(".", 1)[0] for failure in failures)
     known_counts = Counter(difference["method"] for difference in known_differences)
-    summary: dict[str, object] = {"shapely": sh.__version__, "geos": sh.geos_version_string, "seed": seed, "shapes": len(cases), "requests": len(requests), "native_rejections": rejected, "methods": dict(sorted(checked.items())), "known_difference_counts": dict(sorted(known_counts.items())), "known_differences": known_differences, "mismatch_counts": dict(sorted(mismatch_counts.items())), "mismatches": failures}
+    summary: dict[str, object] = {"shapely": sh.__version__, "geos": sh.geos_version_string, "phases": sorted(phases), "topology": topology_summary, "seed": seed, "random_cases": case_count, "buffer_random_cases": buffer_count, "shapes": len(cases), "requests": len(requests), "native_rejections": rejected, "methods": dict(sorted(checked.items())), "known_difference_counts": dict(sorted(known_counts.items())), "known_differences": known_differences, "mismatch_counts": dict(sorted(mismatch_counts.items())), "mismatches": failures}
     if report is not None:
         report.write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"Shapely {sh.__version__}; GEOS {sh.geos_version_string}; seed {seed}; {len(cases)} shapes; {len(requests)} requests")
+    print(f"Shapely {sh.__version__}; GEOS {sh.geos_version_string}; seed {seed}; {len(cases)} existing shapes; {len(requests)} existing requests; {topology_summary['requests']} topology requests")
     for method, count in sorted(checked.items()):
         print(f"{method}: {count} comparisons [{METHODS[method]}]")
-    print(f"Known duplicate-Z differences: {len(known_differences)}")
+    print(f"Known native differences: {len(known_differences)}")
+    print(f"Out-of-contract binary outcomes: {topology_summary['out_of_contract_count']}")
     print(f"Unexpected mismatches: {len(failures)}")
     for method, count in sorted(mismatch_counts.items()):
         print(f"{method}: {count} mismatches")

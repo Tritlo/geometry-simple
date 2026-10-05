@@ -48,3 +48,38 @@ jobs:
           nix-build --no-out-link
           --option sandbox true --option sandbox-fallback false
           --max-jobs 2 --cores 2
+
+  shapely:
+    name: Shapely / GEOS differential tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d
+        with:
+          ghc-version: '9.14.1'
+          cabal-version: '3.18.1.0'
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install uv==0.9.5
+      - run: cabal update
+      - run: cabal build -fshapely-tests exe:geometry-simple-shapely-probe
+      - name: Check Python types
+        run: >-
+          uv run --no-project --with shapely==2.1.2
+          --with types-shapely==2.1.0.20260728 --with pyright==1.1.414
+          pyright test/shapely_compare.py
+      - name: Compare every operation with GEOS
+        run: >-
+          uv run --script test/shapely_compare.py
+          --probe "$(cabal list-bin -fshapely-tests exe:geometry-simple-shapely-probe)"
+          --phase all --cases 100 --buffer-cases 24
+          --seed 20261005 --report shapely-report.json
+      - name: Save comparison report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shapely-comparison
+          path: shapely-report.json
+          if-no-files-found: warn

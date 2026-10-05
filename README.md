@@ -89,6 +89,10 @@ equal. As for `Double`, `0` and `-0` compare equal.
 | Line coordinates | `numPoints`, `pointN`, `startPoint`, `endPoint`, `isClosed` |
 | Polygon rings | `exteriorRing`, `numInteriorRings`, `interiorRingN` |
 | Planar operations | `envelope`, `area`, `geometryLength`, `curveLength`, `perimeter`, `centroid`, `convexHull` |
+| Topology | `boundary`, `isSimple`, `isRing`, `isValid`, `pointOnSurface` |
+| Spatial relations | `relate`, `relatePattern`, `equals`, `disjoint`, `intersects`, `touches`, `crosses`, `within`, `contains`, `overlaps`, `covers`, `coveredBy` |
+| Distance and construction | `distance`, `intersection`, `union`, `difference`, `symmetricDifference`, `buffer`, `bufferWithSegments` |
+| Measured locations | `locateAlong`, `locateBetween` |
 
 Indices start at zero, as in GEOS. Accessors that return `Maybe` give `Nothing` for an
 index out of range or for a geometry family they do not apply to. `isClosed`
@@ -146,11 +150,36 @@ differs. When duplicate XY hull candidates have different Z values, this
 library keeps the first input candidate. GEOS can select a different candidate
 when it reduces a large point set.
 
-The package does not claim full Simple Features conformance. For validity
-checks, spatial predicates such as `intersects` and `contains`, distance,
-buffers, and overlay operations, use
-[`geos`](https://hackage.haskell.org/package/geos), which binds the native
-GEOS library.
+Binary spatial operations require valid topology and finite XY coordinates.
+`isValid` checks topology. `isSimple` checks self-intersections under the
+Simple Features rules. Line boundaries use the mod-2 endpoint rule.
+`boundary` returns `Nothing` for a geometry collection, as GEOS does.
+`equals` compares spatial point sets; the derived `Eq` instance compares storage.
+`relate` returns the nine-character DE-9IM matrix. `relatePattern` accepts the
+characters `T`, `F`, `*`, `0`, `1`, and `2`; an invalid pattern returns `False`.
+`distance` returns NaN when either geometry is empty.
+
+The topology implementation uses rational segment intersections and planar
+face classification. Output coordinates round to `Double`. The implementation
+checks segment pairs directly. It is intended for modest geometries; use
+[`geos`](https://hackage.haskell.org/package/geos) for large indexed workloads.
+
+`buffer` uses round joins and caps, with eight segments per quadrant.
+`bufferWithSegments` selects the quadrant resolution. A negative distance
+erodes polygons and gives an empty polygon for points and lines. A zero
+distance repairs polygon topology. Nonzero buffers discard Z and M.
+
+`locateAlong` and `locateBetween` select positions by M, with linear
+interpolation along segments. They return `Nothing` for empty input and an
+empty point for no match. Polygon queries select boundary positions.
+The OGC specification leaves the surface interpretation to the implementation.
+
+The target is the GEOS operation set on these seven families. The package
+does not claim full OGC SFA conformance. It has no Triangle, TIN,
+PolyhedralSurface, MultiSurface, or spatial-reference metadata model.
+Native comparisons retain known GEOS data-loss and relation diagnostics
+separately. Z/M propagation at coincident source vertices is still under
+compatibility review; exact native parity is not claimed.
 
 ## Codecs
 
