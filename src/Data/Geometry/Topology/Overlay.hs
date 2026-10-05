@@ -48,9 +48,10 @@ instance NFData TopologyException where
 {- | The points common to both geometries. Coordinates must have finite XY values.
 Line results join consecutive edges through vertices with exactly two neighbors.
 Their component count and order can differ from other implementations.
-If Double rounding changes topology, retry with bounded snapping. Thin regions
-can collapse. Return 'Left' 'PrecisionFailure' if every attempt remains invalid.
-See the module documentation for the tolerance schedule.
+If rounding to Double makes the result invalid, retry with snapping tolerances
+of 10^-12 to 10^-8 times the largest absolute ordinate, as GEOS does. Thin
+regions can collapse. Return 'Left' 'PrecisionFailure' if every attempt remains
+invalid.
 -}
 intersection :: Geometry -> Geometry -> Either TopologyException Geometry
 intersection a b = overlay (&&) (min (topologicalDimension a) (topologicalDimension b)) a b
