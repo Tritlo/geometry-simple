@@ -32,6 +32,11 @@ the documentation with the pinned Nix environment.
 
 ### Shapely comparison
 
+The Haskell suite includes the applicable geometry tests from OGC SFA
+Annex C.3.3. [test/SFA-TESTS.md](test/SFA-TESTS.md) lists their scope and the
+corrections to inconsistent source examples. These tests use the standard's
+expected results independently of Shapely.
+
 The comparison tests check GEOS-compatible operations and both codec formats
 against Shapely. Python and GEOS are test dependencies only. Measured-location
 queries use the OGC examples because Shapely does not expose those operations.
@@ -56,6 +61,10 @@ coordinate round trips retain exact bits.
 One named hull diagnostic reports GEOS's choice of Z among duplicate XY
 positions separately. It still checks XY coordinates and vertex order. Other
 hull comparisons retain strict layout and ordinate checks.
+One fixed overlay case permits conflicting input Z/M tuples at coincident
+vertices. This records a native unstable-sort choice. It does not permit
+invented values, different metadata, or different XY geometry. The report
+retains both results. `test/test_shapely_compare.py` checks these restrictions.
 Use `--cases` and `--seed` to change the generated inputs.
 
 Paired cases cover every ordered pair of geometry families. They check
@@ -74,7 +83,8 @@ count as passed comparisons. Unexpected differences fail the command.
 Type-check the Python script in strict mode with:
 
 ```sh
-uv run --no-project --with shapely==2.1.2 --with types-shapely==2.1.0.20260728 --with pyright==1.1.414 pyright test/shapely_compare.py
+uv run --no-project --with shapely==2.1.2 --with types-shapely==2.1.0.20260728 --with pyright==1.1.414 pyright test/shapely_compare.py test/test_shapely_compare.py
+uv run --script test/test_shapely_compare.py
 ```
 
 ## Code style
@@ -85,7 +95,7 @@ consistent terms. Format Haskell files with `fourmolu` and the Cabal file with
 `cabal-gild`:
 
 ```sh
-fourmolu --mode inplace src/Data/Geometry.hs src/Data/Geometry/*.hs test/*.hs bench/*.hs
+fourmolu --mode inplace src/Data/Geometry.hs src/Data/Geometry/*.hs src/Data/Geometry/Topology/*.hs test/*.hs bench/*.hs
 cabal-gild --mode format geometry-simple.cabal
 ```
 

@@ -69,7 +69,9 @@ jobs:
         run: >-
           uv run --no-project --with shapely==2.1.2
           --with types-shapely==2.1.0.20260728 --with pyright==1.1.414
-          pyright test/shapely_compare.py
+          pyright test/shapely_compare.py test/test_shapely_compare.py
+      - name: Check comparison diagnostics
+        run: uv run --script test/test_shapely_compare.py
       - name: Compare every operation with GEOS
         run: >-
           uv run --script test/shapely_compare.py

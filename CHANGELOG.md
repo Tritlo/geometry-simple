@@ -26,6 +26,9 @@ Initial release.
 - Planar intersection, union, difference, symmetric difference, and round
   buffers. Buffer quadrant resolution is configurable.
 - Measured-location queries with linear M interpolation and OGC example tests.
+- Geometry tests from OGC SFA Annex C.3.3 run through both WKT and WKB.
+- Overlay construction tracks source-edge ordinates and GEOS ring-clipping
+  behavior at shared vertices and collinear boundaries.
 - Expanded Shapely comparisons cover paired geometries, topology, overlays,
   buffers, and explicit native discrepancies. CI runs the comparison harness.
 - `Data.Geometry.Internal` exports the `Coordinate` class methods and the shared

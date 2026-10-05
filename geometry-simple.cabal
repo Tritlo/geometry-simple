@@ -37,7 +37,9 @@ extra-doc-files:
   README.md
   test/SFA-TESTS.md
 
-extra-source-files: test/shapely_compare.py
+extra-source-files:
+  test/shapely_compare.py
+  test/test_shapely_compare.py
 
 flag shapely-tests
   description: Build the driver for the optional Shapely comparison tests

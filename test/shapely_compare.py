@@ -46,6 +46,9 @@ Native loss of M at a polygon's repeated closing vertex is reported separately.
 Only that ordinate may differ; all other geometry checks must still pass.
 Specified uniform-M case/method pairs also retain source M=4 when native output
 replaces it with NaN. These require exact operands and exact actual M values.
+One fixed coincident-shell case permits source Z/M tuples at shared vertices.
+GEOS chooses among these tuples with an unstable sort. Every other ordinate,
+the output metadata, and XY geometry remain checked. Raw results are retained.
 """
 
 from __future__ import annotations
@@ -634,6 +637,13 @@ class PairCase:
     second: str
 
 
+COINCIDENT_SHELLS = PairCase(
+    "coincident-shell-ordinates",
+    "POLYGON ZM ((6 2 21 7,7 2 23 8,6 4 23 1,5 4 21 0,6 2 21 7),(6 2.5 21.5 5.5,6.5 2.5 22.5 6,6 3.5 22.5 2.5,5.5 3.5 21.5 2,6 2.5 21.5 5.5))",
+    "POLYGON ZM ((6 2 45 31,7 2 47 32,6 4 47 25,5 4 45 24,6 2 45 31))",
+)
+
+
 @dataclass(frozen=True)
 class OperationError:
     """A native operation failed after both inputs decoded successfully."""
@@ -715,6 +725,7 @@ def pair_cases(rng: random.Random, count: int) -> list[PairCase]:
             first, second = lift_layout(a, layout), lift_layout(b, layout)
             cases += [PairCase(name + "-" + layout, first, second), PairCase(name + "-reverse-" + layout, second, first)]
     cases += [
+        COINCIDENT_SHELLS,
         PairCase("interpolate-z", "LINESTRING Z (0 0 0,4 4 8)", "LINESTRING Z (0 4 20,4 0 40)"),
         PairCase("interpolate-m", "LINESTRING M (0 0 0,4 4 8)", "LINESTRING M (0 4 20,4 0 40)"),
         PairCase("interpolate-zm", "LINESTRING ZM (0 0 0 10,4 4 8 20)", "LINESTRING ZM (0 4 20 100,4 0 40 200)"),
@@ -930,22 +941,48 @@ def geometry_result_matches(shape: Shape, expected_shape: Shape, expected: BaseG
     return True
 
 
+def restore_closing_m(shape: Shape) -> Shape:
+    """Restore only a missing closing M from the same ring's opening vertex."""
+    if shape.kind == 3:
+        rings: list[Shape] = []
+        for ring in shape.children:
+            rows = ring.coordinates
+            if "M" in ring.layout and len(rows) >= 2 and rows[0][:2] == rows[-1][:2] and math.isfinite(float.fromhex(rows[0][-1])) and math.isnan(float.fromhex(rows[-1][-1])):
+                closing = rows[-1][:-1] + (rows[0][-1],)
+                ring = replace(ring, coordinates=rows[:-1] + (closing,))
+            rings.append(ring)
+        return replace(shape, children=tuple(rings))
+    return replace(shape, children=tuple(restore_closing_m(child) for child in shape.children))
+
+
 def closing_m_difference(actual: str, expected: BaseGeometry) -> bool:
     """Permit only native loss of M at a ring's repeated closing coordinate."""
-    def corrected(shape: Shape) -> Shape:
-        if shape.kind == 3:
-            rings: list[Shape] = []
-            for ring in shape.children:
-                rows = ring.coordinates
-                if "M" in ring.layout and len(rows) >= 2 and rows[0][:2] == rows[-1][:2] and math.isfinite(float.fromhex(rows[0][-1])) and math.isnan(float.fromhex(rows[-1][-1])):
-                    closing = rows[-1][:-1] + (rows[0][-1],)
-                    ring = replace(ring, coordinates=rows[:-1] + (closing,))
-                rings.append(ring)
-            return replace(shape, children=tuple(rings))
-        return replace(shape, children=tuple(corrected(child) for child in shape.children))
     original = signature(expected)
-    repaired = corrected(original)
+    repaired = restore_closing_m(original)
     return repaired != original and geometry_result_matches(read_structure(actual), repaired, expected)
+
+
+def coincident_ordinate_difference(case: PairCase | None, method: str, actual: Shape, expected: BaseGeometry) -> bool:
+    """Recognize the fixed unstable-sort diagnostic without accepting invented values."""
+    if case is None or (case.first, case.second) != (COINCIDENT_SHELLS.first, COINCIDENT_SHELLS.second) or method not in ("intersection", "union"):
+        return False
+    def samples(shape: Shape) -> dict[tuple[str, ...], set[tuple[str, ...]]]:
+        result: dict[tuple[str, ...], set[tuple[str, ...]]] = {}
+        for row in shape.coordinates:
+            result.setdefault((shape.layout,) + row[:2], set()).add(row)
+        for child in shape.children:
+            for key, values in samples(child).items():
+                result.setdefault(key, set()).update(values)
+        return result
+    first, second = samples(signature(sh.from_wkt(case.first))), samples(signature(sh.from_wkt(case.second)))
+    choices = {key: first[key] | second[key] for key in first.keys() & second.keys() if len(first[key] | second[key]) > 1}
+    def normalized(shape: Shape) -> Shape:
+        rows: list[tuple[str, ...]] = []
+        for row in shape.coordinates:
+            candidates = choices.get((shape.layout,) + row[:2], set())
+            rows.append(min(candidates) if row in candidates else row)
+        return replace(shape, coordinates=tuple(rows), children=tuple(normalized(child) for child in shape.children))
+    return geometry_result_matches(normalized(actual), normalized(restore_closing_m(signature(expected))), expected)
 
 
 def geometry_mismatch_reason(actual: str, expected: BaseGeometry) -> str:
@@ -1201,6 +1238,7 @@ def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_
                     known_differences.append(difference | {"reason": "Named GEOS 3.13.1 collection relation defect; exact corrected result required"})
                 continue
             uniform_m: Shape | None = None
+            coincident = False
             try:
                 uniform_m = uniform_m_reference(pair_inputs.get(name), key, expected) if isinstance(expected, BaseGeometry) else None
                 if uniform_m is not None and isinstance(expected, BaseGeometry):
@@ -1210,16 +1248,20 @@ def run_operations(probe: Path, phases: set[str], seed: int, count: int, buffer_
                 else:
                     matched = operation_matches(method, actual, expected)
                     closing_m = isinstance(expected, BaseGeometry) and not matched and not actual.startswith("!") and actual != "~" and closing_m_difference(actual, expected)
+                    if isinstance(expected, BaseGeometry) and not matched and not closing_m and not actual.startswith("!") and actual != "~":
+                        coincident = coincident_ordinate_difference(pair_inputs.get(name), method, read_structure(actual), expected)
             except (ValueError, IndexError, struct.error, GEOSException) as failure:
                 matched = False
                 closing_m = False
                 actual += " [invalid result: " + str(failure) + "]"
-            if closing_m or ((uniform_m is not None or (name, key) in overlay_corrections) and matched):
+            if coincident or closing_m or ((uniform_m is not None or (name, key) in overlay_corrections) and matched):
                 reason = "Native polygon closing M is NaN; require its finite opening M and retain all other values"
                 if uniform_m is not None:
                     reason = "Named uniform-M fixture: native loses nonclosing M values; require exact M=4 and retain XY, Z, and metadata"
                 if (name, key) in overlay_corrections:
                     reason = correction_reasons[name, key]
+                if coincident:
+                    reason = "Named coincident-shell fixture: GEOS uses an unstable node sort; require complete source Z/M tuples and retain all other ordinates, XY, and metadata"
                 native_text = original_expected.message if isinstance(original_expected, OperationError) else describe(original_expected)
                 expected_text = expected.message if isinstance(expected, OperationError) else describe(expected)
                 difference = context | {"method": key, "expected": expected_text, "native_expected": native_text, "actual": actual, "reason": reason}

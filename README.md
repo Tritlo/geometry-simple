@@ -1,7 +1,7 @@
 # geometry-simple
 
 OGC Simple Features geometry types for Haskell, with checked ISO WKB and WKT
-codecs and planar measurements. Coordinates are stored in unboxed vectors. The
+codecs and pure planar operations. Coordinates are stored in unboxed vectors. The
 package needs no database or native library.
 
 ```haskell
@@ -174,12 +174,19 @@ interpolation along segments. They return `Nothing` for empty input and an
 empty point for no match. Polygon queries select boundary positions.
 The OGC specification leaves the surface interpretation to the implementation.
 
-The target is the GEOS operation set on these seven families. The package
+The target is the Simple Features core on GEOS's seven geometry families. The package
 does not claim full OGC SFA conformance. It has no Triangle, TIN,
 PolyhedralSurface, MultiSurface, or spatial-reference metadata model.
 Native comparisons retain known GEOS data-loss and relation diagnostics
-separately. Z/M propagation at coincident source vertices is still under
-compatibility review; exact native parity is not claimed.
+separately. Overlay noding uses a deterministic order. When coincident input
+vertices have conflicting Z/M values, GEOS's unstable node sort can select a
+different source value. The tests retain a fixed example of this difference
+and require complete input Z/M tuples at those vertices. Exact native parity
+is not claimed.
+
+The test suite includes the 46 applicable geometry cases from the standard's
+SQL conformance examples. Each case runs through WKT and WKB. See
+[test/SFA-TESTS.md](test/SFA-TESTS.md) for the scope and source corrections.
 
 ## Codecs
 
