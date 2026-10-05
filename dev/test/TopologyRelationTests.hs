@@ -73,8 +73,8 @@ tests =
         , testCase "patterns support dimensions, booleans, and wildcards" $ do
             let a = geometry "POINT (1 0)"
                 b = geometry "LINESTRING (0 0,2 0)"
-            forM_ ["0FFFFF102", "T*F**F***", "*********"] $ \pattern -> S.relatePattern pattern a b @?= True
-            forM_ ["", "********", "**********", "X********", "t********", "1********", "FF*FF****"] $ \pattern -> S.relatePattern pattern a b @?= False
+            forM_ ["0FFFFF102", "T*F**F***", "*********"] $ \matrixPattern -> S.relatePattern matrixPattern a b @?= True
+            forM_ ["", "********", "**********", "X********", "t********", "1********", "FF*FF****"] $ \matrixPattern -> S.relatePattern matrixPattern a b @?= False
         , testGroup
             "direct intersection queries"
             [ testCase "crossing polygons have no contained input vertices" $ do
@@ -116,7 +116,7 @@ tests =
                     S.contains a b @?= S.relatePattern "T*****FF*" a b
                     S.covers a b @?= (S.relatePattern "******FF*" a b && expected)
                     S.equals a b @?= (S.relate a b == "FFFFFFFF2" || S.relatePattern "T*F**FFF*" a b)
-                    S.touches a b @?= any (\pattern -> S.relatePattern pattern a b) ["FT*******", "F**T*****", "F***T****"]
+                    S.touches a b @?= any (\matrixPattern -> S.relatePattern matrixPattern a b) ["FT*******", "F**T*****", "F***T****"]
                     S.crosses a b @?= crossing
                     S.overlaps a b @?= overlapping
             , testCase "point queries agree with relation matrices" $

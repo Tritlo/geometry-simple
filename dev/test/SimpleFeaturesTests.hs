@@ -473,7 +473,7 @@ polygonGen = do
     oneof [pure (V.singleton shell), pure (V.fromList [shell, hole])]
 
 -- | Generate all geometry families with valid polygons and bounded collections.
-geometryGen :: Int -> Gen (Geometry)
+geometryGen :: Int -> Gen Geometry
 geometryGen depth =
     oneof $
         [ PointGeometry <$> pointGen

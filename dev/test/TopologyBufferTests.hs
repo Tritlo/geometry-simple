@@ -3,7 +3,7 @@
 -- | Buffer regressions derived from GEOS 3.13.1.
 module TopologyBufferTests (tests) where
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Geometry.Internal
 import qualified Data.Geometry.SimpleFeatures as S
 import qualified Data.Geometry.WKT as WKT
@@ -83,7 +83,7 @@ tests =
             forM_ [-1, 0, 0.5, 2] $ \radius -> do
                 let result = successful (S.buffer radius source)
                 assertBool "valid rounded buffer" (S.isValid result)
-                if radius == 0 then near (S.area result) 151.25 else pure ()
+                when (radius == 0) (near (S.area result) 151.25)
         , testCase "coincident hole curves retain both winding contributions" $ do
             let outer = geometry "POLYGON ((-2 -2,12 -2,12 12,-2 12,-2 -2),(3 3,7 3,7 7,3 7,3 3))"
                 combined = geometry "GEOMETRYCOLLECTION (POLYGON ((-2 -2,12 -2,12 12,-2 12,-2 -2),(3 3,7 3,7 7,3 7,3 3)),POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3)))"

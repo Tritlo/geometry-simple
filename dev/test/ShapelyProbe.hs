@@ -14,6 +14,7 @@ import Data.Geometry.Internal (coordinateComponents, coordinateDimensions, geome
 import qualified Data.Geometry.SimpleFeatures as S
 import qualified Data.Geometry.WKB as WKB
 import qualified Data.Geometry.WKT as WKT
+import Data.Maybe (fromMaybe, maybeToList)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -148,8 +149,8 @@ fields shape =
     , ("convexHull", structure (S.convexHull shape))
     ]
         ++ [("geometryN." <> shown i, optional structure (S.geometryN i shape)) | i <- [-1 .. S.numGeometries shape + 1]]
-        ++ [("pointN." <> shown i, optional (structure . PointGeometry) (S.pointN i shape)) | i <- [-1 .. maybe 0 id (S.numPoints shape) + 1]]
-        ++ [("interiorRingN." <> shown i, optional (structure . LineString) (S.interiorRingN i shape)) | i <- [-1 .. maybe 0 id (S.numInteriorRings shape) + 1]]
+        ++ [("pointN." <> shown i, optional (structure . PointGeometry) (S.pointN i shape)) | i <- [-1 .. fromMaybe 0 (S.numPoints shape) + 1]]
+        ++ [("interiorRingN." <> shown i, optional (structure . LineString) (S.interiorRingN i shape)) | i <- [-1 .. fromMaybe 0 (S.numInteriorRings shape) + 1]]
         ++ concat
             [ [(method <> "." <> shown i, value) | (method, value) <- zip ["x", "y", "z", "m"] row]
             | (i, row) <- zip [0 :: Int ..] (ordinateResults shape)
@@ -164,7 +165,7 @@ structure :: Geometry -> Text
 structure shape = array [shown family, quote (layout (geometryDimensions shape)), body]
   where
     (family, body) = case shape of
-        PointGeometry point -> (0 :: Int, array (maybe [] (: []) (withPoint rawRow point)))
+        PointGeometry point -> (0 :: Int, array (maybeToList (withPoint rawRow point)))
         LineString points -> (1, withCoordinates (array . map rawRow . U.toList) points)
         Polygon (PolygonRings shell holes) -> (3, array (map (structure . LineString) (shell : V.toList holes)))
         MultiPoint points -> (4, array (map (structure . PointGeometry) (U.toList points)))
@@ -186,7 +187,7 @@ rawRow coordinate = array (map (quote . shown) ordinates)
 -- | Evaluate coordinate accessors with each coordinate's stored type.
 ordinateResults :: Geometry -> [[Text]]
 ordinateResults shape = case shape of
-    PointGeometry point -> maybe [] (: []) (withPoint row point)
+    PointGeometry point -> maybeToList (withPoint row point)
     LineString points -> withCoordinates (map row . U.toList) points
     Polygon (PolygonRings shell holes) -> concatMap (ordinateResults . LineString) (shell : V.toList holes)
     MultiPoint points -> concatMap (ordinateResults . PointGeometry) (U.toList points)
