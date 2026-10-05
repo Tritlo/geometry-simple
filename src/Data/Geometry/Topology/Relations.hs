@@ -65,11 +65,11 @@ locationIndex location = case location of
 @TF*012@. Invalid patterns return 'False'.
 -}
 relatePattern :: String -> Geometry -> Geometry -> Bool
-relatePattern pattern first second = matches pattern (relate first second)
+relatePattern patternText first second = matches patternText (relate first second)
 
 -- | Validate a pattern and match it against a complete intersection matrix.
 matches :: String -> String -> Bool
-matches pattern matrix = length pattern == 9 && all (`elem` "TF*012") pattern && and (zipWith match pattern matrix)
+matches patternText matrix = length patternText == 9 && all (`elem` "TF*012") patternText && and (zipWith match patternText matrix)
   where
     match '*' _ = True
     match 'T' actual = actual /= 'F'
@@ -103,21 +103,26 @@ intersects first second = planarIntersects (planar first) (planar second)
 planarIntersects :: Planar -> Planar -> Bool
 planarIntersects a b =
     not (disjointBounds (allPositions a) (allPositions b))
-        && ( any (coversPosition b) (componentPoints a)
-                || any (coversPosition a) (componentPoints b)
+        && ( any ((/= Exterior) . locateB) (componentPoints a)
+                || any ((/= Exterior) . locateA) (componentPoints b)
                 || segmentsIntersect (segments a) (segments b)
            )
+  where
+    (locateA, _) = prepareLocations a
+    (locateB, _) = prepareLocations b
 
 -- | Test whether the geometries meet but their interiors do not intersect.
 touches :: Geometry -> Geometry -> Bool
 touches first second
     | not (planarIntersects a b) = False
-    | any (polygonContains a) (componentPoints b) || any (polygonContains b) (componentPoints a) = False
+    | any insideA (componentPoints b) || any insideB (componentPoints a) = False
     | otherwise = any (`matches` matrix) ["FT*******", "F**T*****", "F***T****"]
   where
     a = planar first
     b = planar second
     matrix = relate first second
+    (_, insideA) = prepareLocations a
+    (_, insideB) = prepareLocations b
 
 {- | Whether the geometries cross in their interiors.
 For different dimensions, the interiors must intersect and the geometry with
@@ -130,8 +135,7 @@ crosses first second
     | disjointBounds (allPositions a) (allPositions b) = False
     | dimensionA < dimensionB = matches "T*T******" matrix
     | dimensionA > dimensionB = matches "T*****T**" matrix
-    | dimensionA == CurveDimension = matches "0********" matrix
-    | otherwise = False
+    | otherwise = matches "0********" matrix
   where
     matrix = relate first second
     a = planar first
@@ -149,7 +153,7 @@ within first second = contains second first
 Contact confined to the boundary does not count. Use 'covers' to include it.
 -}
 contains :: Geometry -> Geometry -> Bool
-contains first (PointGeometry point) = maybe False ((== Interior) . locate (planar first)) (withPoint position point)
+contains first (PointGeometry point) = maybe False ((== Interior) . fst (prepareLocations (planar first))) (withPoint position point)
 contains first second =
     planarDimension a >= planarDimension b
         && enclosesBounds (allPositions a) (allPositions b)
@@ -163,11 +167,10 @@ of that dimension and each has a part outside the other.
 -}
 overlaps :: Geometry -> Geometry -> Bool
 overlaps first second
-    | dimensionA /= dimensionB = False
+    | dimensionA /= dimensionB || dimensionA == NoDimension = False
     | disjointBounds (allPositions a) (allPositions b) = False
     | dimensionA == CurveDimension = matches "1*T***T**" matrix
-    | dimensionA == PointDimension || dimensionA == SurfaceDimension = matches "T*T***T**" matrix
-    | otherwise = False
+    | otherwise = matches "T*T***T**" matrix
   where
     matrix = relate first second
     a = planar first
@@ -179,7 +182,7 @@ overlaps first second
 Return 'False' if either geometry is empty. Boundary points are included.
 -}
 covers :: Geometry -> Geometry -> Bool
-covers first (PointGeometry point) = maybe False (coversPosition (planar first)) (withPoint position point)
+covers first (PointGeometry point) = maybe False ((/= Exterior) . fst (prepareLocations (planar first))) (withPoint position point)
 covers first second =
     planarDimension a >= planarDimension b
         && enclosesBounds (allPositions a) (allPositions b)
@@ -235,7 +238,7 @@ nearestPair first second = visit (bound first second) first second
         | lowerBound >= bestSquared = best
         | otherwise = case (a, b) of
             (SegmentLeaf firstEdge@(p, q), SegmentLeaf secondEdge@(r, s)) ->
-                List.foldl' closer best [offset p secondEdge, offset q secondEdge, offset r firstEdge, offset s firstEdge]
+                List.foldl' closer best [segmentOffset p secondEdge, segmentOffset q secondEdge, segmentOffset r firstEdge, segmentOffset s firstEdge]
             (SegmentBranch _ left right, SegmentLeaf _) -> descend left b right b best
             (SegmentLeaf _, SegmentBranch _ left right) -> descend a left a right best
             (SegmentBranch _ leftA rightA, SegmentBranch _ leftB rightB)
@@ -248,7 +251,6 @@ nearestPair first second = visit (bound first second) first second
         firstBound = bound a b
         secondBound = bound c d
     extent tree = let ((x, y), (u, v)) = indexBounds tree in max (abs (u - x)) (abs (v - y))
-    offset point edge@(a, b) = if a == b then subtractPosition point a else segmentOffset point edge
     closer best@(_, current) candidate = let squared = squaredLength candidate in if squared < current then (candidate, squared) else best
 
 -- | The exact squared distance between two closed axis-aligned bounding boxes.
@@ -256,22 +258,6 @@ boxesDistanceSquared :: Segment -> Segment -> Rational
 boxesDistanceSquared ((ax, ay), (bx, by)) ((cx, cy), (dx, dy)) = squaredLength (gap ax bx cx dx, gap ay by cy dy)
   where
     gap a b c d = max 0 (max (min a b - max c d) (min c d - max a b))
-
--- | Return the vector from the closest point on a segment to a point.
-segmentOffset :: Position -> Segment -> Position
-segmentOffset point (a, b) = subtractPosition offset (scalePosition fraction direction)
-  where
-    offset = subtractPosition point a
-    direction = subtractPosition b a
-    fraction = max 0 (min 1 (dot offset direction / squaredLength direction))
-
--- | The exact scalar product of two vectors.
-dot :: Position -> Position -> Rational
-dot (x, y) (u, v) = x * u + y * v
-
--- | The exact squared length of a vector.
-squaredLength :: Position -> Rational
-squaredLength vector = dot vector vector
 
 -- | Scale a vector before conversion to avoid squared-coordinate overflow.
 vectorLength :: Position -> Double

@@ -59,7 +59,7 @@ querySegments tree bounds
 
 -- | Attach values to indexed bounds, retaining values with equal boxes.
 boundsQuery :: [(Segment, a)] -> Segment -> [a]
-boundsQuery entries = \bounds -> concatMap (table Map.!) (query bounds)
+boundsQuery entries = concatMap (table Map.!) . query
   where
     table = Map.fromListWith (++) [(bounds, [value]) | (bounds, value) <- entries]
     query = segmentQuery (Map.keys table)
@@ -139,7 +139,7 @@ Collapsed lines and collinear rings contribute only their stored point set.
 -}
 planarDimension :: Planar -> TopologicalDimension
 planarDimension shape
-    | any spansArea (concat (planarPolygons shape)) = SurfaceDimension
+    | any (any spansArea) (planarPolygons shape) = SurfaceDimension
     | not (null (segments shape)) = CurveDimension
     | not (null (allPositions shape)) = PointDimension
     | otherwise = NoDimension
@@ -197,14 +197,6 @@ enclosesBounds a b = case (pointBounds a, pointBounds b) of
     (Just ((ax, ay), (bx, by)), Just ((cx, cy), (dx, dy))) -> ax <= cx && ay <= cy && bx >= dx && by >= dy
     _ -> False
 
--- | Test membership in the point set without classifying its boundary.
-coversPosition :: Planar -> Position -> Bool
-coversPosition shape point =
-    any ((/= Exterior) . polygonLocation point) (planarPolygons shape)
-        || any (point `elem`) (planarLines shape)
-        || any (any (pointOnSegment point) . lineSegments) (planarLines shape)
-        || point `elem` planarPoints shape
-
 -- | Choose one point from each connected component before testing its edges.
 componentPoints :: Planar -> [Position]
 componentPoints shape =
@@ -212,25 +204,11 @@ componentPoints shape =
         ++ [point | point : _ <- planarLines shape]
         ++ [point | (point : _) : _ <- planarPolygons shape]
 
-{- | Test whether two sets of segments meet. Sweep from left to right and
-discard segments whose X intervals have ended. Check remaining candidates
-with exact segment intersections, and stop at the first contact.
--}
+-- | Test segment contacts using both coordinate bounds and stop at the first hit.
 segmentsIntersect :: [Segment] -> [Segment] -> Bool
-segmentsIntersect first second = go [] [] events
+segmentsIntersect first second = any (\edge -> not (all (null . segmentIntersection edge) (query edge))) first
   where
-    events = sortOn (left . snd) (map ((,) True) first ++ map ((,) False) second)
-    left ((x, _), (u, _)) = min x u
-    right ((x, _), (u, _)) = max x u
-    go _ _ [] = False
-    go activeFirst activeSecond ((fromFirst, edge) : rest)
-        | any (not . null . segmentIntersection edge) candidates = True
-        | fromFirst = go (edge : remainingFirst) remainingSecond rest
-        | otherwise = go remainingFirst (edge : remainingSecond) rest
-      where
-        remainingFirst = filter ((>= left edge) . right) activeFirst
-        remainingSecond = filter ((>= left edge) . right) activeSecond
-        candidates = if fromFirst then remainingSecond else remainingFirst
+    query = segmentQuery second
 
 -- | The displacement from the second position to the first.
 subtractPosition :: Position -> Position -> Position
@@ -289,21 +267,12 @@ nodeSegments input points = unique (concatMap split edges)
     -- Segment intersections already account for every endpoint.
     endpoints = Set.fromList (concatMap (\(a, b) -> [a, b]) edges)
     extraPoints = Set.toList (Set.fromList points `Set.difference` endpoints)
-    split edge@(a, b) = lineSegments (unique (a : b : [p | p <- extraPoints, pointOnSegment p edge] ++ concatMap (segmentIntersection edge) (query edge)))
+    queryPoints = segmentQuery [(p, p) | p <- extraPoints]
+    split edge@(a, b) = lineSegments (unique (a : b : [p | (p, _) <- queryPoints edge, pointOnSegment p edge] ++ concatMap (segmentIntersection edge) (query edge)))
 
 -- | The exact midpoint of a segment.
 midpoint :: Segment -> Position
 midpoint (a, b) = scalePosition (1 / 2) (addPosition a b)
-
--- | Locate a point in a ring with an exact horizontal ray crossing test.
-ringLocation :: Position -> [Position] -> Location
-ringLocation point@(x, y) ring
-    | any (pointOnSegment point) edges = Boundary
-    | odd (length (filter crossesRay edges)) = Interior
-    | otherwise = Exterior
-  where
-    edges = ringSegments ring
-    crossesRay ((ax, ay), (bx, by)) = (ay > y) /= (by > y) && x < ax + (y - ay) * (bx - ax) / (by - ay)
 
 -- | Build one edge index for repeated exact location queries in a ring.
 prepareRing :: [Position] -> Position -> Location
@@ -369,18 +338,6 @@ prepareLocations shape = (classify, (== Interior) . locateSurface)
             | otherwise -> Exterior
         result -> result
 
--- | Locate a point in a polygon whose first ring is the shell.
-polygonLocation :: Position -> [[Position]] -> Location
-polygonLocation _ [] = Exterior
-polygonLocation point (shell : holes) = case ringLocation point shell of
-    Exterior -> Exterior
-    shellLocation
-        | Interior `elem` holeLocations -> Exterior
-        | Boundary `elem` holeLocations -> Boundary
-        | otherwise -> shellLocation
-  where
-    holeLocations = map (ringLocation point) holes
-
 -- | Select a nearby point without crossing any segment after the start point.
 nearPoint :: (Segment -> [Segment]) -> Position -> Position -> Position
 nearPoint query origin direction = addPosition origin (scalePosition step direction)
@@ -419,10 +376,6 @@ compareDirection a@(x, y) b@(u, v) = case compare (half x y) (half u v) of
   where
     half p q = not (q > 0 || (q == 0 && p >= 0))
 
--- | Sample each angular sector around a boundary point.
-sectorPoints :: [Segment] -> Position -> [Position]
-sectorPoints edges = sectorSamples (segmentQuery edges)
-
 -- | Sample boundary sectors using an existing edge index.
 sectorSamples :: (Segment -> [Segment]) -> Position -> [Position]
 sectorSamples query point = [nearPoint query point (addPosition a b) | (a, b) <- zip directions (drop 1 directions ++ take 1 directions)]
@@ -431,28 +384,20 @@ sectorSamples query point = [nearPoint query point (addPosition a b) | (a, b) <-
     incident = [normalize direction | edge@(a, b) <- query (point, point), pointOnSegment point edge, q <- [a, b], q /= point, let direction = subtractPosition q point]
     normalize (x, y) = let size = abs x + abs y in (x / size, y / size)
 
--- | Test the interior of the union of all polygon components.
-polygonContains :: Planar -> Position -> Bool
-polygonContains shape point
-    | Interior `elem` locations = True
-    | otherwise = case filter (== Boundary) locations of
-        -- A single valid polygon's boundary cannot lie in the union's interior.
-        _ : _ : _ -> all inComponent (sectorPoints edges point)
-        _ -> False
+-- | Return the vector from the closest point on a segment to a point.
+segmentOffset :: Position -> Segment -> Position
+segmentOffset point (a, b)
+    | a == b = offset
+    | otherwise = subtractPosition offset (scalePosition fraction direction)
   where
-    locations = map (polygonLocation point) (planarPolygons shape)
-    edges = concatMap ringSegments (concat (planarPolygons shape))
-    inComponent p = any ((== Interior) . polygonLocation p) (planarPolygons shape)
+    offset = subtractPosition point a
+    direction = subtractPosition b a
+    fraction = max 0 (min 1 (dot offset direction / squaredLength direction))
 
--- | Locate a point in the union. Line endpoints follow the mod-2 boundary rule.
-locate :: Planar -> Position -> Location
-locate shape point
-    | polygonContains shape point = Interior
-    | any ((== Boundary) . polygonLocation point) (planarPolygons shape) = Boundary
-    | onLine = if odd endpoints then Boundary else Interior
-    | point `elem` planarPoints shape = Interior
-    | otherwise = Exterior
-  where
-    lines' = planarLines shape
-    onLine = any (point `elem`) lines' || any (any (pointOnSegment point) . lineSegments) lines'
-    endpoints = length [end | line@(first : _) <- lines', end <- [first, last line], end == point]
+-- | The exact scalar product of two vectors.
+dot :: Position -> Position -> Rational
+dot (x, y) (u, v) = x * u + y * v
+
+-- | The exact squared length of a vector.
+squaredLength :: Position -> Rational
+squaredLength vector = dot vector vector

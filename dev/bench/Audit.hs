@@ -103,12 +103,12 @@ cases size = do
         measuredLine = LineString (CoordinatesXYZM measuredPoints)
         constantLine = LineString (CoordinatesXYZM (U.map (\(XYZM x y z _) -> XYZM x y z 0) measuredPoints))
         alternatingLine = LineString (CoordinatesXYZM (U.imap (\i (XYZM x y z _) -> XYZM x y z (fromIntegral (i `mod` 2))) measuredPoints))
-        circle cx cy radius =
-            let points = [XY (cx + radius * cos angle) (cy + radius * sin angle) | i <- [0 .. size - 1], let angle = 2 * pi * fromIntegral i / n]
+        circle phase cx cy radius =
+            let points = [XY (cx + radius * cos angle) (cy + radius * sin angle) | i <- [0 .. size - 1], let angle = 2 * pi * (fromIntegral i + phase) / n]
              in CoordinatesXY (U.fromList (points ++ take 1 points))
-        shell = circle 0 0 1
+        shell = circle 0 0 0 1
         polygon = Polygon (PolygonRings shell V.empty)
-        holed = Polygon (PolygonRings shell (V.singleton (circle 0 0 0.4)))
+        holed = Polygon (PolygonRings shell (V.singleton (circle 0 0 0 0.4)))
         multiPoint = MultiPoint (U.map PointXY linePoints)
         measuredMultiPoint = MultiPoint (U.map PointXYZM measuredPoints)
         manyLines = MultiLineString (V.generate (max 1 (size `div` 2)) (\i -> CoordinatesXY (U.fromList [XY (fromIntegral (3 * i)) 0, XY (fromIntegral (3 * i + 1)) 1])))
@@ -121,9 +121,15 @@ cases size = do
         nested = iterate (GeometryCollection . V.singleton) (PointGeometry samplePoint) !! size
         hole i = let x = fromIntegral (3 * i) + 1 in CoordinatesXY (U.fromList [XY x 1, XY (x + 1) 1, XY (x + 1) 2, XY x 2, XY x 1])
         manyHoles = Polygon (PolygonRings (rectangle 0 0 (3 * n + 2) 3) (V.generate (max 1 (size `div` 4)) hole))
-        overlap = Polygon (PolygonRings (circle 0.5 0 1) V.empty)
-        inside = Polygon (PolygonRings (circle 0 0 0.5) V.empty)
-        apart = Polygon (PolygonRings (circle 3 0 (-1)) V.empty)
+        overlap = Polygon (PolygonRings (circle 0 0.5 0 1) V.empty)
+        inside = Polygon (PolygonRings (circle 0 0 0 0.5) V.empty)
+        apart = Polygon (PolygonRings (circle 0 3 0 (-1)) V.empty)
+        rotated = Polygon (PolygonRings (circle 0.5 0 0 1) V.empty)
+        outerPoints = MultiPoint (U.generate size (\i -> PointXY (XY (0.75 + 0.2 * fromIntegral i / n) 0.9)))
+        comb offset = MultiLineString (V.generate size (\i -> let y = fromIntegral (2 * i) + offset in CoordinatesXY (U.fromList [XY (-1) y, XY 1 y])))
+        gridWidth = ceiling (sqrt n) :: Int
+        gridHoles = V.generate size (\i -> let x = 2 * fromIntegral (i `mod` gridWidth) - fromIntegral gridWidth; y = 2 * fromIntegral (i `div` gridWidth) - fromIntegral gridWidth in rectangle x y (x + 0.5) (y + 0.5))
+        holedCircle = Polygon (PolygonRings (circle 0 0 0 (fromIntegral gridWidth * 2)) gridHoles)
         diagonal sign = LineString (CoordinatesXY (U.generate size (\i -> let x = 4 * fromIntegral i / fromIntegral (size - 1) - 2 in XY x (sign * x))))
         box offset =
             let points = U.generate size $ \i ->
@@ -231,8 +237,16 @@ cases size = do
             , workload "measures" "locateBetween" "multipoint" (S.locateBetween (n / 3) (2 * n / 3)) measuredMultiPoint
             ]
     codecs <- mapM codecCases [("line-XY", line), ("line-XYZM", measuredLine), ("polygon-hole", holed), ("mixed-collection", flat), ("nested", nested)]
+    difficult <-
+        sequence
+            [ workload "construction" "intersection" "rotated-circle" (uncurry S.intersection) (polygon, rotated)
+            , workload "relations" "intersects" "points-polygon" (uncurry S.intersects) (outerPoints, polygon)
+            , workload "relations" "distance" "points-polygon" (uncurry S.distance) (outerPoints, polygon)
+            , workload "relations" "intersects" "interleaved-lines" (uncurry S.intersects) (comb 0, comb 1)
+            , workload "unary" "isValid" "holed-circle" S.isValid holedCircle
+            ]
     pointRelation <- workload "relations" "relate" "multipoint-equal" (uncurry S.relate) (multiPoint, multiPoint)
-    pure (accessors ++ concat properties ++ concat measurements ++ concat topology ++ rings ++ concat relations ++ [pointRelation] ++ concat overlays ++ buffers ++ measures ++ concat codecs)
+    pure (accessors ++ concat properties ++ concat measurements ++ concat topology ++ rings ++ concat relations ++ [pointRelation] ++ concat overlays ++ buffers ++ measures ++ concat codecs ++ difficult)
 
 -- | Measure codecs using encoded input prepared outside the timed section.
 codecCases :: (String, Geometry) -> IO [Workload]

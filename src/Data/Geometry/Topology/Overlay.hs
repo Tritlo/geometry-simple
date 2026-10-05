@@ -4,7 +4,9 @@ module Data.Geometry.Topology.Overlay where
 import Data.Geometry.Internal
 import Data.Geometry.Topology.Planar
 import Data.List (maximumBy, minimumBy)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
@@ -23,7 +25,7 @@ union a b = overlay (||) (max (topologicalDimension a) (topologicalDimension b))
 
 -- | The closure of the points in the first geometry but not the second.
 difference :: Geometry -> Geometry -> Geometry
-difference a b = overlay (\x y -> x && not y) (topologicalDimension a) a b
+difference a = overlay (\x y -> x && not y) (topologicalDimension a) a
 
 -- | The closure of the points in exactly one geometry.
 symmetricDifference :: Geometry -> Geometry -> Geometry
@@ -42,9 +44,9 @@ overlay select emptyDimension first second
     singleComponent shape = length (componentPoints shape) <= 1
     firstEmpty = geometryEmpty first
     secondEmpty = geometryEmpty second
-    earlyEmpty = (firstEmpty && not (select False True)) || (secondEmpty && not (select True False)) || (firstEmpty && secondEmpty) || (separate && not (select True False) && not (select False True))
     a = planar first
     b = planar second
+    earlyEmpty = (firstEmpty && not (select False True)) || (secondEmpty && not (select True False)) || (firstEmpty && secondEmpty) || (separate && not (select True False) && not (select False True))
     edges = nodeSegments (segments a ++ segments b) (vertices a ++ vertices b)
     queryEdges = segmentQuery edges
     (locateA, insideA) = prepareLocations a
@@ -106,20 +108,33 @@ splitRing = walk Set.empty []
 ringArea :: [Position] -> Rational
 ringArea = sum . map (uncurry cross) . ringSegments
 
--- | Group each clockwise hole with its smallest containing shell.
+-- | Find a simple ring's orientation at its lexicographically smallest vertex.
+ringOrientation :: [Position] -> Ordering
+ringOrientation ring = case ringSegments ring of
+    [] -> EQ
+    edges ->
+        let (before, at) = minimumBy (comparing snd) edges
+         in case [after | (start, after) <- edges, start == at] of
+                after : _ -> orientation before at after
+                [] -> EQ
+
+-- | Group each clockwise hole with its innermost containing shell.
 polygonize :: [Segment] -> [[[Position]]]
-polygonize edges = [shell : Map.findWithDefault [] shell groupedHoles | shell <- shells]
+polygonize edges = [shell : Map.findWithDefault [] shell groupedHoles | (shell, _) <- shells]
   where
-    rings = boundaryRings edges
-    shells = filter ((> 0) . ringArea) rings
-    holes = filter ((< 0) . ringArea) rings
+    rings = [(ringOrientation ring, ring) | ring <- boundaryRings edges]
+    shells = [(ring, prepareRing ring) | (GT, ring) <- rings]
+    holes = [ring | (LT, ring) <- rings]
     groupedHoles = Map.fromListWith (++) [(containingShell hole, [hole]) | hole <- holes]
     containingShell hole = case ringSegments hole of
         [] -> []
-        edge : _ -> case filter ((== Interior) . ringLocation (midpoint edge)) shells of
+        edge : _ -> case filter (\(_, locate) -> locate (midpoint edge) == Interior) shells of
             -- Every hole bounds a finite selected region inside an exterior ring.
             [] -> error "Uncontained hole in planar overlay"
-            candidates -> minimumBy (comparing (abs . ringArea)) candidates
+            first : rest -> fst (List.foldl' innermost first rest)
+    innermost current@(_, locate) candidate@(ring, _) = case ringSegments ring of
+        edge : _ | locate (midpoint edge) == Interior -> candidate
+        _ -> current
 
 -- | Join edges through degree-two vertices. Stop at endpoints and branches.
 linePaths :: [Segment] -> [[Position]]
@@ -131,7 +146,7 @@ linePaths edges = collect (neighbors, starts)
     collect remaining@(graph, ends) = case Map.lookupMin graph of
         Nothing -> []
         Just (first, _) ->
-            let start = maybe first id (Set.lookupMin ends)
+            let start = fromMaybe first (Set.lookupMin ends)
                 (path, rest) = walk start start [] remaining
              in path : collect rest
     walk start current accumulated remaining@(graph, _) = case Set.lookupMin adjacent of
@@ -167,7 +182,8 @@ assemble emptyDimension polygons lines' points = case parts of
         [rings] -> [Polygon rings]
         values -> [MultiPolygon (V.fromList values)]
     coordinates = CoordinatesXY . U.fromList . map (\(x, y) -> XY (fromRational x) (fromRational y))
-    oriented direction ring = if compare (ringArea ring) 0 == direction then ring else reverse ring
+    oriented direction ring = if ringOrientation ring == direction then ring else reverse ring
+
     atomic geometry = case geometry of
         MultiPoint values -> map PointGeometry (U.toList values)
         MultiLineString values -> map LineString (V.toList values)

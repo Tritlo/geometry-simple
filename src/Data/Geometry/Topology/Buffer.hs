@@ -15,7 +15,8 @@ import qualified Data.Vector as V
 {- | Buffer by a distance in coordinate units, with eight segments per quadrant.
 Positive distances expand geometry. Negative distances erode polygons and give
 empty polygons for points and lines. All results use XY coordinates.
-A zero distance returns polygon components and repairs their topology.
+A zero distance extracts polygonal regions. Invalid input can lose regions,
+such as one lobe of a self-crossing bowtie. It is not a general validity repair.
 The distance and XY coordinates must be finite.
 -}
 buffer :: Double -> Geometry -> Geometry
@@ -35,7 +36,7 @@ bufferWithSegments quadrants radius geometry = assemble SurfaceDimension (polygo
     rings = (if radius > 0 then concatMap (lineBuffer count width) (planarLines source) else []) ++ [circle count width (toDouble p) | radius > 0, p <- planarPoints source]
     bands = Planar [] [] [[map toExact ring] | ring <- rings]
     offsetRings = concatMap (offsetPolygon count radius) (planarPolygons source)
-    edges = nodeSegments ((if radius /= 0 then concatMap ringSegments offsetRings else segments surfaces) ++ (if radius == 0 then [] else segments bands)) []
+    edges = nodeSegments ((if radius /= 0 then concatMap ringSegments offsetRings else segments surfaces) ++ segments bands) []
     queryEdges = segmentQuery edges
     depths = map prepareDepth (planarPolygons source)
     offsetWinding = prepareWinding (concatMap ringSegments (offsetRings ++ map (map toExact) rings))
@@ -50,7 +51,7 @@ bufferWithSegments quadrants radius geometry = assemble SurfaceDimension (polygo
         , leftInside /= selected right
         ]
 
--- | Prepare ring winding and orientation for zero-buffer repair queries.
+-- | Prepare ring winding and orientation for zero-buffer queries.
 prepareDepth :: [[Position]] -> Position -> Int
 prepareDepth [] = const 0
 prepareDepth (shell : holes) = \point -> shellDepth point - sum (map ($ point) holeDepths)
@@ -92,19 +93,7 @@ offsetPolygon count distance (shell : holes)
       where
         query = segmentQuery (ringSegments ring)
         reach = toRational (0.99 * radius)
-        farEnough point@(x, y) = all ((> reach ^ (2 :: Int)) . segmentDistanceSquared point) (query ((x - reach, y - reach), (x + reach, y + reach)))
-
--- | The squared exact distance from a point to a segment.
-segmentDistanceSquared :: Position -> Segment -> Rational
-segmentDistanceSquared point (a, b)
-    | a == b = dot offset offset
-    | otherwise = dot residual residual
-  where
-    delta = subtractPosition b a
-    offset = subtractPosition point a
-    t = max 0 (min 1 (dot offset delta / dot delta delta))
-    residual = subtractPosition offset (scalePosition t delta)
-    dot (x, y) (u, v) = x * u + y * v
+        farEnough point@(x, y) = all ((> reach ^ (2 :: Int)) . squaredLength . segmentOffset point) (query ((x - reach, y - reach), (x + reach, y + reach)))
 
 -- | Build a connected left offset curve before resolving its self-intersections.
 offsetRing :: Int -> Double -> Bool -> [FloatingPosition] -> [FloatingPosition]
@@ -180,7 +169,7 @@ simplify direction tolerance points = map (input V.!) (repeatPass [0 .. V.length
     input = V.fromList points
     exact index = toExact (input V.! index)
     threshold = toRational tolerance ^ (2 :: Int)
-    shallow middle first final = segmentDistanceSquared (exact middle) (exact first, exact final) < threshold
+    shallow middle first final = squaredLength (segmentOffset (exact middle) (exact first, exact final)) < threshold
     deletable a b c = orientation (exact a) (exact b) (exact c) == direction && shallow b a c && all (shallow b a) [a, a + max 1 ((c - a) `div` 10) .. c - 1]
     pass (first : rest) = first : scan rest
     pass [] = []
