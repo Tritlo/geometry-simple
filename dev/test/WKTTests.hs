@@ -61,6 +61,10 @@ tests =
             let members = 50000
                 input = "GEOMETRYCOLLECTION (" <> Text.intercalate ", " (replicate members "MULTIPOINT (1 2)") <> ")"
             fmap memberCount (decodeWKT input) @?= Right members
+        , localOption (mkTimeout 4000000) $ testCase "deeply nested collections parse in linear time" $ do
+            let depth = 1000000
+                input = Text.replicate depth "GEOMETRYCOLLECTION (" <> "POINT (1 2)" <> Text.replicate depth ")"
+            fmap nestingDepth (decodeWKT input) @?= Right depth
         , testCase "numeric components retain their order in ZM" $ do
             shape <- rightOrFail (decodeWKT "POINT ZM (-0 5e-324 -5e-324 1.7976931348623157e308)")
             case shape of
@@ -347,3 +351,10 @@ nestGeometry count geometry = GeometryCollection (V.singleton (nestGeometry (cou
 memberCount :: Geometry -> Int
 memberCount (GeometryCollection members) = V.length members
 memberCount _ = -1
+
+-- | Count the collection levels above the first non-collection member.
+nestingDepth :: Geometry -> Int
+nestingDepth = go 0
+  where
+    go depth (GeometryCollection members) | not (V.null members) = go (depth + 1) (V.head members)
+    go depth _ = depth

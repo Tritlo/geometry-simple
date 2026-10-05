@@ -29,9 +29,10 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Vector as V
 import qualified Data.Vector.Generic as G
-import qualified Data.Vector.Generic.Mutable as M
 import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Unboxed.Mutable as UM
 import GHC.Float (castWord64ToDouble)
 
 -- | The remaining text and a controlled parse error.
@@ -145,18 +146,18 @@ geometryParser = do
     (family, declared) <- header
     case family of
         CollectionFamily -> do
-            members <- vector geometryParser
+            (members, ()) <- boxedSequence () (stateless geometryParser)
             case declared of
-                Just dimensions -> unless (G.all ((== Uniform dimensions) . snd) members) (failure "has mixed coordinate dimensions")
+                Just dimensions -> unless (V.all ((== Uniform dimensions) . snd) members) (failure "has mixed coordinate dimensions")
                 Nothing -> pure ()
-            let layout = if G.null members then Uniform (fromMaybe DimXY declared) else G.foldl' (\acc (_, child) -> combineLayout acc child) Inherited members
-            pure (GeometryCollection (G.map fst members), layout)
+            let layout = if V.null members then Uniform (fromMaybe DimXY declared) else V.foldl' (\acc (_, child) -> combineLayout acc child) Inherited members
+            pure (GeometryCollection (V.map fst members), layout)
         PointFamily -> known PointGeometry (point True declared)
         LineFamily -> known LineString (line declared)
         PolygonFamily -> known Polygon (polygon declared)
         MultiPointFamily -> known MultiPoint (multiPoint declared)
-        MultiLineFamily -> known MultiLineString (vectorState declared line)
-        MultiPolygonFamily -> known MultiPolygon (vectorState declared polygon)
+        MultiLineFamily -> known MultiLineString (boxedSequence declared line)
+        MultiPolygonFamily -> known MultiPolygon (boxedSequence declared polygon)
   where
     known wrap parser = do
         (value, dimensions) <- parser
@@ -220,20 +221,20 @@ coordinates current = do
         else do
             dimensions <- maybe (lookAheadParser (symbol '(' *> spaces *> inferDimensions)) pure current
             values <- case dimensions of
-                DimXY -> CoordinatesXY <$> vector coordinate
-                DimXYZ -> CoordinatesXYZ <$> vector coordinate
-                DimXYM -> CoordinatesXYM <$> vector coordinate
-                DimXYZM -> CoordinatesXYZM <$> vector coordinate
+                DimXY -> CoordinatesXY . fst <$> unboxedSequence () (stateless coordinate)
+                DimXYZ -> CoordinatesXYZ . fst <$> unboxedSequence () (stateless coordinate)
+                DimXYM -> CoordinatesXYM . fst <$> unboxedSequence () (stateless coordinate)
+                DimXYZM -> CoordinatesXYZM . fst <$> unboxedSequence () (stateless coordinate)
             pure (values, Just dimensions)
 
 -- | Preserve empty rings and their layouts when reading a polygon.
 polygon :: Maybe Dimensions -> Parser (PolygonRings, Maybe Dimensions)
 polygon current = do
-    (rings, dimensions) <- vectorState current coordinates
+    (rings, dimensions) <- boxedSequence current coordinates
     let values =
-            if G.null rings
-                then PolygonRings (emptyCoordinates (fromMaybe DimXY current)) G.empty
-                else PolygonRings (G.head rings) (G.tail rings)
+            if V.null rings
+                then PolygonRings (emptyCoordinates (fromMaybe DimXY current)) V.empty
+                else PolygonRings (V.head rings) (V.tail rings)
     lift (validatePolygon values)
     pure (values, dimensions)
 
@@ -245,35 +246,58 @@ multiPoint current = do
     -- Inspect only the first token. Uppercasing the rest of the input would be quadratic.
     let first = Text.dropWhile whitespace (Text.drop 1 input)
         parenthesized = Text.isPrefixOf "(" first || Text.toUpper (Text.takeWhile letter first) == "EMPTY"
-    vectorState current (point parenthesized)
+    unboxedSequence current (point parenthesized)
 
--- | Read a vector whose elements do not share inference state.
-vector :: (G.Vector v a) => Parser a -> Parser (v a)
-vector element = fst <$> vectorState () (\() -> do value <- element; pure (value, ()))
-
--- | Build a vector while carrying the inferred layout between its elements.
-vectorState :: (G.Vector v a) => s -> (s -> Parser (a, s)) -> Parser (v a, s)
-vectorState initialState element = do
+{- | Read EMPTY or a parenthesized sequence into a boxed vector. Carry the
+inferred layout from each element to the next. A list keeps deep nesting
+linear: boxed mutable buffers for every open level would be rescanned by
+each garbage collection.
+-}
+boxedSequence :: s -> (s -> Parser (a, s)) -> Parser (V.Vector a, s)
+boxedSequence initialState element = do
     empty <- emptyKeyword
     if empty
-        then pure (G.empty, initialState)
+        then pure (V.empty, initialState)
+        else symbol '(' >> go 1 [] initialState
+  where
+    go !count values current = do
+        (value, next) <- element current
+        finished <- delimiter
+        let values' = value `seq` value : values
+        if finished then pure (V.fromListN count (reverse values'), next) else go (count + 1) values' next
+
+{- | Read EMPTY or a parenthesized sequence into an unboxed vector. Write the
+elements into a growable buffer, which avoids an intermediate list for long
+coordinate sequences.
+-}
+unboxedSequence :: (U.Unbox a) => s -> (s -> Parser (a, s)) -> Parser (U.Vector a, s)
+unboxedSequence initialState element = do
+    empty <- emptyKeyword
+    if empty
+        then pure (U.empty, initialState)
         else do
             symbol '('
             StateT $ \input -> runST $ do
-                initial <- M.new 16
+                initial <- UM.new 16
                 let go !count buffer current remaining = case runStateT (element current) remaining of
                         Left message -> pure (Left message)
                         Right ((value, next), afterElement) -> case runStateT delimiter afterElement of
                             Left message -> pure (Left message)
                             Right (finished, rest) -> do
-                                target <- if count == M.length buffer then M.grow buffer (M.length buffer) else pure buffer
-                                M.write target count value
+                                target <- if count == UM.length buffer then UM.grow buffer (UM.length buffer) else pure buffer
+                                UM.write target count value
                                 if finished
                                     then do
-                                        result <- G.freeze (M.slice 0 (count + 1) target)
+                                        result <- U.freeze (UM.slice 0 (count + 1) target)
                                         pure (Right ((result, next), rest))
                                     else go (count + 1) target next rest
                 go 0 initial initialState input
+
+-- | Read elements that do not share layout state.
+stateless :: Parser a -> () -> Parser (a, ())
+stateless element () = do
+    value <- element
+    pure (value, ())
 
 -- | Consume a comma or a closing parenthesis.
 delimiter :: Parser Bool
@@ -401,12 +425,12 @@ geometryWKT geometry =
         PointGeometry value -> ("POINT", Uniform sourceDimensions, (`pointWKT` value))
         LineString points -> ("LINESTRING", Uniform sourceDimensions, (`coordinatesWKT` points))
         Polygon rings -> ("POLYGON", Uniform sourceDimensions, (`polygonWKT` rings))
-        MultiPoint points -> ("MULTIPOINT", if G.null points then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (pointWKT d) points)
-        MultiLineString lineStrings -> ("MULTILINESTRING", if G.null lineStrings then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (coordinatesWKT d) lineStrings)
-        MultiPolygon polygons -> ("MULTIPOLYGON", if G.null polygons then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (polygonWKT d) polygons)
+        MultiPoint points -> ("MULTIPOINT", if U.null points then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (pointWKT d) points)
+        MultiLineString lineStrings -> ("MULTILINESTRING", if V.null lineStrings then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (coordinatesWKT d) lineStrings)
+        MultiPolygon polygons -> ("MULTIPOLYGON", if V.null polygons then Inherited else Uniform sourceDimensions, \d -> sequenceWKT (polygonWKT d) polygons)
         GeometryCollection members ->
-            let children = G.map geometryWKT members
-                common = G.foldl' (\acc (childLayout, _) -> combineLayout acc childLayout) Inherited children
+            let children = V.map geometryWKT members
+                common = V.foldl' (\acc (childLayout, _) -> combineLayout acc childLayout) Inherited children
              in ("GEOMETRYCOLLECTION", common, \d -> sequenceWKT (\(_, render) -> render d) children)
 
 -- | Empty points have no ordinates in WKT. Nonempty points use the writer's layout.
@@ -417,7 +441,7 @@ pointWKT dimensions = fromMaybe "EMPTY" . withPoint (\value -> "(" <> coordinate
 polygonWKT :: Dimensions -> PolygonRings -> Builder
 polygonWKT dimensions (PolygonRings shell holes)
     | coordinatesEmpty shell = "EMPTY"
-    | otherwise = "(" <> coordinatesWKT dimensions shell <> G.foldMap (\ring -> ", " <> coordinatesWKT dimensions ring) holes <> ")"
+    | otherwise = "(" <> coordinatesWKT dimensions shell <> V.foldMap (\ring -> ", " <> coordinatesWKT dimensions ring) holes <> ")"
 
 -- | Render a sequence in the dimensions selected by its containing geometry.
 coordinatesWKT :: Dimensions -> Coordinates -> Builder
