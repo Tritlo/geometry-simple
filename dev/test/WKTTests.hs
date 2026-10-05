@@ -4,7 +4,7 @@
 module WKTTests (tests) where
 
 import Control.Monad (forM_)
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.Geometry
 import Data.Geometry.WKT (decodeWKT, encodeWKT)
 import Data.Text (Text)
@@ -131,6 +131,15 @@ tests =
         , testCase "wide collections parse" $ do
             let input = "GEOMETRYCOLLECTION (" <> Text.intercalate "," (replicate 1024 "POINT EMPTY") <> ")"
             decodeWKT input @?= Right (GeometryCollection (V.replicate 1024 (PointGeometry (EmptyPoint DimXY))))
+        , testCase "alternating collection tags reuse parsed child layouts" $ do
+            let depth = 16384
+                input = Text.concat [if even i then "GEOMETRYCOLLECTION Z (" else "GEOMETRYCOLLECTION (" | i <- [1 .. depth]] <> "POINT Z (0 0 0)" <> Text.replicate depth ")"
+            assertBool "parsed alternating tags" (isRight (decodeWKT input))
+        , testCase "construction errors retain their cause" $
+            forM_ [("MULTILINESTRING ((0 0,1 1),(2 2))", "at least two coordinates"), ("POLYGON ((0 0,1 0,1 1,0 1))", "ring is not closed"), ("POINT (0 0) trailing", "trailing input")] $ \(input, message) ->
+                case decodeWKT input of
+                    Left failure -> assertBool failure (Text.isInfixOf message (Text.pack failure))
+                    Right _ -> assertFailure "expected a parse error"
         ]
 
 -- | Fixtures explicitly construct each coordinate layout.
