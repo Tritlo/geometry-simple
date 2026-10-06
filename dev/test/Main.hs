@@ -3,7 +3,7 @@
 -- | Check ISO WKB against independent fixtures and bounded geometry trees.
 module Main (main) where
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
@@ -344,7 +344,7 @@ finiteWords = [0, 0x8000000000000000, 1, 0x8000000000000001, 0x000fffffffffffff,
 
 -- | Require a controlled parse failure.
 assertRejected :: String -> ByteString -> Assertion
-assertRejected label bytes = forM_ [() <$ decodeWKB bytes, validateWKB bytes] $ \result -> case result of
+assertRejected label bytes = forM_ [void (decodeWKB bytes), validateWKB bytes] $ \result -> case result of
     Left message -> assertBool (label ++ ": " ++ message) ("Geometry WKB " `isPrefixOf` message)
     Right () -> assertFailure (label ++ " accepted malformed WKB")
 
