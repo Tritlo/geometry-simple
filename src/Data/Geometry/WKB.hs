@@ -42,6 +42,8 @@ decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes))) byte
 {- | Check one complete ISO WKB geometry without constructing geometry values
 or coordinate buffers. Apply the same construction and format checks as
 'decodeWKB'. Non-finite ordinates are accepted; polygon topology is not checked.
+
+@since 0.1.1.0
 -}
 validateWKB :: ByteString -> Either String ()
 validateWKB bytes = runDecoder (skipGeometry (fromIntegral (BS.length bytes))) bytes
