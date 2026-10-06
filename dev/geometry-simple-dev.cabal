@@ -42,7 +42,7 @@ test-suite geometry-simple-test
   build-depends:
     base >=4.18 && <5,
     bytestring >=0.11.2 && <0.13,
-    geometry-simple ==0.1.0.0,
+    geometry-simple ==0.1.1.0,
     QuickCheck >=2.14 && <2.20,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.12,
@@ -61,7 +61,7 @@ benchmark geometry-simple-bench
     base >=4.18 && <5,
     bytestring >=0.11.2 && <0.13,
     deepseq >=1.4.8 && <1.6,
-    geometry-simple ==0.1.0.0,
+    geometry-simple ==0.1.1.0,
     text >=2.0 && <2.2,
     vector >=0.13 && <0.14,
 
@@ -72,6 +72,6 @@ executable geometry-simple-shapely-probe
   build-depends:
     base >=4.18 && <5,
     bytestring >=0.11.2 && <0.13,
-    geometry-simple ==0.1.0.0,
+    geometry-simple ==0.1.1.0,
     text >=2.0 && <2.2,
     vector >=0.13 && <0.14,

@@ -8,7 +8,7 @@ import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (digitToInt)
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.Geometry
 import Data.Geometry.Internal (emptyCoordinates, pointFromComponents)
 import qualified Data.Geometry.SimpleFeatures as S
@@ -58,6 +58,7 @@ tests =
             "families, layouts, and byte orders"
             [ testCase label $ do
                 decodeWKB bytes @?= Right expected
+                validateWKB bytes @?= Right ()
                 encodeWKB expected @?= Right canonical
                 encodeWKT expected @?= Right text
                 WKT.decodeWKT text @?= Right expected
@@ -93,6 +94,7 @@ tests =
                         canonicalMulti = children True 3004 ([emptyWKB True d 1 | d <- [0, 1000, 2000, 3000]] ++ [point True offset values])
                         canonical = children True 3007 [canonicalMulti, point True offset values]
                     (decodeWKB bytes >>= encodeWKB) @?= Right canonical
+                    validateWKB bytes @?= Right ()
                     forM_ [0 .. BS.length multi - 1] $ \size -> assertRejected "truncated mixed-width child" (BS.take size multi)
                     forM_ [0, 4, 6, maxBound] $ \wrongCount ->
                         assertRejected "count crosses a sibling boundary" $
@@ -157,6 +159,7 @@ tests =
             forM_ [127, 128, 1024] $ \depth -> forM_ [PointGeometry (PointXY (XY 1 2)), MultiPoint U.empty, MultiPoint (U.singleton (PointXY (XY 1 2)))] $ \leaf -> do
                 let shape = foldr (\_ child -> GeometryCollection (V.singleton child)) leaf [1 .. depth :: Int]
                 (encodeWKB shape >>= decodeWKB) @?= Right shape
+                (encodeWKB shape >>= validateWKB) @?= Right ()
                 (encodeWKT shape >>= WKT.decodeWKT) @?= Right shape
         , testCase "wide empty collections round-trip" $ do
             let shape = GeometryCollection (V.replicate 4096 (GeometryCollection V.empty))
@@ -168,6 +171,25 @@ tests =
             bytes <- rightOrFail (encodeWKB leaf)
             encodeWKB shape @?= Right (BS.concat (replicate 1024 header) <> bytes)
             (encodeWKB shape >>= decodeWKB) @?= Right shape
+        , testProperty "WKB validation agrees after byte mutations" $
+            forAll (geometryGen Nothing 3) $ \shape -> case encodeWKB shape of
+                Left message -> counterexample message False
+                Right bytes -> forAll (chooseInt (0, BS.length bytes - 1)) $ \offset -> forAll arbitrary $ \byte ->
+                    let mutated = BS.take offset bytes <> BS.singleton byte <> BS.drop (offset + 1) bytes
+                     in isRight (validateWKB mutated) === isRight (decodeWKB mutated)
+        , testCase "ring validation uses XY closure in either byte order" $
+            forM_ [False, True] $ \little -> forM_ [0, 1000, 2000, 3000] $ \offset -> do
+                let dimensions = case offset of 0 -> 2; 3000 -> 4; _ -> 3
+                    coord x y = [x, y] ++ replicate (dimensions - 2) (0 / 0)
+                    ring values = count little (fromIntegral (length values)) <> coordinates little (concat values)
+                    polygon rings = wkb little (offset + 3) (count little (fromIntegral (length rings)) <> BS.concat (map ring rings))
+                    closed = [coord 0 0, coord 1 1, coord (-0.0) 0]
+                forM_ [[], [[]], [closed], [closed, []], [[coord (1 / 0) 0, coord 1 1, coord (1 / 0) 0]]] $ \rings -> do
+                    let bytes = polygon rings
+                    validateWKB bytes @?= Right ()
+                    assertBool "decoder rejected valid rings" (isRight (decodeWKB bytes))
+                forM_ [[take 2 closed], [[coord 0 0, coord 1 1, coord 2 2]], [[coord (0 / 0) 0, coord 1 1, coord (0 / 0) 0]], [[], closed]] $ \rings ->
+                    assertRejected "invalid polygon ring" (polygon rings)
         , testProperty "mixed-layout WKB round trips" $ roundTripProperty Nothing False
         , testProperty "XY WKT round trips" $ roundTripProperty (Just DimXY) True
         , testProperty "mixed-layout WKT stabilizes after format promotion" $
@@ -235,7 +257,7 @@ roundTripProperty layout useText = forAll (geometryGen layout 3) $ \shape ->
         Left message -> counterexample message False
         Right bytes ->
             let decoded = if useText then encodeWKT shape >>= WKT.decodeWKT else decodeWKB bytes
-             in conjoin [decoded === Right shape, (decoded >>= encodeWKB) === Right bytes]
+             in conjoin [decoded === Right shape, (decoded >>= encodeWKB) === Right bytes, validateWKB bytes === Right ()]
 
 -- | Compare literal ISO WKB bytes with explicit geometry values.
 fixedTests :: [TestTree]
@@ -322,9 +344,9 @@ finiteWords = [0, 0x8000000000000000, 1, 0x8000000000000001, 0x000fffffffffffff,
 
 -- | Require a controlled parse failure.
 assertRejected :: String -> ByteString -> Assertion
-assertRejected label bytes = case decodeWKB bytes of
+assertRejected label bytes = forM_ [() <$ decodeWKB bytes, validateWKB bytes] $ \result -> case result of
     Left message -> assertBool (label ++ ": " ++ message) ("Geometry WKB " `isPrefixOf` message)
-    Right shape -> assertFailure (label ++ " accepted: " ++ show shape)
+    Right () -> assertFailure (label ++ " accepted malformed WKB")
 
 -- | Require a validation error without relying on its wording.
 assertLeft :: Either String a -> Assertion

@@ -130,7 +130,9 @@ or inferred coordinate layouts, lowercase keywords, and scientific notation.
 It accepts DuckDB's bare MULTIPOINT coordinates mixed with `EMPTY`. Nonempty
 members must consistently use or omit parentheses. The writer keeps its
 parenthesized MULTIPOINT form.
-All four codec functions return `Either String` and reject invalid construction.
+The codec functions return `Either String` and reject invalid construction.
+`validateWKB` checks the same WKB rules as `decodeWKB` without constructing
+geometry values or coordinate buffers. Use it when you need to check raw bytes.
 The decoders also reject trailing input.
 
 Finite ordinates retain their exact bits through WKB and through text produced

@@ -1,9 +1,13 @@
-# Unreleased
+# 0.1.1.0
 
 - Accept bare MULTIPOINT coordinates mixed with `EMPTY`, including DuckDB's
   `ST_AsText` output. Previously this syntax failed to parse. Nonempty members
   must still use one spelling throughout. The writer keeps its parenthesized
   form, and layout inference is unchanged.
+- Add `validateWKB` to check complete ISO WKB without constructing geometry
+  values or coordinate buffers. It checks the same counts, types, line lengths,
+  and polygon rules as `decodeWKB`. Previously callers had to decode and discard
+  geometry values to perform these checks.
 - Correct the DuckDB interoperability notes. DuckDB can store mixed-layout WKB
   with `ST_GeomFromWKB` and return it with `ST_AsWKB`; its WKT reader and writer
   require a common layout.

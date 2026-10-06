@@ -8,9 +8,9 @@ different byte orders and layouts. The codecs check
 line lengths, ring closure, counts, and type codes. They accept non-finite
 ordinates and do not validate polygon topology. EWKB and SRIDs are not supported.
 -}
-module Data.Geometry.WKB (decodeWKB, encodeWKB) where
+module Data.Geometry.WKB (decodeWKB, validateWKB, encodeWKB) where
 
-import Control.Monad (unless, when)
+import Control.Monad (replicateM_, unless, void, when)
 import Control.Monad.ST (runST)
 import Data.Binary.Get (Get, bytesRead, getByteString, getDoublebe, getDoublele, getWord32be, getWord32le, getWord8, lookAhead, runGetOrFail, skip)
 import Data.Bits (shiftL, (.|.))
@@ -38,6 +38,13 @@ Return 'Left' for malformed WKB, invalid construction, or trailing bytes.
 -}
 decodeWKB :: ByteString -> Either String Geometry
 decodeWKB bytes = runDecoder (getGeometry (fromIntegral (BS.length bytes))) bytes
+
+{- | Check one complete ISO WKB geometry without constructing geometry values
+or coordinate buffers. Apply the same construction and format checks as
+'decodeWKB'. Non-finite ordinates are accepted; polygon topology is not checked.
+-}
+validateWKB :: ByteString -> Either String ()
+validateWKB bytes = runDecoder (skipGeometry (fromIntegral (BS.length bytes))) bytes
 
 {- | Encode little-endian ISO WKB. Child headers retain their layouts.
 Polygon rings use their combined layout, with NaN for absent Z or M ordinates.
@@ -94,7 +101,7 @@ getGeometry total = do
         1 -> PointGeometry <$> getPoint little dimensions
         2 -> LineString <$> getCoordinates total little dimensions
         3 -> Polygon <$> getPolygon total little dimensions
-        4 -> MultiPoint <$> getMultiPoints total little
+        4 -> MultiPoint <$> getMultiPoints True total little
         5 -> do
             count <- getCount total little 9
             MultiLineString <$> V.replicateM count (getChild 2 (getCoordinates total))
@@ -104,6 +111,30 @@ getGeometry total = do
         _ -> do
             count <- getCount total little 9
             GeometryCollection <$> V.replicateM count (do child <- getGeometry total; pure $! child)
+
+-- | Traverse checked geometry payloads without retaining decoded coordinates.
+skipGeometry :: Int64 -> Get ()
+skipGeometry total = do
+    (little, dimensions, family) <- getHeader
+    case family of
+        1 -> skip (8 * dimensionCount dimensions)
+        2 -> void (getCoordinateBytes total little dimensions)
+        3 -> skipPolygon total little dimensions
+        4 -> void (getMultiPoints False total little)
+        5 -> getCount total little 9 >>= \count -> replicateM_ count (getChild 2 (\order layout -> void (getCoordinateBytes total order layout)))
+        6 -> getCount total little 9 >>= \count -> replicateM_ count (getChild 3 (skipPolygon total))
+        _ -> getCount total little 9 >>= \count -> replicateM_ count (skipGeometry total)
+
+-- | Check polygon rings and the empty-shell rule without retaining ring buffers.
+skipPolygon :: Int64 -> Bool -> Dimensions -> Get ()
+skipPolygon total little dimensions = do
+    count <- getCount total little 4
+    when (count > 0) $ do
+        shell <- getRing total little dimensions
+        replicateM_ (count - 1) $ do
+            hole <- getRing total little dimensions
+            when (BS.null shell && not (BS.null hole)) $
+                fail "Geometry polygon has an empty shell and nonempty holes"
 
 -- | Check a multi-geometry child header before reading its typed body.
 getChild :: Word32 -> (Bool -> Dimensions -> Get a) -> Get a
@@ -124,6 +155,19 @@ getPolygon total little dimensions = do
     either fail pure (validatePolygon rings)
     pure rings
 
+-- | Read a ring's checked bytes and verify its length and XY closure.
+getRing :: Int64 -> Bool -> Dimensions -> Get ByteString
+getRing total little dimensions = do
+    bytes <- getCoordinateBytes total little dimensions
+    let stride = 8 * dimensionCount dimensions
+        count = BS.length bytes `div` stride
+    when (count > 0) $ do
+        when (count < 3) (fail "Geometry ring must have zero or at least three coordinates")
+        let (x, y, _, _) = componentsAt dimensions little bytes 0
+            (lastX, lastY, _, _) = componentsAt dimensions little bytes ((count - 1) * stride)
+        unless (x == lastX && y == lastY) (fail "Geometry ring is not closed")
+    pure bytes
+
 -- | Read point ordinates before applying WKB's XY-NaN empty convention.
 getPoint :: Bool -> Dimensions -> Get Point
 getPoint little dimensions = do
@@ -139,39 +183,46 @@ getPoint little dimensions = do
 
 -- | Read one checked coordinate block into its typed unboxed buffer.
 getCoordinates :: Int64 -> Bool -> Dimensions -> Get Coordinates
-getCoordinates total little dimensions = do
+getCoordinates total little dimensions = coordinatesFromBytes little dimensions <$> getCoordinateBytes total little dimensions
+
+-- | Check a line's count and return its complete coordinate block.
+getCoordinateBytes :: Int64 -> Bool -> Dimensions -> Get ByteString
+getCoordinateBytes total little dimensions = do
     let stride = 8 * dimensionCount dimensions
     count <- getCount total little (fromIntegral stride)
     when (count == 1) (fail "Geometry line must have zero or at least two coordinates")
-    if count == 0
-        then pure (emptyCoordinates dimensions)
-        else do
-            bytes <- getByteString (count * stride)
-            let values :: (Coordinate c) => U.Vector c
-                values = U.generate count (\i -> coordinateAt little bytes (i * stride))
-            pure $ case dimensions of
-                DimXY -> CoordinatesXY values
-                DimXYZ -> CoordinatesXYZ values
-                DimXYM -> CoordinatesXYM values
-                DimXYZM -> CoordinatesXYZM values
+    getByteString (count * stride)
+
+-- | Materialize a checked coordinate block in its declared layout.
+coordinatesFromBytes :: Bool -> Dimensions -> ByteString -> Coordinates
+coordinatesFromBytes little dimensions bytes = case dimensions of
+    DimXY -> CoordinatesXY values
+    DimXYZ -> CoordinatesXYZ values
+    DimXYM -> CoordinatesXYM values
+    DimXYZM -> CoordinatesXYZM values
+  where
+    stride = 8 * dimensionCount dimensions
+    count = BS.length bytes `div` stride
+    values :: (Coordinate c) => U.Vector c
+    values = U.generate count (\i -> coordinateAt little bytes (i * stride))
 
 -- | Read point children without a separate Get action for each child.
-getMultiPoints :: Int64 -> Bool -> Get (U.Vector Point)
-getMultiPoints total little = do
+getMultiPoints :: Bool -> Int64 -> Bool -> Get (U.Vector Point)
+getMultiPoints materialize total little = do
     count <- getCount total little 21
     if count == 0
         then pure U.empty
         else do
             consumed <- bytesRead
             bytes <- lookAhead (getByteString (fromIntegral (total - consumed)))
-            (points, size) <- either fail pure (multiPointsAt count bytes)
+            (points, size) <- either fail pure (multiPointsAt materialize count bytes)
             skip size
             pure points
 
--- | Read checked variable-width point records into one unboxed vector.
-multiPointsAt :: Int -> ByteString -> Either String (U.Vector Point, Int)
-multiPointsAt count bytes = runST $ do
-    target <- UM.new count
+-- | Check variable-width point records and optionally retain their coordinates.
+multiPointsAt :: Bool -> Int -> ByteString -> Either String (U.Vector Point, Int)
+multiPointsAt materialize count bytes = runST $ do
+    target <- UM.new (if materialize then count else 0)
     let go index offset
             | index == count = do
                 points <- U.unsafeFreeze target
@@ -185,7 +236,7 @@ multiPointsAt count bytes = runST $ do
             | dimensionTag > 3 || family < 1 || family > 7 = pure (Left "Geometry WKB has an unsupported type")
             | family /= 1 = pure (Left "Geometry WKB multi child has the wrong family")
             | stride > BS.length bytes - offset = pure (Left "Geometry WKB point exceeds the remaining bytes")
-            | otherwise = UM.write target index value >> go (index + 1) (offset + stride)
+            | otherwise = when materialize (UM.write target index value) >> go (index + 1) (offset + stride)
           where
             (dimensionTag, family) = word32At little bytes (offset + 1) `quotRem` 1000
             dimensions = toEnum (fromIntegral dimensionTag)

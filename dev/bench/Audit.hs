@@ -239,7 +239,7 @@ cases size = do
             , workload "measures" "locateBetween" "alternating-M" (S.locateBetween 0.25 0.75) alternatingLine
             , workload "measures" "locateBetween" "multipoint" (S.locateBetween (n / 3) (2 * n / 3)) measuredMultiPoint
             ]
-    codecs <- mapM codecCases [("line-XY", line), ("line-XYZM", measuredLine), ("polygon-hole", holed), ("mixed-collection", flat), ("nested", nested)]
+    codecs <- mapM codecCases [("line-XY", line), ("line-XYZM", measuredLine), ("polygon-hole", holed), ("multipoint", multiPoint), ("multipolygon", manyPolygons), ("mixed-collection", flat), ("nested", nested)]
     difficult <-
         sequence
             [ workload "construction" "intersection" "rotated-circle" (successful . uncurry S.intersection) (polygon, rotated)
@@ -266,8 +266,10 @@ codecCases (label, geometry) = do
         [ workload "codecs" "encodeWKB" label WKB.encodeWKB geometry
         , workload "codecs" "encodeWKT" label WKT.encodeWKT geometry
         , preparedWorkload "codecs" "decodeWKB" label WKB.decodeWKB bytes
+        , preparedWorkload "codecs" "validateWKB" label WKB.validateWKB bytes
         , preparedWorkload "codecs" "decodeWKT" label WKT.decodeWKT text
         , preparedWorkload "codecs" "decodeWKB" (label ++ "-truncated") WKB.decodeWKB ((\input -> BS.take (BS.length input - 1) input) <$> bytes)
+        , preparedWorkload "codecs" "validateWKB" (label ++ "-truncated") WKB.validateWKB ((\input -> BS.take (BS.length input - 1) input) <$> bytes)
         , preparedWorkload "codecs" "decodeWKT" (label ++ "-truncated") WKT.decodeWKT (Text.dropEnd 1 <$> text)
         ]
 
