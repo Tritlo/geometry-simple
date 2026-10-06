@@ -62,7 +62,8 @@ diagnostic records outside pass/failure counts. Use `--phase`, `--cases`,
 Codec checks retain exact coordinate bits and stored member layouts. Empty
 containers inherit their parent's output tag. WKT checks ignore decimal spelling
 and omit parent tags for mixed collections. Point selectors retain source rows,
-including NaN Z/M. DuckDB tests check uniform layouts with its stricter reader.
+including NaN Z/M. DuckDB tests check uniform layouts and its WKT output. They
+also check that mixed-layout WKB survives storage while WKT conversion fails.
 
 Constructed results must use XY. Hulls require exact vertices and counterclockwise
 winding. Overlays permit equivalent line grouping, ring starts, winding, and

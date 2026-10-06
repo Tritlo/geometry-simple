@@ -31,6 +31,13 @@ tests =
         , testGroup
             "literal syntax"
             [testCase (Text.unpack input) $ decodeWKT input @?= Right expected | (input, expected) <- literalFixtures]
+        , testGroup
+            "bare multipoints with empty members"
+            [testCase (Text.unpack input) $ decodeWKT input @?= Right expected | (input, expected) <- bareEmptyMultipoints]
+        , testCase "bare multipoints scan many leading empty members" $ do
+            let input = "MULTIPOINT (" <> Text.replicate 10000 "EMPTY," <> "1 2 3,EMPTY)"
+                expected = U.replicate 10000 (EmptyPoint DimXY) U.++ U.fromList [PointXYZ (XYZ 1 2 3), EmptyPoint DimXYZ]
+            decodeWKT input @?= Right (MultiPoint expected)
         , testCase "attached dimension suffixes work for all families" $
             forM_ fixtures $ \(input, expected) ->
                 decodeWKT (Text.replace " ZM" "ZM" (Text.replace " M" "M" (Text.replace " Z" "Z" input))) @?= Right expected
@@ -221,6 +228,25 @@ literalFixtures =
     , ("GEOMETRYCOLLECTION (POINT M EMPTY)", GeometryCollection (V.singleton (PointGeometry (EmptyPoint DimXYM))))
     ]
 
+-- | DuckDB's bare MULTIPOINT output retains the existing layout inference rules.
+bareEmptyMultipoints :: [(Text, Geometry)]
+bareEmptyMultipoints = do
+    (suffix, first, second, a, b, leadingEmpty, laterEmpty) <-
+        [ ("", "1 2", "3 4", PointXY (XY 1 2), PointXY (XY 3 4), DimXY, DimXY)
+        , (" Z", "1 2 3", "4 5 6", PointXYZ (XYZ 1 2 3), PointXYZ (XYZ 4 5 6), DimXYZ, DimXYZ)
+        , (" M", "1 2 3", "4 5 6", PointXYM (XYM 1 2 3), PointXYM (XYM 4 5 6), DimXYM, DimXYM)
+        , (" ZM", "1 2 3 4", "5 6 7 8", PointXYZM (XYZM 1 2 3 4), PointXYZM (XYZM 5 6 7 8), DimXYZM, DimXYZM)
+        , ("", "1 2 3", "4 5 6", PointXYZ (XYZ 1 2 3), PointXYZ (XYZ 4 5 6), DimXY, DimXYZ)
+        , ("", "1 2 3 4", "5 6 7 8", PointXYZM (XYZM 1 2 3 4), PointXYZM (XYZM 5 6 7 8), DimXY, DimXYZM)
+        ]
+    (body, points) <-
+        [ ("EMPTY," <> first <> "," <> second, [EmptyPoint leadingEmpty, a, b])
+        , (first <> ",EMPTY," <> second, [a, EmptyPoint laterEmpty, b])
+        , (first <> "," <> second <> ",EMPTY", [a, b, EmptyPoint laterEmpty])
+        , ("EMPTY,EMPTY," <> first <> ",EMPTY," <> second <> ",EMPTY", [EmptyPoint leadingEmpty, EmptyPoint leadingEmpty, a, EmptyPoint laterEmpty, b, EmptyPoint laterEmpty])
+        ]
+    pure ("MULTIPOINT" <> suffix <> " (" <> body <> ")", MultiPoint (U.fromList points))
+
 -- | Literal decimal inputs and their correctly rounded IEEE 754 results.
 numericFixtures :: [(Text, Word64)]
 numericFixtures =
@@ -319,8 +345,13 @@ invalidInputs =
            , "POLYGON (EMPTY,(0 0,1 1,0 0))"
            , "POLYGON ((NaN NaN,1 1,NaN NaN))"
            , "MULTIPOINT(1 2,(3 4),EMPTY,5 6)"
-           , "MULTIPOINT(EMPTY,1 2)"
-           , "MULTIPOINT(1 2,EMPTY)"
+           , "MULTIPOINT(EMPTY,1 2,(3 4))"
+           , "MULTIPOINT(EMPTY,(1 2),3 4)"
+           , "MULTIPOINT(EMPTY,,1 2)"
+           , "MULTIPOINT(EMPTY,)"
+           , "MULTIPOINT(1 2,EMPTY,)"
+           , "MULTIPOINT(1 2 EMPTY)"
+           , "MULTIPOINT(EMPTY 1 2)"
            , "GEOMETRYCOLLECTION M (POINT (1 2 3))"
            , "LINESTRING (0 0,1 1 2)"
            , "LINESTRING (0 0 3,1 1)"

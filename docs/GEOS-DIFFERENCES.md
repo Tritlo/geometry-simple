@@ -15,6 +15,7 @@ API or output convention in this package.
 | Representative points | Use the first available polygon, interior line vertex, endpoint, or point, in that order. Empty components are skipped. | Selection can depend on centroid distance, interval width, and empty members. |
 | Point observers | Preserve the stored layout and every ordinate, including NaN Z/M. | Extracted points can lose dimensions whose ordinate is NaN. |
 | Mixed WKT collections | Each child carries its own dimension tag; the parent has none. | A parent tag can conflict with a child and make the writer's output unreadable. |
+| Bare MULTIPOINT with EMPTY | Accepts empty members before, between, or after bare coordinates, as emitted by DuckDB. Nonempty members must use one spelling throughout. | Requires parenthesized nonempty members when EMPTY is present. |
 | WKT numbers | Shortest scientific notation that decodes to the same `Double`. | Decimal formatting differs. |
 | Numerical reductions | Compensated centroid sums retain small contributions during cancellation. | Evaluation order and final floating-point digits can differ. |
 
@@ -152,12 +153,17 @@ including nested collections. Empty containers inherit the containing layout;
 standalone empty containers use XY.
 
 Mixed-layout collection WKT omits the parent tag and retains each child's tag.
-This extends the OGC grammar in section 7. GEOS accepts this form, but DuckDB
-requires one layout across all members for both WKT and WKB. Use a common
-layout for DuckDB interchange.
+This extends the OGC grammar in section 7. GEOS accepts this form. DuckDB's
+WKT reader and `ST_AsText` require one layout across all members. DuckDB can
+store mixed-layout WKB through `ST_GeomFromWKB` and return it through
+`ST_AsWKB`, but `ST_AsText` rejects that geometry. Use a common layout when
+DuckDB interchange includes WKT.
 
 The WKT decoder accepts attached tags such as `POINTZ`, both multipoint
-syntaxes, signed numbers, fractions, and exponents. Whitespace between ordinates
+syntaxes, signed numbers, fractions, and exponents. It also accepts `EMPTY`
+with bare MULTIPOINT coordinates, including DuckDB's `ST_AsText` output. This
+syntax is broader than GEOS 3.13.1. Mixing parenthesized and bare nonempty
+members remains an error. Whitespace between ordinates
 is required: space, tab, CR, or LF. The decoder rounds each decimal ordinate
 to the nearest `Double`. Underflow produces signed zero; overflow produces infinity.
 

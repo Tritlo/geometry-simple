@@ -226,6 +226,8 @@ def random_case(rng: random.Random, index: int) -> Case:
 
 def codec_cases() -> list[Case]:
     """Exercise native reader acceptance without requiring valid finite topology."""
+    # DuckDB's bare MULTIPOINT plus EMPTY syntax is intentionally broader than
+    # GEOS. test_duckdb_wkt.py checks that syntax against DuckDB's actual output.
     fixtures = [
         ("inferred-z-point", "POINT (1 2 3)", "XYZ"),
         ("inferred-zm-point", "POINT (1 2 3 4)", "XYZM"),
@@ -244,7 +246,6 @@ def codec_cases() -> list[Case]:
         ("empty-shell-nonempty-hole", "POLYGON (EMPTY,(0 0,1 0,0 0))", "XY"),
         ("empty-hole", "POLYGON ((0 0,2 0,0 2,0 0),EMPTY)", "XY"),
         ("mixed-multipoint-syntax", "MULTIPOINT (0 0,(1 1))", "XY"),
-        ("empty-then-flat-multipoint", "MULTIPOINT (EMPTY,1 1)", "XY"),
         ("empty-then-bracketed-multipoint", "MULTIPOINT (EMPTY,(1 1))", "XY"),
         ("partial-nan-x", "POINT (NaN 1)", "XY"),
         ("partial-nan-y", "POINT (1 NaN)", "XY"),

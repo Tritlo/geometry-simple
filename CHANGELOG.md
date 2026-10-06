@@ -1,3 +1,13 @@
+# Unreleased
+
+- Accept bare MULTIPOINT coordinates mixed with `EMPTY`, including DuckDB's
+  `ST_AsText` output. Previously this syntax failed to parse. Nonempty members
+  must still use one spelling throughout. The writer keeps its parenthesized
+  form, and layout inference is unchanged.
+- Correct the DuckDB interoperability notes. DuckDB can store mixed-layout WKB
+  with `ST_GeomFromWKB` and return it with `ST_AsWKB`; its WKT reader and writer
+  require a common layout.
+
 # 0.1.0.0
 
 Initial release.

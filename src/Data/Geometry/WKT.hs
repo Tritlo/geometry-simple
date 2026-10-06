@@ -8,6 +8,8 @@ The decoder retains each collection member's layout. For untagged input,
 it infers XY, XYZ, or XYZM from the number of ordinates. XYM requires an M tag.
 Within a multi-geometry, the first coordinate sets the layout for the remaining
 coordinates. Empty members before that coordinate retain XY.
+MULTIPOINT accepts EMPTY beside bare coordinates, as emitted by DuckDB.
+Nonempty members must consistently use or omit parentheses.
 The codecs check line lengths and ring closure, but not polygon topology.
 NaN and infinity are accepted. EWKT and SRIDs are not supported.
 -}
@@ -192,10 +194,10 @@ inferDimensions = do
             Nothing -> False
             Just (c, _) -> c /= ',' && c /= ')'
 
--- | Read a point body. Bare MULTIPOINT coordinates cannot contain EMPTY.
+-- | Read a point body. MULTIPOINT coordinates can omit parentheses.
 point :: Bool -> Maybe Dimensions -> Parser (Point, Maybe Dimensions)
 point parenthesized current = do
-    empty <- if parenthesized then emptyKeyword else pure False
+    empty <- emptyKeyword
     if empty
         then pure (EmptyPoint (fromMaybe DimXY current), current)
         else do
@@ -238,15 +240,22 @@ polygon current = do
     lift (validatePolygon values)
     pure (values, dimensions)
 
--- | Use one MULTIPOINT spelling throughout its body.
+-- | Use the first nonempty point's spelling throughout a MULTIPOINT body.
 multiPoint :: Maybe Dimensions -> Parser (U.Vector Point, Maybe Dimensions)
 multiPoint current = do
-    spaces
-    input <- get
-    -- Inspect only the first token. Uppercasing the rest of the input would be quadratic.
-    let first = Text.dropWhile whitespace (Text.drop 1 input)
-        parenthesized = Text.isPrefixOf "(" first || Text.toUpper (Text.takeWhile letter first) == "EMPTY"
+    parenthesized <- lookAheadParser $ do
+        empty <- emptyKeyword
+        if empty then pure False else symbol '(' >> firstNonempty
     unboxedSequence current (point parenthesized)
+  where
+    -- Scan leading empty members once. Their layouts are assigned during parsing.
+    firstNonempty = do
+        empty <- emptyKeyword
+        if empty
+            then do
+                finished <- delimiter
+                if finished then pure False else firstNonempty
+            else Text.isPrefixOf "(" <$> get
 
 {- | Read EMPTY or a parenthesized sequence into a boxed vector. Carry the
 inferred layout from each element to the next. A list keeps deep nesting

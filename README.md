@@ -127,6 +127,9 @@ conformance or implement SQL, CRS metadata, Triangle, TIN, or PolyhedralSurface.
 `encodeWKB` writes little-endian ISO WKB. `decodeWKB` accepts either byte order,
 including mixed byte orders in collections. The WKT decoder accepts explicit
 or inferred coordinate layouts, lowercase keywords, and scientific notation.
+It accepts DuckDB's bare MULTIPOINT coordinates mixed with `EMPTY`. Nonempty
+members must consistently use or omit parentheses. The writer keeps its
+parenthesized MULTIPOINT form.
 All four codec functions return `Either String` and reject invalid construction.
 The decoders also reject trailing input.
 
@@ -138,7 +141,9 @@ therefore not guaranteed for every mixed-layout value.
 
 WKT collections use a parent dimension tag when their members share one output
 layout. Mixed-layout collections omit it and retain child tags. That form is
-an extension accepted by this library and GEOS; DuckDB rejects it.
+an extension accepted by this library and GEOS; DuckDB's WKT reader rejects it.
+DuckDB can store mixed-layout WKB with `ST_GeomFromWKB` and return it with
+`ST_AsWKB`. Its `ST_AsText` function rejects those mixed-layout geometries.
 
 ## Development
 
