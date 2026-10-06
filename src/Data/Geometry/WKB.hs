@@ -133,8 +133,7 @@ skipPolygon total little dimensions = do
         shell <- getRing total little dimensions
         replicateM_ (count - 1) $ do
             hole <- getRing total little dimensions
-            when (BS.null shell && not (BS.null hole)) $
-                fail "Geometry polygon has an empty shell and nonempty holes"
+            either fail pure (validatePolygonEmptiness (BS.null shell) (BS.null hole))
 
 -- | Check a multi-geometry child header before reading its typed body.
 getChild :: Word32 -> (Bool -> Dimensions -> Get a) -> Get a
@@ -161,11 +160,9 @@ getRing total little dimensions = do
     bytes <- getCoordinateBytes total little dimensions
     let stride = 8 * dimensionCount dimensions
         count = BS.length bytes `div` stride
-    when (count > 0) $ do
-        when (count < 3) (fail "Geometry ring must have zero or at least three coordinates")
-        let (x, y, _, _) = componentsAt dimensions little bytes 0
-            (lastX, lastY, _, _) = componentsAt dimensions little bytes ((count - 1) * stride)
-        unless (x == lastX && y == lastY) (fail "Geometry ring is not closed")
+        first = coordinateAt little bytes 0 :: XY
+        lastPoint = coordinateAt little bytes ((count - 1) * stride)
+    either fail pure (validateRing count first lastPoint)
     pure bytes
 
 -- | Read point ordinates before applying WKB's XY-NaN empty convention.

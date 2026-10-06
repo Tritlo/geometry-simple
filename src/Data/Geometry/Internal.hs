@@ -326,21 +326,32 @@ validateGeometry checkLength geometry = case geometry of
 validateLine :: Coordinates -> Either String ()
 validateLine points = when (withCoordinates U.length points == 1) (Left "Geometry line must have zero or at least two coordinates")
 
--- | Rings have zero or at least three coordinates and close in X and Y.
+{- | Check a ring's size and XY closure. Empty rings are valid. Nonempty rings
+need at least three coordinates. Endpoints are not evaluated for shorter rings.
+-}
+validateRing :: (Coordinate c) => Int -> c -> c -> Either String ()
+{-# INLINE validateRing #-}
+validateRing count first lastPoint
+    | count == 0 = pure ()
+    | count < 3 = Left "Geometry ring must have zero or at least three coordinates"
+    | otherwise = unless (x == x' && y == y') (Left "Geometry ring is not closed")
+  where
+    (x, y, _, _) = coordinateComponents first
+    (x', y', _, _) = coordinateComponents lastPoint
+
+-- | Reject nonempty holes when the shell is empty. Arguments indicate emptiness.
+validatePolygonEmptiness :: Bool -> Bool -> Either String ()
+validatePolygonEmptiness shellEmpty holesEmpty =
+    when (shellEmpty && not holesEmpty) (Left "Geometry polygon has an empty shell and nonempty holes")
+
+-- | Check ring sizes, XY closure, and polygon emptiness.
 validatePolygon :: PolygonRings -> Either String ()
 validatePolygon (PolygonRings shell holes) = do
-    validateRing shell
-    V.mapM_ validateRing holes
-    when (coordinatesEmpty shell && not (V.all coordinatesEmpty holes)) $
-        Left "Geometry polygon has an empty shell and nonempty holes"
+    checkRing shell
+    V.mapM_ checkRing holes
+    validatePolygonEmptiness (coordinatesEmpty shell) (V.all coordinatesEmpty holes)
   where
-    validateRing = withCoordinates $ \points -> case U.length points of
-        0 -> pure ()
-        count | count < 3 -> Left "Geometry ring must have zero or at least three coordinates"
-        _ ->
-            let (x, y, _, _) = coordinateComponents (U.head points)
-                (x', y', _, _) = coordinateComponents (U.last points)
-             in unless (x == x' && y == y') (Left "Geometry ring is not closed")
+    checkRing = withCoordinates $ \points -> validateRing (U.length points) (U.head points) (U.last points)
 
 -- | Test whether a geometry has no stored coordinates.
 geometryEmpty :: Geometry -> Bool
